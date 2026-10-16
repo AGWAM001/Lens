@@ -222,50 +222,6 @@ export const depthResponseSchema = {
   },
 } as const
 
-/** GET /impact/:assetA/:assetB */
-export const impactResponseSchema = {
-  type: 'object',
-  required: ['assetA', 'assetB', 'pairKey', 'status', 'spotPrice', 'availableLiquidity', 'smallestSize', 'ladder', 'thresholds', 'source'],
-  additionalProperties: false,
-  properties: {
-    assetA: { type: 'string' },
-    assetB: { type: 'string' },
-    pairKey: { type: 'string' },
-    status: { type: 'string', enum: ['ok', 'insufficient_liquidity'] },
-    spotPrice: { type: 'number' },
-    availableLiquidity: { type: 'number' },
-    smallestSize: { type: 'number' },
-    ladder: {
-      type: 'array',
-      items: {
-        type: 'object',
-        required: ['size', 'output', 'executionPrice', 'slippagePct'],
-        additionalProperties: false,
-        properties: {
-          size: { type: 'number' },
-          output: { type: 'number' },
-          executionPrice: { type: 'number' },
-          slippagePct: { type: 'number' },
-        },
-      },
-    },
-    thresholds: {
-      type: 'array',
-      items: {
-        type: 'object',
-        required: ['thresholdPct', 'crossed', 'size'],
-        additionalProperties: false,
-        properties: {
-          thresholdPct: { type: 'number' },
-          crossed: { type: 'boolean' },
-          size: { type: ['number', 'null'] },
-        },
-      },
-    },
-    source: { type: 'string', enum: ['AMM'] },
-  },
-} as const
-
 /** GET /benchmark/:asset */
 export const benchmarkResponseSchema = {
   type: 'object',
