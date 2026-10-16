@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import websocket from '@fastify/websocket'
 import { priceEmitter, PRICE_UPDATE, PriceUpdateEvent } from '../events'
-import { activeNetwork, type NetworkName } from '../config'
+import { activeNetwork, config, type NetworkName } from '../config'
 import { X402_NETWORK_LABEL, paymentAddressFor, getX402ResourceServer } from '../x402/network'
 import { resolveNetworkName } from '../middleware/network'
 import { fanOutManager } from '../ws/fanout'
@@ -95,12 +95,47 @@ export async function registerWebSocket(app: FastifyInstance) {
         }
       },
       close: () => {
-        socket.close()
+        if (typeof socket.terminate === 'function') {
+          socket.terminate()
+        } else {
+          socket.close()
+        }
       },
+    })
+
+    // Heartbeat ping/pong handling
+    const pingIntervalMs = config.ws.pingIntervalMs
+    const maxMissedPings = config.ws.maxMissedPings
+    let missedPings = 0
+
+    const heartbeatInterval = setInterval(() => {
+      missedPings++
+      if (missedPings > maxMissedPings) {
+        app.log.warn(`[ws] Client ${clientId} missed ${missedPings - 1} consecutive ping(s) (threshold: ${maxMissedPings}), closing dead connection`)
+        clearInterval(heartbeatInterval)
+        unsubscribe()
+        if (typeof socket.terminate === 'function') {
+          socket.terminate()
+        } else {
+          socket.close()
+        }
+        return
+      }
+
+      if (socket.readyState === 1) { // OPEN
+        if (typeof socket.ping === 'function') {
+          socket.ping()
+        }
+      }
+    }, pingIntervalMs)
+
+    socket.on('pong', () => {
+      missedPings = 0
     })
 
     socket.on('close', () => {
       app.log.info('[ws] Connection closed')
+      clearInterval(heartbeatInterval)
       unsubscribe()
     })
   }

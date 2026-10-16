@@ -118,7 +118,7 @@ class FanOutManager {
     return () => this.unregister(id)
   }
 
-  private unregister(id: string): void {
+  unregister(id: string): void {
     const client = this.clients.get(id)
     if (!client) return
     if (client.timer) clearTimeout(client.timer)
@@ -135,6 +135,22 @@ class FanOutManager {
 
     ws_clients_total.labels(client.pairKey).dec()
     ws_clients_total.labels('*').dec()
+  }
+
+  getClientCount(): number {
+    return this.clients.size
+  }
+
+  getPairClientCount(pairKey: string): number {
+    return this.pairClients.get(pairKey)?.size ?? 0
+  }
+
+  hasClient(id: string): boolean {
+    return this.clients.has(id)
+  }
+
+  hasPairClient(pairKey: string, id: string): boolean {
+    return this.pairClients.get(pairKey)?.has(id) ?? false
   }
 
   /**

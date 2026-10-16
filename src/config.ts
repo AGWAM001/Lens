@@ -251,6 +251,10 @@ const globalConfig = {
   cache: {
     priceTtl: parseInt(process.env.PRICE_CACHE_TTL ?? '10', 10),
   },
+  ws: {
+    pingIntervalMs: parseInt(process.env.WS_PING_INTERVAL_MS ?? '30000', 10),
+    maxMissedPings: parseInt(process.env.WS_MAX_MISSED_PINGS ?? '2', 10),
+  },
 } as const
 
 // ── Per-network map ───────────────────────────────────────────────────────────
@@ -330,4 +334,5 @@ export const config = {
   api:     globalConfig.api,
   indexer: globalConfig.indexer,
   cache:   globalConfig.cache,
+  ws:      globalConfig.ws,
 }

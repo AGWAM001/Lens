@@ -5,12 +5,17 @@ import WebSocket from 'ws'
 import { registerWebSocket } from '../../src/api/websocket'
 import { priceEmitter, PRICE_UPDATE } from '../../src/events'
 import { fanOutManager } from '../../src/ws/fanout'
+import { config } from '../../src/config'
 
 describe('WebSocket subscription full cycle', () => {
   let app: ReturnType<typeof Fastify>
   let port: number
 
   beforeAll(async () => {
+    // Configure fast ping intervals for integration test
+    ;(config.ws as any).pingIntervalMs = 50
+    ;(config.ws as any).maxMissedPings = 2
+
     // Initialize the fan-out manager so it listens for price updates
     // and broadcasts to registered WebSocket clients
     await fanOutManager.initialize()
@@ -82,8 +87,64 @@ describe('WebSocket subscription full cycle', () => {
     expect(next.currentPrice).toBe(event.currentPrice)
     expect(new Date(next.timestamp).toISOString()).toBe(event.timestamp.toISOString())
 
-    // 5. Disconnect and verify client cleanup
+    // 5. Verify client was registered in internal maps
+    expect(fanOutManager.getClientCount()).toBe(1)
+    expect(fanOutManager.getPairClientCount('*')).toBe(1)
+
+    // 6. Disconnect and verify both internal maps are cleaned up
     ws.close()
     await new Promise<void>((resolve) => ws.on('close', () => resolve()))
+
+    // Allow the server-side socket close event and unsubscribe to complete
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    expect(fanOutManager.getClientCount()).toBe(0)
+    expect(fanOutManager.getPairClientCount('*')).toBe(0)
+  })
+
+  it('keeps normal client with slow but live connection connected', async () => {
+    // Normal client responds to pings (standard ws client behavior)
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`)
+    await new Promise<void>((resolve, reject) => {
+      ws.on('open', () => resolve())
+      ws.on('error', reject)
+    })
+
+    // Expect client to stay connected across multiple ping intervals
+    await new Promise((resolve) => setTimeout(resolve, 250))
+
+    expect(ws.readyState).toBe(WebSocket.OPEN)
+    expect(fanOutManager.getClientCount()).toBe(1)
+
+    ws.close()
+    await new Promise<void>((resolve) => ws.on('close', () => resolve()))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(fanOutManager.getClientCount()).toBe(0)
+  })
+
+  it('closes and unregisters a client that stops responding to pings', async () => {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`)
+    await new Promise<void>((resolve, reject) => {
+      ws.on('open', () => {
+        // Prevent client from answering pings by suppressing pong replies
+        ws.pong = () => {}
+        if ((ws as any)._receiver) {
+          ;(ws as any)._receiver.onPing = () => {}
+        }
+        resolve()
+      })
+      ws.on('error', reject)
+    })
+
+    // Wait for client to miss consecutive pings and get closed
+    await new Promise<void>((resolve) => {
+      ws.on('close', () => resolve())
+    })
+
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    // Assert that the unresponsive client was closed and both internal maps cleaned up
+    expect(fanOutManager.getClientCount()).toBe(0)
+    expect(fanOutManager.getPairClientCount('*')).toBe(0)
   })
 })
