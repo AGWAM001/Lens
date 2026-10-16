@@ -45,6 +45,7 @@ Every non-internal route above has a matching entry in [`openapi.yaml`](openapi.
 missing from the spec. Operator-only and non-HTTP routes (`/admin/keys*`,
 `/admin/usage*`, `/metrics`, `/ws`, `/graphiql*`) are deliberately excluded via
 the commented allow-list in [`src/openapi/coverage.ts`](src/openapi/coverage.ts).
+In addition, live service responses are verified against their published schemas on a daily schedule (`05:00 UTC`) via `npm run spec:validate-live` — see [docs/live-spec-validation.md](docs/live-spec-validation.md).
 
 The `?network=testnet\|mainnet` query param (or `x-network` header) selects the
 Stellar network. It is validated on every request — an unrecognised value gets a
