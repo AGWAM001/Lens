@@ -1059,7 +1059,7 @@
     "/compare/{asset}": {
       "get": {
         "operationId": "compareAsset",
-        "summary": "Compare Lens and Reflector oracle prices for an asset",
+        "summary": "Compare Lens prices with every configured external oracle",
         "security": [],
         "parameters": [
           {
@@ -1070,6 +1070,9 @@
               "type": "string"
             },
             "example": "XLM"
+          },
+          {
+            "$ref": "#/components/parameters/NetworkQuery"
           }
         ],
         "responses": {
@@ -2375,16 +2378,25 @@
         "type": "object",
         "required": [
           "asset",
+          "network",
           "lens",
           "reflector",
           "deviationPct",
           "status",
-          "fetchedAt"
+          "fetchedAt",
+          "oracles"
         ],
         "additionalProperties": false,
         "properties": {
           "asset": {
             "type": "string"
+          },
+          "network": {
+            "type": "string",
+            "enum": [
+              "testnet",
+              "mainnet"
+            ]
           },
           "lens": {
             "type": "number",
@@ -2410,6 +2422,47 @@
           "fetchedAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "oracles": {
+            "type": "array",
+            "description": "One result per configured adapter; unavailable sources remain present with a status.",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "price",
+                "timestamp",
+                "deviationPct",
+                "status"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "price": {
+                  "type": "number",
+                  "nullable": true
+                },
+                "timestamp": {
+                  "type": "string",
+                  "format": "date-time",
+                  "nullable": true
+                },
+                "deviationPct": {
+                  "type": "number",
+                  "nullable": true
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "available",
+                    "unreachable",
+                    "not_configured"
+                  ]
+                }
+              }
+            }
           }
         }
       },
