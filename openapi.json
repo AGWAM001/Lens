@@ -528,6 +528,20 @@
             }
           },
           {
+            "name": "format",
+            "in": "query",
+            "required": false,
+            "description": "Response encoding. `csv` returns a text/csv body holding a `ts,price,volume` table (RFC 4180 quoting, LF line endings, one trailing newline); `json` is the default.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "json",
+                "csv"
+              ],
+              "default": "json"
+            }
+          },
+          {
             "$ref": "#/components/parameters/NetworkQuery"
           }
         ],
@@ -535,6 +549,12 @@
           "200": {
             "description": "Historical price snapshots",
             "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string",
+                  "example": "ts,price,volume\n2025-01-01T00:00:00.000Z,1.25,500\n"
+                }
+              },
               "application/json": {
                 "schema": {
                   "type": "object",
