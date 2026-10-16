@@ -24,7 +24,7 @@ Aggregates price data from Stellar's Classic Order Book (SDEX) and AMM Liquidity
 | GET | `/prices/history?pair=XLM/USDC&from=…&to=…&interval=1m` | Historical 1-minute price snapshots, optionally aggregated (`1m`, `5m`, `1h`); honours `?network=`; ~30-day retention |
 | GET | `/pools` | Active AMM pools being watched |
 | GET | `/pairs` | Watched trading pairs |
-| GET | `/volumes/:asset?window=24h` | Cross-venue traded volume (`24h`, `7d`, `30d`) with a per-venue breakdown |
+| GET | `/volumes/:asset?window=24h&network=testnet` | Cross-venue volume and trade-size concentration (`24h`, `7d`, `30d`) with per-venue breakdown |
 | GET | `/spreads/:asset?window=5m` | Per-venue bid/ask spread, tightest first (`5m`, `15m`, `1h`, `24h`) |
 | GET | `/compare/:asset` | Lens vs configured oracle prices, with per-oracle deviation and availability |
 | GET | `/screener?sortBy=volume&order=desc&limit=20` | Screen pairs by volume, 24h change, liquidity and price |
@@ -58,6 +58,16 @@ best-route reads), `/price/:assetA/:assetB/route`, `/price/:assetA/:assetB/depth
 `/volumes/:asset`, `/status`, and the x402 payment `network`/`payTo`. That list
 is the same one `openapi.yaml` declares a `network` parameter on — if they ever
 disagree, the spec is the thing to fix.
+
+`GET /volumes/:asset` also reports the trade count, median trade size, largest
+trade's volume share, and `volumeConcentration`. Concentration is the HHI: the
+sum of squared individual trade volume shares (0 to 1; 1 means one trade
+accounted for all volume). The `provenance` object gives the venues and
+positive-volume sample count used and the total observed sample count
+(including zero-volume rows), plus the latest trade time and its age at the
+response's `endTime`.
+When the window has no trades, or its samples have no positive volume, derived
+size and concentration metrics are `null` and `status` explains why.
 
 Still reading across both networks, and ignoring the parameter:
 `/candles/:assetA/:assetB`, `/price/twap/*`, `/price/vwap/*`, and
