@@ -11,6 +11,11 @@ vi.mock('../db', () => ({
       create: vi.fn(),
       update: vi.fn(),
     },
+    webhookDeliveryFailure: {
+      findMany: vi.fn(),
+      create: vi.fn(),
+      deleteMany: vi.fn(),
+    },
   },
 }))
 
@@ -345,6 +350,30 @@ describe('admin endpoints', () => {
       headers: { 'x-admin-token': 'admin-secret' },
     })
     expect(res.statusCode).toBe(404)
+  })
+
+  it('protects the recent webhook failure endpoint with the admin token', async () => {
+    const app = await buildAdminApp()
+    const res = await app.inject({ method: 'GET', url: '/admin/webhook-delivery-failures' })
+    expect(res.statusCode).toBe(401)
+    expect(prisma.webhookDeliveryFailure.findMany).not.toHaveBeenCalled()
+  })
+
+  it('returns a bounded newest-first diagnostic list to admins', async () => {
+    const failures = [{ id: 'failed-1', endpoint: 'https://hooks.example.test/alerts', errorCategory: 'http_5xx' }]
+    vi.mocked(prisma.webhookDeliveryFailure.findMany).mockResolvedValue(failures as any)
+    const app = await buildAdminApp()
+    const res = await app.inject({
+      method: 'GET',
+      url: '/admin/webhook-delivery-failures?limit=150',
+      headers: { 'x-admin-token': 'admin-secret' },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ failures })
+    expect(prisma.webhookDeliveryFailure.findMany).toHaveBeenCalledWith({
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+    })
   })
 
   it('registers authentication counters in the Prometheus registry', async () => {

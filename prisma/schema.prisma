@@ -256,6 +256,23 @@ model Webhook {
   @@map("webhooks")
 }
 
+/// Permanent webhook failures are retained for 30-day diagnosis only; replay is
+/// not automatic because a delayed alert may no longer describe the current price.
+model WebhookDeliveryFailure {
+  id             String   @id @default(uuid())
+  endpoint       String
+  payload        Json
+  attemptCount   Int      @map("attempt_count")
+  lastStatus     Int?     @map("last_status")
+  errorCategory  String   @map("error_category")
+  firstAttemptAt DateTime @map("first_attempt_at")
+  lastAttemptAt  DateTime @map("last_attempt_at")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt(sort: Desc)])
+  @@map("webhook_delivery_failures")
+}
+
 model ApiKey {
   id               String    @id @default(uuid())
   hash             String    @unique
