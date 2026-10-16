@@ -251,6 +251,10 @@ const globalConfig = {
   cache: {
     priceTtl: parseInt(process.env.PRICE_CACHE_TTL ?? '10', 10),
   },
+  plausibility: {
+    minPrice: parseFloat(process.env.PRICE_MIN_PLAUSIBLE ?? '0.0000000001'),
+    maxPrice: parseFloat(process.env.PRICE_MAX_PLAUSIBLE ?? '10000000000'),
+  },
 } as const
 
 // ── Per-network map ───────────────────────────────────────────────────────────
@@ -330,4 +334,5 @@ export const config = {
   api:     globalConfig.api,
   indexer: globalConfig.indexer,
   cache:   globalConfig.cache,
+  plausibility: globalConfig.plausibility,
 }

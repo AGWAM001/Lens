@@ -46,6 +46,13 @@ export const price_requests_total = new Counter({
   registers: [register]
 })
 
+export const price_rejected_total = new Counter({
+  name: 'price_rejected_total',
+  help: 'Total number of prices rejected due to plausibility sanity bounds',
+  labelNames: ['pair', 'network', 'venue', 'reason'],
+  registers: [register]
+})
+
 export const x402_payments_received_total = new Counter({
   name: 'x402_payments_received_total',
   help: 'Total number of valid x402 payments received',
