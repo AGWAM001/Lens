@@ -521,6 +521,7 @@ paths:
             type: string
             enum: [iqr, modified_zscore]
             default: iqr
+        - $ref: '#/components/parameters/NetworkQuery'
       responses:
         '200':
           description: TWAP result
@@ -1345,7 +1346,7 @@ components:
 
     TwapResponse:
       type: object
-      required: [assetA, assetB, pairKey, twap, windowMinutes, sampleIntervalSeconds, startTime, endTime, sampleCount, outlierRejected, filterMethod]
+      required: [assetA, assetB, pairKey, network, twap, windowMinutes, sampleIntervalSeconds, startTime, endTime, sampleCount, outlierRejected, filterMethod]
       additionalProperties: false
       properties:
         assetA:
@@ -1354,6 +1355,9 @@ components:
           type: string
         pairKey:
           type: string
+        network:
+          type: string
+          enum: [testnet, mainnet]
         twap:
           type: number
         windowMinutes:
