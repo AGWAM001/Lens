@@ -26,7 +26,7 @@ Aggregates price data from Stellar's Classic Order Book (SDEX) and AMM Liquidity
 | GET | `/pairs` | Watched trading pairs |
 | GET | `/volumes/:asset?window=24h` | Cross-venue traded volume (`24h`, `7d`, `30d`) with a per-venue breakdown |
 | GET | `/spreads/:asset?window=5m` | Per-venue bid/ask spread, tightest first (`5m`, `15m`, `1h`, `24h`) |
-| GET | `/compare/:asset` | Lens vs Reflector oracle price comparison |
+| GET | `/compare/:asset` | Lens vs configured oracle prices, with per-oracle deviation and availability |
 | GET | `/screener?sortBy=volume&order=desc&limit=20` | Screen pairs by volume, 24h change, liquidity and price |
 | GET | `/benchmark/:asset?target=USD` | Peg-deviation statistics versus a target |
 | GET | `/basket?asset=XLM&asset=USDC&weight=0.6&weight=0.4` | Weighted price of a basket of assets |

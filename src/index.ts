@@ -11,11 +11,8 @@ import { pgPool } from './db'
 import { buildApp } from './app'
 import { fanOutManager } from './ws/fanout'
 
-import { startSDEXIngester } from './ingesters/sdex'
-import { startAMMIngester } from './ingesters/amm'
-import { startSoroswapIngester } from './ingesters/soroswap'
+import { venueAdapters, startVenueAdapter } from './ingest/venues'
 import { startSnapshotIngester } from './ingesters/snapshot'
-import { startAquariusIngester } from './ingest/venues/aquarius'
 import { createAggregateQueue, startAggregateWorker, scheduleAggregateRefresh } from './jobs/aggregateRefresh'
 import { createSnapshotRetentionQueue, startSnapshotRetentionWorker, scheduleSnapshotRetention, pruneAllNetworks, SNAPSHOT_RETENTION_DAYS } from './jobs/snapshotRetention'
 import { loadPersistedPairs, getActivePairs } from './pairsRegistry'
@@ -153,11 +150,10 @@ async function main() {
   const enabledNetworks = getEnabledNetworks()
   console.log(`[lens] Starting ingesters for network(s): ${enabledNetworks.join(', ')}`)
   for (const network of enabledNetworks) {
-    restartIngester('SDEX', network, () => startSDEXIngester(network))
-    restartIngester('AMM', network, () => startAMMIngester(network))
-    restartIngester('Soroswap', network, () => startSoroswapIngester(network))
+    for (const adapter of venueAdapters) {
+      restartIngester(adapter.name, network, () => startVenueAdapter(adapter, network))
+    }
     restartIngester('Snapshot', network, () => startSnapshotIngester(network))
-    restartIngester('Aquarius', network, () => startAquariusIngester(network))
   }
 
   console.log(`[lens] Watching ${getActivePairs().length} pairs: ${getActivePairs().map(p => p.pairKey).join(', ')}`)

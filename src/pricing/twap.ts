@@ -1,4 +1,5 @@
 import { pgPool } from '../db'
+import { activeNetwork, type NetworkName } from '../config'
 
 // ─── TWAP — Time-Weighted Average Price ───────────────────────────────────────
 // Computed by averaging the midpoints of successive price points weighted by
@@ -12,6 +13,7 @@ export interface TWAPResult {
   sampleCount: number
   outlierRejected: number
   filterMethod: string
+  network: NetworkName
 }
 
 export interface VWAPResult {
@@ -22,6 +24,7 @@ export interface VWAPResult {
   volumeTotal: number
   outlierRejected: number
   filterMethod: string
+  network: NetworkName
 }
 
 function median(arr: number[]): number {
@@ -48,19 +51,22 @@ export async function computeTWAP(
   options?: {
     sampleIntervalSeconds?: number
     outlierMethod?: 'iqr' | 'modified_zscore'
+    network?: NetworkName
   }
 ): Promise<TWAPResult> {
   const sampleIntervalSeconds = options?.sampleIntervalSeconds ?? 60
   const outlierMethod = options?.outlierMethod ?? 'iqr'
+  const network = options?.network ?? activeNetwork
 
-  // Fetch price points within the window, ordered by timestamp
+  // Fetch price points within the window for the specific network, ordered by timestamp
   const result = await pgPool.query(
     `SELECT price::numeric as price, timestamp
      FROM price_points
      WHERE pair_key = $1
+       AND network = $3
        AND timestamp > NOW() - ($2 || ' minutes')::interval
      ORDER BY timestamp ASC`,
-    [pairKey, windowMinutes]
+    [pairKey, windowMinutes, network]
   )
 
   const rows = result.rows
@@ -72,6 +78,7 @@ export async function computeTWAP(
       sampleCount: 0,
       outlierRejected: 0,
       filterMethod: outlierMethod,
+      network,
     }
   }
 
@@ -106,6 +113,7 @@ export async function computeTWAP(
       sampleCount: rawPrices.length,
       outlierRejected: rejected,
       filterMethod: outlierMethod,
+      network,
     }
   }
 
@@ -123,6 +131,7 @@ export async function computeTWAP(
       sampleCount: rawPrices.length,
       outlierRejected: rejected,
       filterMethod: outlierMethod,
+      network,
     }
   }
 
@@ -160,6 +169,7 @@ export async function computeTWAP(
     sampleCount: rawPrices.length,
     outlierRejected: rejected,
     filterMethod: outlierMethod,
+    network,
   }
 }
 
@@ -180,9 +190,11 @@ export async function computeVWAP(
   options?: {
     source?: 'SDEX' | 'AMM'
     outlierMethod?: 'iqr' | 'modified_zscore'
+    network?: NetworkName
   }
 ): Promise<VWAPResult> {
   const outlierMethod = options?.outlierMethod ?? 'iqr'
+  const network = options?.network ?? activeNetwork
 
   let query: string
   let params: any[]
@@ -191,17 +203,19 @@ export async function computeVWAP(
     query = `SELECT price::numeric as price, base_volume::numeric as volume, timestamp
              FROM price_points
              WHERE pair_key = $1
+               AND network = $4
                AND source = $3
                AND timestamp > NOW() - ($2 || ' minutes')::interval
              ORDER BY timestamp ASC`
-    params = [pairKey, windowMinutes, options.source]
+    params = [pairKey, windowMinutes, options.source, network]
   } else {
     query = `SELECT price::numeric as price, base_volume::numeric as volume, timestamp
              FROM price_points
              WHERE pair_key = $1
+               AND network = $3
                AND timestamp > NOW() - ($2 || ' minutes')::interval
              ORDER BY timestamp ASC`
-    params = [pairKey, windowMinutes]
+    params = [pairKey, windowMinutes, network]
   }
 
   const result = await pgPool.query(query, params)
@@ -216,6 +230,7 @@ export async function computeVWAP(
       volumeTotal: 0,
       outlierRejected: 0,
       filterMethod: outlierMethod,
+      network,
     }
   }
 
@@ -240,6 +255,7 @@ export async function computeVWAP(
       volumeTotal: 0,
       outlierRejected: rejectedIndices.size,
       filterMethod: outlierMethod,
+      network,
     }
   }
 
@@ -263,6 +279,7 @@ export async function computeVWAP(
     volumeTotal: totalVolume,
     outlierRejected: rejectedIndices.size,
     filterMethod: outlierMethod,
+    network,
   }
 }
 

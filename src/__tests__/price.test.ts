@@ -297,3 +297,45 @@ describe('GET /price/:assetA/:assetB network scoping', () => {
     expect(mockQuery).not.toHaveBeenCalled()
   })
 })
+
+describe('GET /price/twap/:assetA/:assetB network scoping', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockQuery.mockResolvedValue({ rows: [] })
+  })
+
+  it('filters on network, passes it to query, and echoes network in response', async () => {
+    const app = await buildApp()
+    const res = await app.inject({ method: 'GET', url: '/price/twap/XLM/USDC?network=mainnet' })
+
+    expect(res.statusCode).toBe(200)
+    const json = res.json()
+    expect(json.network).toBe('mainnet')
+
+    expect(mockQuery).toHaveBeenCalled()
+    const [sql, params] = mockQuery.mock.calls[0]
+    expect(sql).toMatch(/network\s*=\s*\$3/i)
+    expect(params[2]).toBe('mainnet')
+  })
+
+  it('rejects an invalid network parameter with 400', async () => {
+    const app = await buildApp()
+    const res = await app.inject({ method: 'GET', url: '/price/twap/XLM/USDC?network=invalidnet' })
+    expect(res.statusCode).toBe(400)
+  })
+
+  it('defaults to activeNetwork when no network parameter is specified', async () => {
+    const app = await buildApp()
+    const res = await app.inject({ method: 'GET', url: '/price/twap/XLM/USDC' })
+
+    expect(res.statusCode).toBe(200)
+    const json = res.json()
+    expect(json.network).toBe('testnet')
+
+    expect(mockQuery).toHaveBeenCalled()
+    const [sql, params] = mockQuery.mock.calls[0]
+    expect(sql).toMatch(/network\s*=\s*\$3/i)
+    expect(params[2]).toBe('testnet')
+  })
+})
+

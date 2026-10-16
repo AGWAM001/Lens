@@ -1,5 +1,5 @@
 /**
- * Soroswap AMM Pool Price Ingester
+ * Soroswap Venue Ingester (Backward compatibility proxy)
  *
  * Polls Soroswap Soroban pool reserves via Soroban RPC simulation,
  * calculates constant-product spot prices, and stores them in price_points
@@ -463,35 +463,7 @@ async function sleep(ms: number): Promise<void> {
 /**
  * Start the Soroswap AMM ingester. Runs as an infinite polling loop.
  * Fault-isolated: a crash is caught by the caller (restartIngester in index.ts).
+ * Venue adapters have been unified under src/ingest/venues/.
+ * See src/ingest/venues/soroswap.ts.
  */
-export async function startSoroswapIngester(network: NetworkName = activeNetwork): Promise<void> {
-  const netConfig = getNetworkConfig(network)
-
-  if (!netConfig.soroswap.enabled) {
-    console.log(`[soroswap] Soroswap is disabled on ${network} — ingester not started`)
-    return
-  }
-
-  const factoryAddress = netConfig.soroswap.factoryAddress
-  const tokenListUrl = netConfig.soroswap.tokenListUrl
-  const pollInterval = netConfig.soroswap.pollIntervalMs
-
-  console.log(
-    `[soroswap] Starting Soroswap ingester on ${network} | factory=${factoryAddress} | interval=${pollInterval}ms`
-  )
-
-  while (true) {
-    const pairs = getActivePairs()
-    const tokens = await fetchSoroswapTokenList(tokenListUrl)
-
-    if (tokens.length === 0) {
-      console.warn('[soroswap] Token list empty — skipping poll cycle')
-    } else {
-      await Promise.all(
-        pairs.map((pair) => ingestPair(pair, tokens, factoryAddress, fetchPoolsFromFactory, network))
-      )
-    }
-
-    await sleep(pollInterval)
-  }
-}
+export * from '../ingest/venues/soroswap'

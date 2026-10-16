@@ -1,11 +1,14 @@
 import type { FastifyInstance } from 'fastify'
 import { computeTWAP, computeVWAP } from '../pricing/twap'
 import { z } from 'zod'
+import '../middleware/network'
+import { activeNetwork, type NetworkName } from '../config'
 
 const TwapQuerySchema = z.object({
   window: z.coerce.number().int().min(1).max(1440).default(60),
   sampleInterval: z.coerce.number().int().min(1).max(3600).default(60),
   method: z.enum(['iqr', 'modified_zscore']).default('iqr'),
+  network: z.enum(['testnet', 'mainnet']).optional(),
 })
 
 const VwapQuerySchema = z.object({
@@ -28,6 +31,7 @@ export async function registerPriceRoutes(app: FastifyInstance) {
       window?: string
       sampleInterval?: string
       method?: 'iqr' | 'modified_zscore'
+      network?: string
     }
   }>(
     '/price/twap/:assetA/:assetB',
@@ -38,6 +42,7 @@ export async function registerPriceRoutes(app: FastifyInstance) {
         return reply.status(400).send({ error: parsed.error.issues[0].message || 'Invalid parameters' })
       }
       const { window: windowMinutes, sampleInterval, method } = parsed.data
+      const network: NetworkName = req.network ?? parsed.data.network ?? activeNetwork
 
       const pairKey = [assetA, assetB].sort().join('/')
 
@@ -45,12 +50,14 @@ export async function registerPriceRoutes(app: FastifyInstance) {
         const result = await computeTWAP(pairKey, windowMinutes, {
           sampleIntervalSeconds: sampleInterval,
           outlierMethod: method,
+          network,
         })
 
         return {
           assetA,
           assetB,
           pairKey,
+          network: result.network,
           twap: result.twap,
           windowMinutes,
           sampleIntervalSeconds: sampleInterval,
