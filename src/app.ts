@@ -12,6 +12,7 @@ import { registerHistoryRoutes } from './api/history'
 import { registerX402 } from './middleware/x402'
 import { registerNetworkSelector } from './middleware/network'
 import { registerHttpMetrics } from './middleware/httpMetrics'
+import { registerETag } from './middleware/etag'
 import { registerWebSocket } from './api/websocket'
 import { registerApiKeyAuth } from './api/auth'
 import { registerAdminRoutes } from './api/admin'
@@ -59,6 +60,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   }
 
   await app.register(cors, { origin: true })
+  await app.register(registerETag)
   await app.register(compress)
 
   // HTTP request/latency metrics. Registered FIRST, ahead of the network
