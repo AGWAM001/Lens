@@ -149,6 +149,7 @@ paths:
             type: integer
             default: 100
             maximum: 1000
+        - $ref: '#/components/parameters/NetworkQuery'
       responses:
         '200':
           description: Price history
@@ -159,6 +160,9 @@ paths:
                 properties:
                   pairKey:
                     type: string
+                  network:
+                    type: string
+                    enum: [testnet, mainnet]
                   window:
                     type: string
                   buckets:

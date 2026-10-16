@@ -54,16 +54,13 @@ ones listed below still read a single instance-wide network.
 
 Per-request today: `/price/:assetA/:assetB` (its VWAP, OHLCV, AMM and
 best-route reads), `/price/:assetA/:assetB/route`, `/price/:assetA/:assetB/depth`,
-`/prices/history`, `/screener`, `/pools`, `/pairs`, `/spreads/:asset`,
+`/price/:assetA/:assetB/history`, `/prices/history`, `/screener`, `/pools`, `/pairs`, `/spreads/:asset`,
 `/volumes/:asset`, `/status`, and the x402 payment `network`/`payTo`. That list
 is the same one `openapi.yaml` declares a `network` parameter on — if they ever
 disagree, the spec is the thing to fix.
 
 Still reading across both networks, and ignoring the parameter:
-`/candles/:assetA/:assetB`, `/price/twap/*`, `/price/vwap/*`, and
-`/price/:assetA/:assetB/history` — the last one reads `price_aggregates`, which
-is now written per network, so on an instance running both networks
-(`ENABLED_NETWORKS`) its buckets interleave the two chains.
+`/candles/:assetA/:assetB`, `/price/twap/*`, and `/price/vwap/*`.
 
 ```bash
 curl "https://api.example.com/price/XLM/USDC?network=mainnet"

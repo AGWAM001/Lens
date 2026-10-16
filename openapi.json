@@ -234,6 +234,9 @@
               "default": 100,
               "maximum": 1000
             }
+          },
+          {
+            "$ref": "#/components/parameters/NetworkQuery"
           }
         ],
         "responses": {
@@ -246,6 +249,13 @@
                   "properties": {
                     "pairKey": {
                       "type": "string"
+                    },
+                    "network": {
+                      "type": "string",
+                      "enum": [
+                        "testnet",
+                        "mainnet"
+                      ]
                     },
                     "window": {
                       "type": "string"

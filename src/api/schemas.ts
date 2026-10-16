@@ -113,10 +113,11 @@ export const routeResponseSchema = {
 /** GET /price/:assetA/:assetB/history */
 export const historyResponseSchema = {
   type: 'object',
-  required: ['pairKey', 'window', 'buckets'],
+  required: ['pairKey', 'network', 'window', 'buckets'],
   additionalProperties: false,
   properties: {
     pairKey: { type: 'string' },
+    network: { type: 'string', enum: ['testnet', 'mainnet'] },
     window: { type: 'string', enum: ['1m', '5m', '1h', '24h'] },
     buckets: {
       type: 'array',
