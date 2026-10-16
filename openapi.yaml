@@ -896,6 +896,12 @@ paths:
     get:
       operationId: compareAsset
       summary: Compare Lens prices with every configured external oracle
+      description: >-
+        Returns 200 even when both Lens and all configured oracles have no data
+        for the asset. The `status` field distinguishes "no_data" from "aligned",
+        "minor_deviation", "major_deviation" and "partial" (one source only).
+        The response includes both the legacy `reflector` field for backward
+        compatibility and an `oracles` array listing every configured source.
       security: []
       parameters:
         - name: asset
@@ -907,7 +913,7 @@ paths:
         - $ref: '#/components/parameters/NetworkQuery'
       responses:
         '200':
-          description: Price comparison
+          description: Price comparison (includes status:"no_data" when both sources are null)
           headers:
             Cache-Control:
               $ref: '#/components/headers/CacheControl'
@@ -915,8 +921,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CompareResponse'
-        '404':
-          description: No price data found for the asset
         '429':
           $ref: '#/components/responses/TooManyRequests'
 
@@ -1041,6 +1045,11 @@ paths:
     get:
       operationId: getBasket
       summary: Compute the weighted price of a basket of assets
+      description: >-
+        Returns 200 even when one or more assets have no price data. The
+        response body will contain an `error` field listing the missing assets
+        and `reason: "missing_price_data"` rather than computing a partial
+        basket price. A 404 would imply the assets themselves are invalid.
       security: []
       parameters:
         - name: asset
@@ -1067,7 +1076,7 @@ paths:
           example: [0.6, 0.4]
       responses:
         '200':
-          description: Basket price
+          description: Basket price or error with reason when price data is missing
           headers:
             Cache-Control:
               $ref: '#/components/headers/CacheControl'
@@ -1077,8 +1086,6 @@ paths:
                 $ref: '#/components/schemas/BasketResponse'
         '400':
           description: Missing assets or mismatched/invalid weights
-        '404':
-          description: No price data for one or more assets
         '429':
           $ref: '#/components/responses/TooManyRequests'
 
