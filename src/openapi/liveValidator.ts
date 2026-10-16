@@ -353,6 +353,9 @@ export async function postOrUpdateGitHubReport(
   reportMarkdown: string,
   options: { repo?: string; token?: string; issueTitle?: string; label?: string } = {}
 ): Promise<{ action: 'appended' | 'created' | 'summary_only'; issueNumber?: number }> {
+  // Precedence: options.token > GITHUB_TOKEN > GH_TOKEN.
+  // In automated GitHub Actions CI runners, GITHUB_TOKEN is injected natively into the runner environment.
+  // GH_TOKEN is supported as a fallback when running under CLI contexts (e.g. GitHub CLI `gh`).
   const token = options.token ?? process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN
   const repo = options.repo ?? process.env.GITHUB_REPOSITORY ?? 'Divinity-Labs/Lens'
   const title = options.issueTitle ?? 'Live Service Spec Drift Report'

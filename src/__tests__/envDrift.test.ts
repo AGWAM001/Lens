@@ -20,6 +20,14 @@ export const UNDOCUMENTED_ENV_ALLOW_LIST: Record<string, string> = {
   CI: 'Standard continuous integration indicator injected by CI runners (e.g. GitHub Actions); not operator-configurable.',
   GITHUB_ACTIONS: 'Platform-injected environment variable present in GitHub Actions runners; not operator-configurable.',
   RENDER: 'Platform-injected environment variable set by the Render hosting platform; not operator-configurable.',
+  GITHUB_TOKEN:
+    'Platform-injected environment variable provided by the GitHub Actions runner; not operator configuration.',
+  GH_TOKEN:
+    'Platform/CLI-injected fallback variable for GitHub API operations; not operator configuration.',
+  GITHUB_REPOSITORY:
+    'Platform-injected environment variable indicating owner/repo in GitHub Actions; not operator configuration.',
+  GITHUB_STEP_SUMMARY:
+    'Platform-injected environment variable path for CI step summary output; not operator configuration.',
 
   // Optional per-network venue overrides where the shared fallback is documented in .env.example
   SOROSWAP_TOKEN_LIST_URL_TESTNET:
