@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify'
+import { ErrorWithProps } from 'mercurius'
 import { price_requests_total } from '../metrics'
 import mercurius, { withFilter, defaultErrorFormatter, type MercuriusContext } from 'mercurius'
 import { GraphQLError, type ExecutionResult } from 'graphql'
@@ -8,6 +9,7 @@ import { getAggregatedPrice } from '../aggregator/vwap'
 import { getBestRoute } from '../aggregator/bestRoute'
 import { pgPool } from '../db'
 import { config, activeNetwork } from '../config'
+import { parseAssetStr } from '../pairsRegistry'
 import { priceEmitter, PRICE_PUBLISHED, type PricePublishedEvent } from '../events'
 
 // Mercurius pubsub topic that carries every new price. A single app-level
@@ -107,6 +109,19 @@ const schema = `
   }
 
   type Query {
+    """
+    Aggregated price for a pair. Three outcomes are kept distinct:
+
+    - Malformed asset input (an asset that is not CODE or CODE:ISSUER) fails
+      with a GraphQL error whose extensions.code is INVALID_INPUT.
+    - A well-formed pair that is not tracked on the active network fails with
+      a GraphQL error whose extensions.code is PAIR_NOT_FOUND.
+    - A tracked pair with no trade data yet is not an error: it resolves to an
+      AggregatedPrice with zeroed figures rather than null or an error.
+
+    The result is only null if the resolver itself cannot produce a payload;
+    clients should branch on extensions.code, not on null.
+    """
     getPrice(assetA: String!, assetB: String!): AggregatedPrice
     getBestRoute(assetA: String!, assetB: String!, amount: Float!): RouteInfo
     getPriceHistory(assetA: String!, assetB: String!, window: String!, limit: Int): [PriceBucket]
@@ -146,8 +161,21 @@ const resolvers = {
   Query: {
     async getPrice(_: unknown, { assetA, assetB }: { assetA: string; assetB: string }) {
       price_requests_total.inc()
+      for (const [field, value] of [['assetA', assetA], ['assetB', assetB]] as const) {
+        if (!parseAssetStr(value)) {
+          throw new ErrorWithProps(
+            `Invalid ${field}: expected CODE or CODE:ISSUER, got "${value}"`,
+            { code: 'INVALID_INPUT', field },
+          )
+        }
+      }
       const pair = findPair(assetA, assetB)
-      if (!pair) return null
+      if (!pair) {
+        throw new ErrorWithProps(
+          `Pair ${assetA}/${assetB} is not tracked on ${activeNetwork}`,
+          { code: 'PAIR_NOT_FOUND' },
+        )
+      }
       const pairKey = pair.pairKey
 
       // These queries carry no network argument, so they resolve against the
