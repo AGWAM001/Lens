@@ -38,7 +38,7 @@ Aggregates price data from Stellar's Classic Order Book (SDEX) and AMM Liquidity
 | POST | `/settle` | Settle an x402 payment (idempotent — retries replay the stored result) |
 | POST | `/webhooks` | Subscribe to a price-threshold webhook |
 | DELETE | `/webhooks/:id` | Delete a webhook subscription |
-| GET/POST | `/graphql` | GraphQL query/mutation endpoint (GraphiQL IDE at `/graphiql`) |
+| GET/POST | `/graphql` | GraphQL query/mutation endpoint (GraphiQL IDE at `/graphiql`, docs: [`docs/graphql.md`](docs/graphql.md)) |
 
 Every non-internal route above has a matching entry in [`openapi.yaml`](openapi.yaml);
 `tests/openapi.test.ts` boots the server and fails if a registered route is
@@ -69,6 +69,8 @@ curl "https://api.example.com/price/XLM/USDC?network=mainnet"
 ### GraphQL
 Available at `/graphql` with GraphiQL IDE at `/graphiql`. Real-time price
 streaming is available via the `priceUpdated` [subscription](#graphql-subscriptions-live-prices).
+
+For complete GraphQL schema documentation, all queries with runnable `curl` examples, WebSocket `graphql-transport-ws` handshake specifications, and an explicit comparison against the REST surface, see [`docs/graphql.md`](docs/graphql.md).
 
 ```graphql
 query {
@@ -196,9 +198,9 @@ const unsubscribe = client.subscribe(
 > is safe *if* you read that field — and misleading if you do not.
 
 > **Note:** the `pair` argument is the canonical `pairKey` (alphabetically
-> sorted, e.g. `XLM:native/USDC:GA5...`). Use the `listPairs` query to discover
+> sorted, e.g. `USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN/XLM`). Use the `listPairs` query to discover
 > the exact keys being indexed. Only the pair you subscribe to is delivered;
-> updates for other pairs are filtered out server-side.
+> updates for other pairs are filtered out server-side. For full protocol handshake details and a raw WebSocket implementation, see [`docs/graphql.md`](docs/graphql.md#live-price-subscriptions-graphql-transport-ws).
 
 ## Usage Examples
 
