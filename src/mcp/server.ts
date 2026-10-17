@@ -1,11 +1,19 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema,
+  ListResourcesRequestSchema,
+  ReadResourceRequestSchema,
+  ErrorCode,
+  McpError,
+} from '@modelcontextprotocol/sdk/types.js';
 import { MCP_ERROR_CODES, McpErrorCode } from './codes.js';
 import { fetchWithTimeout } from '../fetch.js';
 import { config } from '../config.js';
 import { ssrfSafeFetch, SsrfError, type SsrfFetchOptions } from '../net/ssrf.js';
 import { boundSerialized, readBodyCapped, type ResultBudget } from './limits.js';
+import { defaultResources, snapshotResource, type LensResourceDescriptor } from './resources.js';
 
 /** Size bounds applied to every tool result, and the pages asked of a node. */
 export interface McpLimits {
@@ -25,6 +33,13 @@ export interface McpServerConfig {
   bazaarFetch?: Partial<SsrfFetchOptions>;
   /** Overrides the `MCP_*` env bounds — primarily for tests. */
   limits?: Partial<McpLimits>;
+  /**
+   * The read-only resources this server exposes. Defaults to the stable,
+   * cacheable Lens facts derived from config and the on-disk OpenAPI document.
+   * Pass a custom set to serve richer runtime state (a hot pair registry, a live
+   * health check) without giving the stdio server a database dependency.
+   */
+  resources?: LensResourceDescriptor[];
 }
 
 export class BazaarMcpServer {
@@ -32,6 +47,7 @@ export class BazaarMcpServer {
   private fetchWithPayment: typeof fetch;
   private bazaarFetchOptions: SsrfFetchOptions;
   private limits: McpLimits;
+  private resources: LensResourceDescriptor[];
 
   constructor(config_: McpServerConfig) {
     this.fetchWithPayment = config_.fetchWithPayment;
@@ -41,6 +57,7 @@ export class BazaarMcpServer {
       ...config_.bazaarFetch,
     };
     this.limits = { ...config.mcp, ...config_.limits };
+    this.resources = config_.resources ?? defaultResources();
     this.server = new Server(
       {
         name: 'bazaar-mcp-server',
@@ -49,6 +66,7 @@ export class BazaarMcpServer {
       {
         capabilities: {
           tools: {},
+          resources: {},
         },
       }
     );
@@ -107,6 +125,61 @@ export class BazaarMcpServer {
         },
       ],
     }));
+
+    this.server.setRequestHandler(ListResourcesRequestSchema, async () => ({
+      resources: this.resources.map((descriptor) => {
+        const snapshot = snapshotResource(descriptor);
+        return {
+          uri: snapshot.uri,
+          name: snapshot.name,
+          title: snapshot.title,
+          description: snapshot.description,
+          mimeType: snapshot.mimeType,
+          ...(snapshot.lastModified
+            ? { annotations: { lastModified: snapshot.lastModified } }
+            : {}),
+          _meta: {
+            version: snapshot.version,
+            ...(snapshot.lastModified ? { lastModified: snapshot.lastModified } : {}),
+          },
+        };
+      }),
+    }));
+
+    this.server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+      const uri = request.params.uri;
+      const descriptor = this.resources.find((d) => d.uri === uri);
+      if (!descriptor) {
+        throw new McpError(
+          ErrorCode.InvalidParams,
+          `Unknown resource: ${uri}. Call resources/list for the available URIs.`
+        );
+      }
+
+      let snapshot;
+      try {
+        snapshot = snapshotResource(descriptor);
+      } catch (e: any) {
+        throw new McpError(
+          ErrorCode.InternalError,
+          `Failed to read resource ${uri}: ${e?.message ?? String(e)}`
+        );
+      }
+
+      return {
+        contents: [
+          {
+            uri: snapshot.uri,
+            mimeType: snapshot.mimeType,
+            text: snapshot.text,
+            _meta: {
+              version: snapshot.version,
+              ...(snapshot.lastModified ? { lastModified: snapshot.lastModified } : {}),
+            },
+          },
+        ],
+      };
+    });
 
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (request.params.name === 'bazaar_search') {

@@ -74,6 +74,18 @@ async function main() {
   const tools = await client.listTools();
   console.log('[agent] Available tools:', tools.tools.map(t => t.name).join(', '));
 
+  // Lens also advertises read-only resources: stable, cacheable facts about the
+  // service itself. An agent attaches these to its context once instead of
+  // calling a tool every turn.
+  const resources = await client.listResources();
+  console.log('[agent] Available resources:', resources.resources.map(r => r.uri).join(', '));
+  try {
+    const read = await client.readResource({ uri: 'lens://status' });
+    console.log('[agent] lens://status:', read.contents[0].text);
+  } catch (err: any) {
+    console.error('[agent] Resource read error:', err.message);
+  }
+
   const BAZAAR_URL = 'http://localhost:3000';
 
   console.log(`\n[agent] 1. Discovering resources at ${BAZAAR_URL}...`);
