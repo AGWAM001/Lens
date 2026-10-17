@@ -6,7 +6,7 @@ export const MCP_ERROR_CODES = {
   ERR_SERVICE_UNREACHABLE: 'ERR_SERVICE_UNREACHABLE',
   ERR_NO_RESULTS: 'ERR_NO_RESULTS',
   ERR_BAD_REQUEST: 'ERR_BAD_REQUEST',
-  ERR_INTERNAL_FAILURE: 'ERR_INTERNAL_FAILURE'
+  ERR_INTERNAL_FAILURE: 'ERR_INTERNAL_FAILURE',
 } as const;
 
 export type McpErrorCode = keyof typeof MCP_ERROR_CODES;
@@ -16,3 +16,14 @@ export interface McpErrorResponse {
   code: McpErrorCode;
   reason: string;
 }
+
+/**
+ * How a given error was classified. This is exposed so callers (and tests)
+ * can tell structured-signal classification apart from the best-effort text
+ * fallback. The text fallback is the only path that depends on library
+ * message wording, so it is marked explicitly.
+ */
+export type McpErrorClassification =
+  | { method: 'structured'; signal: string }
+  | { method: 'text-fallback'; signal: string }
+  | { method: 'unclassified' };
