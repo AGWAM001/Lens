@@ -280,7 +280,7 @@ paths:
 
   /prices/history:
     get:
-      operationId: getPriceHistory
+      operationId: getPriceSnapshots
       summary: Get historical 1-minute price snapshots
       description: >-
         Returns minute-resolution price snapshots for a pair over [from, to],

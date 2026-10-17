@@ -264,6 +264,43 @@ Or interactively at [http://localhost:3002/graphiql](http://localhost:3002/graph
 
 > **Note:** the current `GATED_ROUTES` map in [`src/middleware/x402.ts`](src/middleware/x402.ts) gates `/price`, `/pools`, and `/candles` only — `/graphql` is not gated. If you intend price data from GraphQL to require the same payment as REST, extend `GATED_ROUTES` (or add a per-resolver guard).
 
+## TypeScript Client
+
+A typed TypeScript client is generated from [`openapi.yaml`](openapi.yaml) with
+[`openapi-typescript`](https://github.com/openapi-ts/openapi-typescript) and
+[`openapi-fetch`](https://github.com/openapi-ts/openapi-typescript/tree/main/packages/openapi-fetch).
+It is committed at [`clients/typescript`](clients/typescript) — **no type is
+hand-written**, so a change to the spec is a change to the client.
+
+```bash
+# Regenerate clients/typescript/src/schema.d.ts from the spec
+npm run client:gen
+
+# Type-check the generated client
+npm run client:typecheck
+```
+
+CI runs `npm run client:gen` and fails if the committed client differs from the
+regenerated output, so the client can never drift from `openapi.yaml`.
+
+```typescript
+import { createLensClient } from "./clients/typescript/src/index.js";
+
+const client = createLensClient({ baseUrl: "http://localhost:3002" });
+
+const { data, error } = await client.GET("/price/{assetA}/{assetB}", {
+  params: { path: { assetA: "XLM", assetB: "USDC" } },
+});
+if (error) throw new Error(`request failed: ${error}`);
+
+// `data` is `AggregatedPrice`, derived from the spec.
+console.log(`XLM/USDC vwap1h: ${data?.vwap1h}`);
+```
+
+A runnable version lives in
+[`clients/typescript/src/example.ts`](clients/typescript/src/example.ts); run it
+against a local server with `npx tsx clients/typescript/src/example.ts`.
+
 ## Documentation
 Detailed system design and data flow diagrams can be found in the [Architecture Overview](docs/architecture.md).
 The API specification is available in [OpenAPI 3.0 format](openapi.yaml) and is auto-published to GitHub Pages at https://miracle656.github.io/lens/openapi.json.
