@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { BazaarMcpServer } from '../src/mcp/server';
-import { CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 
 describe('BazaarMcpServer', () => {
   it('should map signature expiration ledger error to ERR_EXPIRED_AUTHORISATION', async () => {
@@ -119,5 +119,32 @@ describe('BazaarMcpServer', () => {
     expect(response.isError).toBeFalsy();
     const parsedText = JSON.parse(response.content[0].text);
     expect(parsedText.success).toBe(true);
+  });
+
+  it('should return clear tool descriptions with costs, preconditions, and argument formats in listTools', async () => {
+    const server = new BazaarMcpServer({ fetchWithPayment: vi.fn() });
+    let listHandler: any = null;
+    (server as any).server.setRequestHandler = (schema: any, fn: any) => {
+      if (schema === ListToolsRequestSchema) {
+        listHandler = fn;
+      }
+    };
+    (server as any).setupHandlers();
+
+    const result = await listHandler();
+    expect(result.tools).toHaveLength(2);
+
+    const searchTool = result.tools.find((t: any) => t.name === 'bazaar_search');
+    expect(searchTool.description).toContain('Cost: Free');
+    expect(searchTool.description).toContain('When NOT to use:');
+    expect(searchTool.inputSchema.properties.url.description).toContain('Format:');
+
+    const paidTool = result.tools.find((t: any) => t.name === 'paid_call');
+    expect(paidTool.description).toContain('SPENDS REAL CRYPTOGRAPHIC FUNDS');
+    expect(paidTool.description).toContain('$1.00');
+    expect(paidTool.description).toContain('Host Allow-List:');
+    expect(paidTool.description).toContain('When NOT to use:');
+    expect(paidTool.inputSchema.properties.url.description).toContain('Format:');
+    expect(paidTool.inputSchema.properties.method.description).toContain('Format:');
   });
 });

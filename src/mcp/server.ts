@@ -34,17 +34,27 @@ export class BazaarMcpServer {
       tools: [
         {
           name: 'bazaar_search',
-          description: 'Search for resources in a Stellar Bazaar node',
+          description:
+            'Search for discovery resources indexed in a Stellar Bazaar node. ' +
+            'Cost: Free (no payment or tokens required). ' +
+            'Preconditions: Requires a reachable HTTP/HTTPS base URL of a Stellar Bazaar catalog node. ' +
+            'When NOT to use: Do NOT use this tool to execute paid API requests or purchase data (use `paid_call`). ' +
+            'Do NOT use this tool to query live SDEX order books or pricing feeds directly (use Lens REST/GraphQL APIs instead). ' +
+            'Do NOT pass specific API resource paths in the URL argument (provide only the root base URL of the node).',
           inputSchema: {
             type: 'object',
             properties: {
               url: {
                 type: 'string',
-                description: 'The base URL of the Bazaar API',
+                description:
+                  'The base URL of the Stellar Bazaar catalog node (e.g. "https://bazaar.example.com" or "http://localhost:3000"). ' +
+                  'Format: Absolute HTTP or HTTPS URL without subpaths or trailing slashes.',
               },
               query: {
                 type: 'string',
-                description: 'Optional search query',
+                description:
+                  'Optional search term to filter discovery catalog resources by keyword (e.g. "XLM price", "oracle"). ' +
+                  'Format: UTF-8 plain text search string. If omitted, all indexed resources are returned.',
               },
             },
             required: ['url'],
@@ -52,17 +62,29 @@ export class BazaarMcpServer {
         },
         {
           name: 'paid_call',
-          description: 'Make a paid API call to a Bazaar resource, handling the 402 loop automatically.',
+          description:
+            'Make an authenticated paid API call to an x402-enabled Stellar Bazaar resource endpoint. ' +
+            'Cost & Real Funds: SPENDS REAL CRYPTOGRAPHIC FUNDS (XLM/USDC) from the configured on-chain wallet. ' +
+            'Enforces a strict per-call spending limit (default max $1.00 USD equivalent via MCP_MAX_PAYMENT_PRICE). ' +
+            'Preconditions: Requires a funded Stellar signer with sufficient balance and valid trustlines. ' +
+            'Host Allow-List: Payments are restricted strictly to permitted hosts; calls to unlisted hosts will fail. ' +
+            'When NOT to use: Do NOT use this tool for free discovery searches (use `bazaar_search` instead). ' +
+            'Do NOT use if the agent does not intend to spend real funds or if estimated cost exceeds the per-call limit ($1.00). ' +
+            'Do NOT use for unverified, external, or non-Bazaar endpoints.',
           inputSchema: {
             type: 'object',
             properties: {
               url: {
                 type: 'string',
-                description: 'The full URL of the resource to fetch',
+                description:
+                  'The full destination URL of the paid Bazaar resource endpoint (e.g. "https://api.example.com/v1/price"). ' +
+                  'Format: Valid absolute HTTP or HTTPS URL pointing to an allowed payment host.',
               },
               method: {
                 type: 'string',
-                description: 'HTTP method (default: GET)',
+                description:
+                  'HTTP request method for the target endpoint. ' +
+                  'Format: Uppercase HTTP verb string ("GET" or "POST"). Default: "GET".',
               },
             },
             required: ['url'],
