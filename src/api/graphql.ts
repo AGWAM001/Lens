@@ -9,7 +9,7 @@ import { getAggregatedPrice } from '../aggregator/vwap'
 import { getBestRoute } from '../aggregator/bestRoute'
 import { pgPool } from '../db'
 import { config, activeNetwork } from '../config'
-import { parseAssetStr } from '../pairsRegistry'
+import { parseAssetStr, getActivePairs } from '../pairsRegistry'
 import { priceEmitter, PRICE_PUBLISHED, type PricePublishedEvent } from '../events'
 
 // Mercurius pubsub topic that carries every new price. A single app-level
@@ -55,6 +55,20 @@ export function formatGraphQLErrors(execution: ExecutionResult, ctx: MercuriusCo
 }
 
 const schema = `
+  type Asset {
+    code: String!
+    issuer: String
+  }
+
+  type Pair {
+    pairKey: String!
+    network: String!
+    assetA: Asset!
+    assetB: Asset!
+    latestPrice: Float
+    lastUpdated: String
+  }
+
   type AggregatedPrice {
     assetA: String!
     assetB: String!
@@ -125,7 +139,8 @@ const schema = `
     getPrice(assetA: String!, assetB: String!): AggregatedPrice
     getBestRoute(assetA: String!, assetB: String!, amount: Float!): RouteInfo
     getPriceHistory(assetA: String!, assetB: String!, window: String!, limit: Int): [PriceBucket]
-    listPairs: [String]!
+    listPairs: [String]! @deprecated(reason: "Use 'pairs' instead")
+    pairs: [Pair!]!
   }
 
   type Subscription {
@@ -240,7 +255,48 @@ const resolvers = {
     },
 
     listPairs() {
-      return config.pairs.map(p => p.pairKey)
+      return getActivePairs().map(p => p.pairKey)
+    },
+
+    async pairs() {
+      const activePairs = getActivePairs()
+      if (activePairs.length === 0) {
+        return []
+      }
+
+      const result = await pgPool.query(
+        `SELECT p.pair_key, l.price, l.timestamp
+           FROM unnest($2::text[]) AS p(pair_key)
+          CROSS JOIN LATERAL (
+                SELECT price, timestamp
+                  FROM price_points
+                 WHERE network = $1
+                   AND pair_key = p.pair_key
+                 ORDER BY timestamp DESC
+                 LIMIT 1
+               ) l`,
+        [activeNetwork, activePairs.map(p => p.pairKey)]
+      )
+
+      const latestPrices = new Map<string, { price: number; timestamp: Date }>()
+      result.rows.forEach(row => {
+        latestPrices.set(row.pair_key, {
+          price: parseFloat(row.price),
+          timestamp: row.timestamp,
+        })
+      })
+
+      return activePairs.map(p => {
+        const latest = latestPrices.get(p.pairKey)
+        return {
+          pairKey: p.pairKey,
+          network: activeNetwork,
+          assetA: p.assetA,
+          assetB: p.assetB,
+          latestPrice: latest?.price ?? null,
+          lastUpdated: latest?.timestamp ? (latest.timestamp instanceof Date ? latest.timestamp.toISOString() : new Date(latest.timestamp).toISOString()) : null,
+        }
+      })
     },
   },
 
