@@ -47,7 +47,8 @@ describe('fetchAquariusPools', () => {
     await fetchAquariusPools(mockPair as any, 'https://testnet.example.com/pools/')
 
     expect(global.fetch).toHaveBeenCalledWith(
-      expect.stringContaining('https://testnet.example.com/pools/?')
+      expect.stringContaining('https://testnet.example.com/pools/?'),
+      expect.anything()
     )
   })
 
@@ -60,7 +61,8 @@ describe('fetchAquariusPools', () => {
     await fetchAquariusPools(mockPair as any)
 
     expect(global.fetch).toHaveBeenCalledWith(
-      expect.stringContaining(mocks.config.aquarius.apiUrl)
+      expect.stringContaining(mocks.config.aquarius.apiUrl),
+      expect.anything()
     )
   })
 

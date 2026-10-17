@@ -2,6 +2,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { MCP_ERROR_CODES, McpErrorCode } from './codes.js';
+import { fetchWithTimeout } from '../fetch.js';
 
 export interface McpServerConfig {
   fetchWithPayment: typeof fetch;
@@ -80,7 +81,7 @@ export class BazaarMcpServer {
             ? `${url.replace(/\/$/, '')}/discovery/search?q=${encodeURIComponent(query)}`
             : `${url.replace(/\/$/, '')}/discovery/resources`;
             
-          const res = await fetch(endpoint);
+          const res = await fetchWithTimeout(endpoint);
           
           if (!res.ok) {
             return this.createErrorResponse('ERR_SERVICE_UNREACHABLE', `Service returned ${res.status}`);
