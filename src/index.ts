@@ -10,12 +10,65 @@ import { redis } from './redis'
 import { pgPool } from './db'
 import { buildApp } from './app'
 import { fanOutManager } from './ws/fanout'
+import { registry } from './metrics'
 
 import { venueAdapters, startVenueAdapter } from './ingest/venues'
 import { startSnapshotIngester } from './ingesters/snapshot'
 import { createAggregateQueue, startAggregateWorker, scheduleAggregateRefresh } from './jobs/aggregateRefresh'
 import { createSnapshotRetentionQueue, startSnapshotRetentionWorker, scheduleSnapshotRetention, pruneAllNetworks, SNAPSHOT_RETENTION_DAYS } from './jobs/snapshotRetention'
 import { loadPersistedPairs, getActivePairs } from './pairsRegistry'
+import { Counter } from 'prom-client'
+
+// ── Ingester restart bookkeeping ────────────────────────────────────────────
+// A crash-looping ingester used to be invisible: it restarted every ten
+// seconds forever, with no backoff, no metric, and no mention on /status. The
+// state below makes that visible and bounded.
+
+const INGESTER_RESTART_BASE_MS = 10_000
+const INGESTER_RESTART_MAX_MS = 5 * 60_000
+// How long an ingester must run without crashing before its backoff resets,
+// so a nightly blip does not permanently slow restarts.
+const INGESTER_HEALTHY_RESET_MS = 10 * 60_000
+
+export const ingesterRestartCounter = new Counter({
+  name: 'lens_ingester_restarts_total',
+  help: 'Total number of times an ingester has crashed and been restarted',
+  labelNames: ['ingester', 'network'] as const,
+  registers: [registry],
+})
+
+interface IngesterCrashRecord {
+  time: Date
+  message: string
+}
+
+interface IngesterState {
+  consecutiveFailures: number
+  lastCrash: IngesterCrashRecord | null
+}
+
+const ingesterStates = new Map<string, IngesterState>()
+
+const ingesterStateKey = (name: string, network: NetworkName) => `${name}/${network}`
+
+const getIngesterState = (name: string, network: NetworkName): IngesterState => {
+  const key = ingesterStateKey(name, network)
+  let state = ingesterStates.get(key)
+  if (!state) {
+    state = { consecutiveFailures: 0, lastCrash: null }
+    ingesterStates.set(key, state)
+  }
+  return state
+}
+
+export const getIngesterLastCrash = (name: string, network: NetworkName): IngesterCrashRecord | null =>
+  ingesterStates.get(ingesterStateKey(name, network))?.lastCrash ?? null
+
+export const getAllIngesterLastCrashes = (): Array<{ ingester: string; network: NetworkName; lastCrash: IngesterCrashRecord | null }> =>
+  Array.from(ingesterStates.entries()).map(([key, state]) => {
+    const [ingester, network] = key.split('/') as [string, NetworkName]
+    return { ingester, network, lastCrash: state.lastCrash }
+  })
 
 async function main() {
   // ── Ensure DB schema is up-to-date ────────────────────────────────────────
@@ -141,10 +194,37 @@ async function main() {
   // mainnet only restarts that one instance and cannot affect SDEX/AMM or the
   // ingesters running on testnet.
   const restartIngester = (name: string, network: NetworkName, fn: () => Promise<void>) => {
-    fn().catch(err => {
-      console.error(`[lens] ${name}/${network} ingester crashed, restarting in 10s:`, err.message)
-      setTimeout(() => restartIngester(name, network, fn), 10_000)
-    })
+    const state = getIngesterState(name, network)
+    const startedAt = Date.now()
+    fn()
+      .then(() => {
+        // A clean return is not a crash, but it also is not a healthy run —
+        // the ingesters are infinite loops, so returning means it stopped.
+        // Treat it as a failure so the backoff still applies.
+        throw new Error('ingester returned unexpectedly')
+      })
+      .catch(err => {
+        const message = (err as Error)?.message ?? String(err)
+        state.lastCrash = { time: new Date(), message }
+        ingesterRestartCounter.inc({ ingester: name, network })
+
+        // Reset the backoff if the previous run was healthy for long enough.
+        const ranFor = Date.now() - startedAt
+        if (ranFor >= INGESTER_HEALTHY_RESET_MS) {
+          state.consecutiveFailures = 0
+        }
+        state.consecutiveFailures += 1
+
+        const delay = Math.min(
+          INGESTER_RESTART_BASE_MS * 2 ** (state.consecutiveFailures - 1),
+          INGESTER_RESTART_MAX_MS,
+        )
+        console.error(
+          `[lens] ${name}/${network} ingester crashed (failure #${state.consecutiveFailures}), restarting in ${delay}ms:`,
+          message,
+        )
+        setTimeout(() => restartIngester(name, network, fn), delay)
+      })
   }
 
   const enabledNetworks = getEnabledNetworks()
