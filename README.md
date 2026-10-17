@@ -17,6 +17,7 @@ Aggregates price data from Stellar's Classic Order Book (SDEX) and AMM Liquidity
 | GET | `/price/:assetA/:assetB` | Current VWAP, 24h volume, best route |
 | GET | `/price/:assetA/:assetB/route?amount=1000` | Best execution route for a given amount |
 | GET | `/price/:assetA/:assetB/depth?amount=1000` | Simulated order-book depth and execution slippage |
+| GET | `/book/:assetA/:assetB?depth=0.1&step=0.01&network=testnet` | Aggregated SDEX book and synthetic AMM price ladder with cumulative size and venue provenance |
 | GET | `/price/:assetA/:assetB/history?window=1h` | OHLCV history (`1m`, `5m`, `1h`, `24h`) |
 | GET | `/price/twap/:assetA/:assetB?window=60&sampleInterval=60&method=iqr` | Manipulation-resistant time-weighted average price |
 | GET | `/price/vwap/:assetA/:assetB?window=60&source=SDEX&method=iqr` | Volume-weighted average price |
@@ -53,8 +54,8 @@ spec entry declares a `network` parameter answer for the selected network; the
 ones listed below still read a single instance-wide network.
 
 Per-request today: `/price/:assetA/:assetB` (its VWAP, OHLCV, AMM and
-best-route reads), `/price/:assetA/:assetB/route`, `/price/:assetA/:assetB/depth`,
-`/price/:assetA/:assetB/history`, `/prices/history`, `/screener`, `/pools`, `/pairs`, `/spreads/:asset`,
+best-route reads), `/price/:assetA/:assetB/route`, `/price/:assetA/:assetB/depth`, `/book/:assetA/:assetB`,
+`/prices/history`, `/screener`, `/pools`, `/pairs`, `/spreads/:asset`,
 `/volumes/:asset`, `/status`, and the x402 payment `network`/`payTo`. That list
 is the same one `openapi.yaml` declares a `network` parameter on — if they ever
 disagree, the spec is the thing to fix.

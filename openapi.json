@@ -787,6 +787,90 @@
         }
       }
     },
+    "/book/{assetA}/{assetB}": {
+      "get": {
+        "operationId": "getBook",
+        "summary": "Get the aggregated SDEX and AMM price ladder for a pair",
+        "description": "Returns asks and bids as cumulative assetA size at each price. Live SDEX levels are reported as observed; AMM levels are synthetic, fee-adjusted reserve steps. `depth` is a fractional price distance around spot (default 0.1), and `step` is the fraction of each AMM reserve used per synthetic level (default 0.01). Per-venue sample counts, observation times, ages and availability are included.",
+        "parameters": [
+          {
+            "name": "assetA",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Base asset; use XLM for native Stellar or CODE:ISSUER for a token.",
+            "example": "XLM"
+          },
+          {
+            "name": "assetB",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Quote asset; token issuers must be supplied in full.",
+            "example": "USDC:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5"
+          },
+          {
+            "name": "depth",
+            "in": "query",
+            "required": false,
+            "description": "Maximum fractional distance from spot; valid range 0 to 0.5.",
+            "schema": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 0.5,
+              "default": 0.1
+            }
+          },
+          {
+            "name": "step",
+            "in": "query",
+            "required": false,
+            "description": "AMM input-reserve fraction per synthetic rung; valid range 0.001 to 0.1.",
+            "schema": {
+              "type": "number",
+              "minimum": 0.001,
+              "maximum": 0.1,
+              "default": 0.01
+            }
+          },
+          {
+            "$ref": "#/components/parameters/NetworkQuery"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Book levels with per-venue provenance; unavailable venues are identified in the response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid asset, depth, or step parameter"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "503": {
+            "description": "No source could be read; response provenance identifies failed venues.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/price/twap/{assetA}/{assetB}": {
       "get": {
         "operationId": "getTwap",
@@ -2123,6 +2207,192 @@
               "SDEX",
               "BOTH"
             ]
+          }
+        }
+      },
+      "BookLevel": {
+        "type": "object",
+        "required": [
+          "price",
+          "size",
+          "cumulativeSize",
+          "venues",
+          "synthetic",
+          "sampleCount"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "price": {
+            "type": "number",
+            "description": "Quote-asset units per base-asset unit."
+          },
+          "size": {
+            "type": "number",
+            "description": "Base-asset size at this level."
+          },
+          "cumulativeSize": {
+            "type": "number",
+            "description": "Base-asset size from the best price through this level, independently for asks and bids."
+          },
+          "venues": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "SDEX for order-book levels or AMM:{poolId} for each contributing pool."
+          },
+          "synthetic": {
+            "type": "boolean",
+            "description": "True for reserve-derived AMM steps; false for observed SDEX book levels."
+          },
+          "sampleCount": {
+            "type": "integer",
+            "description": "Number of source levels combined at this price."
+          }
+        }
+      },
+      "BookSource": {
+        "type": "object",
+        "required": [
+          "venue",
+          "status",
+          "sampleCount",
+          "observedAt",
+          "dataAgeSeconds",
+          "truncated"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "venue": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "available",
+              "no_liquidity",
+              "unavailable"
+            ]
+          },
+          "sampleCount": {
+            "type": "integer",
+            "description": "SDEX book levels returned, or latest AMM pool snapshots used."
+          },
+          "observedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "dataAgeSeconds": {
+            "type": "number",
+            "nullable": true
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "True when the SDEX response reached the 200-level per-side request limit."
+          }
+        }
+      },
+      "BookResponse": {
+        "type": "object",
+        "required": [
+          "assetA",
+          "assetB",
+          "pairKey",
+          "network",
+          "spotPrice",
+          "spotSource",
+          "depth",
+          "step",
+          "status",
+          "asks",
+          "bids",
+          "provenance"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "assetA": {
+            "type": "string"
+          },
+          "assetB": {
+            "type": "string"
+          },
+          "pairKey": {
+            "type": "string"
+          },
+          "network": {
+            "type": "string",
+            "enum": [
+              "testnet",
+              "mainnet"
+            ]
+          },
+          "spotPrice": {
+            "type": "number",
+            "nullable": true
+          },
+          "spotSource": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "SDEX_MID",
+              "SDEX_ASK",
+              "SDEX_BID",
+              "AMM_RESERVES",
+              null
+            ]
+          },
+          "depth": {
+            "type": "number"
+          },
+          "step": {
+            "type": "number"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "partial",
+              "no_liquidity",
+              "no_levels_in_range",
+              "unavailable"
+            ]
+          },
+          "asks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BookLevel"
+            }
+          },
+          "bids": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BookLevel"
+            }
+          },
+          "provenance": {
+            "type": "object",
+            "required": [
+              "sampledAt",
+              "sampleCount",
+              "venues"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "sampledAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "sampleCount": {
+                "type": "integer"
+              },
+              "venues": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/BookSource"
+                }
+              }
+            }
           }
         }
       },
