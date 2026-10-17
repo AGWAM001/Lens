@@ -1,6 +1,8 @@
 import type { FastifyInstance } from 'fastify'
 import { price_requests_total } from '../metrics'
-import mercurius, { withFilter, type MercuriusContext } from 'mercurius'
+import mercurius, { withFilter, defaultErrorFormatter, type MercuriusContext } from 'mercurius'
+import { GraphQLError, type ExecutionResult } from 'graphql'
+import { randomUUID } from 'node:crypto'
 import { getCachedPrice } from '../redis'
 import { getAggregatedPrice } from '../aggregator/vwap'
 import { getBestRoute } from '../aggregator/bestRoute'
@@ -12,6 +14,43 @@ import { priceEmitter, PRICE_PUBLISHED, type PricePublishedEvent } from '../even
 // listener bridges the ingesters' in-process `priceEmitter` onto this topic;
 // each subscriber then filters it down to the pair they asked for.
 const PRICE_TOPIC = 'PRICE_UPDATED'
+
+// Error codes that resolvers raise on purpose; their messages are written for
+// the caller and are safe to return as-is. Anything else is treated as an
+// unexpected internal failure and masked.
+const USER_FACING_CODES = new Set(['INVALID_INPUT', 'PAIR_NOT_FOUND', 'UNAUTHORIZED'])
+const INTERNAL_ERROR_MESSAGE = 'Internal server error'
+
+function isUserFacing(err: GraphQLError): boolean {
+  // No originalError means graphql-js itself rejected the document (syntax or
+  // validation), which only describes the caller's own query.
+  const original = err.originalError as
+    | { extensions?: { code?: unknown }; errors?: unknown; statusCode?: unknown }
+    | undefined
+  if (!original) return true
+  // Mercurius wraps document validation failures (and other request-level
+  // 4xx faults) in a Fastify error before they reach the formatter.
+  if (Array.isArray(original.errors)) return true
+  if (typeof original.statusCode === 'number' && original.statusCode < 500) return true
+  const code = original.extensions?.code
+  return typeof code === 'string' && USER_FACING_CODES.has(code)
+}
+
+export function formatGraphQLErrors(execution: ExecutionResult, ctx: MercuriusContext) {
+  const requestId = String(ctx?.reply?.request?.id ?? randomUUID())
+  const log = ctx?.reply?.log ?? ctx?.app?.log
+
+  const errors = (execution.errors ?? []).map(err => {
+    if (isUserFacing(err)) return err
+    log?.error({ err: err.originalError ?? err, requestId, path: err.path }, 'unexpected graphql error')
+    return new GraphQLError(INTERNAL_ERROR_MESSAGE, {
+      path: err.path,
+      extensions: { code: 'INTERNAL_SERVER_ERROR', requestId },
+    })
+  })
+
+  return defaultErrorFormatter({ ...execution, errors }, ctx)
+}
 
 const schema = `
   type AggregatedPrice {
@@ -206,6 +245,7 @@ export async function registerGraphQL(app: FastifyInstance) {
     schema,
     resolvers,
     graphiql: true,
+    errorFormatter: formatGraphQLErrors,
     path: '/graphql',
     subscription: {
       // Speak the `graphql-transport-ws` subprotocol (the modern `graphql-ws`
