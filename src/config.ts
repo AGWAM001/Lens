@@ -251,6 +251,9 @@ const globalConfig = {
   cache: {
     priceTtl: parseInt(process.env.PRICE_CACHE_TTL ?? '10', 10),
   },
+  http: {
+    timeoutMs: parseInt(process.env.HTTP_TIMEOUT_MS ?? '10000', 10),
+  },
 } as const
 
 // ── Per-network map ───────────────────────────────────────────────────────────
@@ -330,4 +333,5 @@ export const config = {
   api:     globalConfig.api,
   indexer: globalConfig.indexer,
   cache:   globalConfig.cache,
+  http:    globalConfig.http,
 }
