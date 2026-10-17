@@ -16,7 +16,7 @@ export interface VenuePricePoint {
 }
 
 /**
- * Universal interface for all venue adapters (SDEX, Stellar AMM, Soroswap, Aquarius, etc.).
+ * Universal interface for all venue adapters (SDEX, Stellar AMM, Soroswap, Aquarius, Phoenix, etc.).
  *
  * Covers:
  * - discovery: enumerate active pools, orderbooks, or tokens for a pair
