@@ -52,6 +52,13 @@ export const x402_payments_received_total = new Counter({
   registers: [register]
 })
 
+export const process_crashes_total = new Counter({
+  name: 'process_crashes_total',
+  help: 'Total number of fatal process errors, by event',
+  labelNames: ['event'],
+  registers: [register]
+})
+
 export const last_trade_timestamp = new Gauge({
   name: 'last_trade_timestamp',
   help: 'Unix timestamp of the last trade ingested for a pair',

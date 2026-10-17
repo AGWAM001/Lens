@@ -1,9 +1,11 @@
 import 'dotenv/config'
 import { execSync } from 'child_process'
+import Fastify from 'fastify'
 
 if (!process.env.DIRECT_DATABASE_URL && process.env.DATABASE_URL) {
   process.env.DIRECT_DATABASE_URL = process.env.DATABASE_URL
 }
+import { installProcessErrorHandlers } from './processErrorHandlers'
 import { config, type NetworkName } from './config'
 import { getEnabledNetworks } from './network/enabledNetworks'
 import { redis } from './redis'
@@ -16,6 +18,8 @@ import { startSnapshotIngester } from './ingesters/snapshot'
 import { createAggregateQueue, startAggregateWorker, scheduleAggregateRefresh } from './jobs/aggregateRefresh'
 import { createSnapshotRetentionQueue, startSnapshotRetentionWorker, scheduleSnapshotRetention, pruneAllNetworks, SNAPSHOT_RETENTION_DAYS } from './jobs/snapshotRetention'
 import { loadPersistedPairs, getActivePairs } from './pairsRegistry'
+
+installProcessErrorHandlers(Fastify({ logger: { level: 'error' } }).log)
 
 async function main() {
   // ── Ensure DB schema is up-to-date ────────────────────────────────────────
