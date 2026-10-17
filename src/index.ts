@@ -1,5 +1,6 @@
 import 'dotenv/config'
 import { execSync } from 'child_process'
+
 if (!process.env.DIRECT_DATABASE_URL && process.env.DATABASE_URL) {
   process.env.DIRECT_DATABASE_URL = process.env.DATABASE_URL
 }
@@ -15,8 +16,7 @@ import { startSnapshotIngester } from './ingesters/snapshot'
 import { createAggregateQueue, startAggregateWorker, scheduleAggregateRefresh } from './jobs/aggregateRefresh'
 import { createSnapshotRetentionQueue, startSnapshotRetentionWorker, scheduleSnapshotRetention, pruneAllNetworks, SNAPSHOT_RETENTION_DAYS } from './jobs/snapshotRetention'
 import { loadPersistedPairs, getActivePairs } from './pairsRegistry'
-
-import { ingesterRestarts, recordIngesterCrash } from './metrics'
+import { registry, ingesterRestarts } from './metrics'
 
 async function main() {
   // ── Ensure DB schema is up-to-date ────────────────────────────────────────
@@ -142,37 +142,77 @@ async function main() {
   // mainnet only restarts that one instance and cannot affect SDEX/AMM or the
   // ingesters running on testnet.
   //
-  // A crash-looping ingester must not be invisible: restarts are counted in a
-  // Prometheus counter, the last crash is recorded for /status, and the delay
-  // grows exponentially (capped) so a permanently broken venue stops hammering
-  // its upstream every ten seconds. The backoff resets once an ingester has
-  // stayed up for HEALTHY_RUN_MS, so a nightly blip does not permanently slow
-  // restarts.
-  const BASE_RESTART_DELAY_MS = 10_000
-  const MAX_RESTART_DELAY_MS = 5 * 60_000
-  const HEALTHY_RUN_MS = 5 * 60_000
+  // A crash-looping ingester must not be invisible: restarts are counted, the
+  // delay grows exponentially up to a ceiling, and the last crash is recorded
+  // so /status can surface it. A sustained healthy run resets the backoff so a
+  // one-off blip does not permanently slow restarts.
+  const INGESTER_RESTART_BASE_MS = 10_000
+  const INGESTER_RESTART_MAX_MS = 5 * 60_000
+  const INGESTER_HEALTHY_RESET_MS = 5 * 60_000
 
-  const restartIngester = (
-    name: string,
-    network: NetworkName,
-    fn: () => Promise<void>,
-    attempt = 0,
-  ) => {
-    const startedAt = Date.now()
-    fn().catch(err => {
-      const message = err instanceof Error ? err.message : String(err)
-      const delay = Math.min(BASE_RESTART_DELAY_MS * 2 ** attempt, MAX_RESTART_DELAY_MS)
-      const nextAttempt = Date.now() - startedAt >= HEALTHY_RUN_MS ? 0 : attempt + 1
+  type IngesterKey = string
+  const ingesterKey = (name: string, network: NetworkName): IngesterKey => `${name}/${network}`
 
-      ingesterRestarts.inc({ ingester: name, network })
-      recordIngesterCrash(name, network, message)
+  interface IngesterState {
+    failures: number
+    lastCrashAt: Date | null
+    lastCrashMessage: string | null
+  }
+  const ingesterState = new Map<IngesterKey, IngesterState>()
 
-      console.error(
-        `[lens] ${name}/${network} ingester crashed, restarting in ${Math.round(delay / 1000)}s:`,
-        message,
-      )
-      setTimeout(() => restartIngester(name, network, fn, nextAttempt), delay)
-    })
+  const getIngesterState = (name: string, network: NetworkName): IngesterState => {
+    const key = ingesterKey(name, network)
+    let state = ingesterState.get(key)
+    if (!state) {
+      state = { failures: 0, lastCrashAt: null, lastCrashMessage: null }
+      ingesterState.set(key, state)
+    }
+    return state
+  }
+
+  // Exposed so /status (src/api/rest.ts) can surface the last crash per
+  // (ingester, network) without reaching into the private state map.
+  ;(globalThis as { __lensIngesterState?: Map<IngesterKey, IngesterState> }).__lensIngesterState = ingesterState
+
+  const restartIngester = (name: string, network: NetworkName, fn: () => Promise<void>) => {
+    const state = getIngesterState(name, network)
+    let healthyTimer: NodeJS.Timeout | undefined
+    let runId = 0
+
+    const run = () => {
+      fn().then(() => {
+        // fn() resolving means the ingester ran to completion. Treat a run
+        // that lasted at least INGESTER_HEALTHY_RESET_MS as healthy and reset
+        // the backoff; a shorter run keeps the accumulated failure count.
+        if (healthyTimer) clearTimeout(healthyTimer)
+        state.failures = 0
+      }).catch(err => {
+        if (healthyTimer) clearTimeout(healthyTimer)
+        state.failures += 1
+        state.lastCrashAt = new Date()
+        state.lastCrashMessage = (err as Error).message
+        ingesterRestarts.inc({ ingester: name, network })
+
+        const delay = Math.min(
+          INGESTER_RESTART_BASE_MS * 2 ** (state.failures - 1),
+          INGESTER_RESTART_MAX_MS,
+        )
+        console.error(
+          `[lens] ${name}/${network} ingester crashed (failure #${state.failures}), restarting in ${Math.round(delay / 1000)}s:`,
+          (err as Error).message,
+        )
+        setTimeout(run, delay)
+      })
+
+      // If the ingester stays up past the healthy threshold, reset the
+      // backoff even though fn() has not resolved (infinite loops never do).
+      healthyTimer = setTimeout(() => {
+        state.failures = 0
+      }, INGESTER_HEALTHY_RESET_MS)
+      healthyTimer.unref()
+    }
+
+    run()
   }
 
   const enabledNetworks = getEnabledNetworks()
