@@ -247,7 +247,13 @@ export async function ingestPool(
           counterVolume: 0,
           ledger: 0,
           timestamp: new Date(),
-          eventId: `soroswap-${poolEntry.poolAddress}-${Date.now()}`,
+          // #237: Soroswap snapshots are read via RPC simulation, so there is
+          // no trade id to key on. The reserves ARE the pool state — identical
+          // reserves yield the identical price, so deriving the id from them
+          // makes a replayed batch (or an overlapping second instance reading
+          // the same state) collide on the unique index instead of inserting
+          // a duplicate. Must never be Date.now()/random.
+          eventId: `soroswap-${poolEntry.poolAddress}-${reserveA}-${reserveB}`,
         },
       ],
       network
@@ -391,7 +397,9 @@ export const soroswapAdapter: VenueAdapter<PoolEntry, [bigint, bigint]> = {
         counterVolume: 0,
         ledger: 0,
         timestamp: new Date(),
-        eventId: `soroswap-${target.poolAddress}-${Date.now()}`,
+        // Same content-derived key as ingestPool above (#237): reserves, not
+        // the clock, so the adapter path and the legacy path agree on identity.
+        eventId: `soroswap-${target.poolAddress}-${reserveA}-${reserveB}`,
       },
     ]
   },
