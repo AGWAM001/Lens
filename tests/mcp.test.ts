@@ -135,6 +135,55 @@ describe('BazaarMcpServer', () => {
     const parsedText = JSON.parse(response.content[0].text);
     expect(parsedText.success).toBe(true);
   });
+
+  it('should return structured ERR_UNKNOWN_TOOL error with valid tool names when unknown tool is called', async () => {
+    const server = new BazaarMcpServer({ fetchWithPayment: vi.fn() });
+    let handler: any = null;
+    (server as any).server.setRequestHandler = (schema: any, fn: any) => {
+      if (schema === CallToolRequestSchema) {
+        handler = fn;
+      }
+    };
+    (server as any).setupHandlers();
+
+    const response = await handler({
+      params: {
+        name: 'non_existent_tool_123',
+        arguments: {}
+      }
+    });
+
+    expect(response.isError).toBe(true);
+    const content = JSON.parse(response.content[0].text);
+    expect(content.code).toBe('ERR_UNKNOWN_TOOL');
+    expect(content.reason).toContain("Unknown tool 'non_existent_tool_123'");
+    expect(content.reason).toContain('bazaar_search, paid_call');
+  });
+
+  it('should bound and sanitize unknown tool name in error response', async () => {
+    const server = new BazaarMcpServer({ fetchWithPayment: vi.fn() });
+    let handler: any = null;
+    (server as any).server.setRequestHandler = (schema: any, fn: any) => {
+      if (schema === CallToolRequestSchema) {
+        handler = fn;
+      }
+    };
+    (server as any).setupHandlers();
+
+    const overlyLongName = 'a'.repeat(200);
+    const response = await handler({
+      params: {
+        name: overlyLongName,
+        arguments: {}
+      }
+    });
+
+    expect(response.isError).toBe(true);
+    const content = JSON.parse(response.content[0].text);
+    expect(content.code).toBe('ERR_UNKNOWN_TOOL');
+    expect(content.reason).toContain('a'.repeat(64));
+    expect(content.reason).not.toContain('a'.repeat(65));
+  });
 });
 
 describe('BazaarMcpServer bazaar_search SSRF guard (#407)', () => {
