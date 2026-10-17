@@ -251,9 +251,8 @@ const globalConfig = {
   cache: {
     priceTtl: parseInt(process.env.PRICE_CACHE_TTL ?? '10', 10),
   },
-  ws: {
-    pingIntervalMs: parseInt(process.env.WS_PING_INTERVAL_MS ?? '30000', 10),
-    maxMissedPings: parseInt(process.env.WS_MAX_MISSED_PINGS ?? '2', 10),
+  http: {
+    timeoutMs: parseInt(process.env.HTTP_TIMEOUT_MS ?? '10000', 10),
   },
 } as const
 
@@ -334,5 +333,5 @@ export const config = {
   api:     globalConfig.api,
   indexer: globalConfig.indexer,
   cache:   globalConfig.cache,
-  ws:      globalConfig.ws,
+  http:    globalConfig.http,
 }

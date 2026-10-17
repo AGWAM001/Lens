@@ -17,6 +17,7 @@ import {
   writeVenuePricePoints,
   startVenueAdapter,
 } from './runner'
+import { fetchWithTimeout } from '../../fetch'
 
 export function _resetLastPrice(): void {
   resetLastPrice('Aquarius')
@@ -52,7 +53,7 @@ export async function fetchAquariusPools(
     params.append('assets[]', assetAStr)
     params.append('assets[]', assetBStr)
 
-    const res = await fetch(`${apiUrl}?${params.toString()}`)
+    const res = await fetchWithTimeout(`${apiUrl}?${params.toString()}`)
     if (!res.ok) return []
     const data = (await res.json()) as AquariusListResponse
     return data.results ?? []

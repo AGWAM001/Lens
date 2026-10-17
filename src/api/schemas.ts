@@ -223,6 +223,69 @@ export const depthResponseSchema = {
   },
 } as const
 
+/** GET /book/:assetA/:assetB */
+export const bookResponseSchema = {
+  type: 'object',
+  required: [
+    'assetA', 'assetB', 'pairKey', 'network', 'spotPrice', 'spotSource',
+    'depth', 'step', 'status', 'asks', 'bids', 'provenance',
+  ],
+  additionalProperties: false,
+  properties: {
+    assetA: { type: 'string' },
+    assetB: { type: 'string' },
+    pairKey: { type: 'string' },
+    network: { type: 'string', enum: ['testnet', 'mainnet'] },
+    spotPrice: { type: ['number', 'null'] },
+    spotSource: { type: ['string', 'null'], enum: ['SDEX_MID', 'SDEX_ASK', 'SDEX_BID', 'AMM_RESERVES', null] },
+    depth: { type: 'number' },
+    step: { type: 'number' },
+    status: { type: 'string', enum: ['ok', 'partial', 'no_liquidity', 'no_levels_in_range', 'unavailable'] },
+    asks: { type: 'array', items: { $ref: '#/definitions/BookLevel' } },
+    bids: { type: 'array', items: { $ref: '#/definitions/BookLevel' } },
+    provenance: {
+      type: 'object',
+      required: ['sampledAt', 'sampleCount', 'venues'],
+      additionalProperties: false,
+      properties: {
+        sampledAt: { type: 'string' },
+        sampleCount: { type: 'integer' },
+        venues: {
+          type: 'array',
+          items: {
+            type: 'object',
+            required: ['venue', 'status', 'sampleCount', 'observedAt', 'dataAgeSeconds', 'truncated'],
+            additionalProperties: false,
+            properties: {
+              venue: { type: 'string' },
+              status: { type: 'string', enum: ['available', 'no_liquidity', 'unavailable'] },
+              sampleCount: { type: 'integer' },
+              observedAt: { type: ['string', 'null'] },
+              dataAgeSeconds: { type: ['number', 'null'] },
+              truncated: { type: 'boolean' },
+            },
+          },
+        },
+      },
+    },
+  },
+  definitions: {
+    BookLevel: {
+      type: 'object',
+      required: ['price', 'size', 'cumulativeSize', 'venues', 'synthetic', 'sampleCount'],
+      additionalProperties: false,
+      properties: {
+        price: { type: 'number' },
+        size: { type: 'number' },
+        cumulativeSize: { type: 'number' },
+        venues: { type: 'array', items: { type: 'string' } },
+        synthetic: { type: 'boolean' },
+        sampleCount: { type: 'integer' },
+      },
+    },
+  },
+} as const
+
 /** GET /benchmark/:asset */
 export const benchmarkResponseSchema = {
   type: 'object',

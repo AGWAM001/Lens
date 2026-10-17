@@ -12,6 +12,7 @@ import {
   setLastPrice,
   startVenueAdapter,
 } from './runner'
+import { fetchWithTimeout } from '../../fetch'
 
 export function _resetLastPrice(): void {
   resetLastPrice('AMM')
@@ -35,7 +36,7 @@ export async function fetchPools(pair: WatchedPair, network: NetworkName = activ
     params.append('reserves[]', assetBStr)
     params.set('limit', '10')
 
-    const response = await fetch(
+    const response = await fetchWithTimeout(
       `${getNetworkConfig(network).horizon.url}/liquidity_pools?${params.toString()}`
     )
     const data = (await response.json()) as any
@@ -136,7 +137,7 @@ export async function ingestPoolTrades(
   const cursor = state.cursor ?? '0'
 
   try {
-    const response = await fetch(
+    const response = await fetchWithTimeout(
       `${getNetworkConfig(network).horizon.url}/liquidity_pools/${pool.id}/trades?cursor=${cursor}&limit=${config.indexer.ammPageSize}&order=asc`
     )
     const data = (await response.json()) as any
