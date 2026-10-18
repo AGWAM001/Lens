@@ -8,6 +8,27 @@
 
 import { StrKey } from '@stellar/stellar-sdk'
 
+// config.ts logs invalid contract ids through the structured logger; capture
+// those calls so the tests can assert on the warning without a live sink.
+const { configLogger } = vi.hoisted(() => ({
+  configLogger: {
+    trace: vi.fn(),
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    fatal: vi.fn(),
+    child: vi.fn(),
+  },
+}))
+
+vi.mock('../logger', () => ({
+  createLogger: () => configLogger,
+  logger: configLogger,
+  loggerOptions: () => ({}),
+  createDestination: () => ({ write: () => {} }),
+}))
+
 const ENV_KEYS = [
   'STELLAR_NETWORK',
   'SOROSWAP_ENABLED_TESTNET',
@@ -163,27 +184,31 @@ describe('per-network venue config', () => {
   })
 
   it('rejects the former 55-character mainnet Reflector default, disabling the oracle and naming the env var', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    configLogger.warn.mockClear()
     process.env.REFLECTOR_CONTRACT_ID_MAINNET = OLD_REFLECTOR_LITERAL
 
     const { getNetworkConfig } = await loadConfig()
 
     expect(OLD_REFLECTOR_LITERAL).toHaveLength(55)
     expect(getNetworkConfig('mainnet').oracle.enabled).toBe(false)
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('REFLECTOR_CONTRACT_ID_MAINNET'))
-    warn.mockRestore()
+    expect(configLogger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ envVar: 'REFLECTOR_CONTRACT_ID_MAINNET', value: OLD_REFLECTOR_LITERAL }),
+      expect.stringContaining('invalid Soroban contract id')
+    )
   })
 
   it('rejects the former 55-character testnet Soroswap default, disabling Soroswap and naming the env var', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    configLogger.warn.mockClear()
     process.env.SOROSWAP_FACTORY_ADDRESS_TESTNET = OLD_SOROSWAP_TESTNET_LITERAL
 
     const { getNetworkConfig } = await loadConfig()
 
     expect(OLD_SOROSWAP_TESTNET_LITERAL).toHaveLength(55)
     expect(getNetworkConfig('testnet').soroswap.enabled).toBe(false)
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('SOROSWAP_FACTORY_ADDRESS_TESTNET'))
-    warn.mockRestore()
+    expect(configLogger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ envVar: 'SOROSWAP_FACTORY_ADDRESS_TESTNET' }),
+      expect.stringContaining('invalid Soroban contract id')
+    )
   })
 
   it('accepts a valid 56-character Soroswap factory id', async () => {
