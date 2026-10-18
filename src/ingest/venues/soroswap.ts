@@ -329,12 +329,10 @@ export async function ingestPool(
     }
 
     if (!isPricePlausible(spotPrice)) {
-      const msg = `[soroswap] Derived price ${spotPrice} for ${pair.pairKey} (${poolEntry.poolAddress}) outside plausible range [${config.plausibility.minPrice}, ${config.plausibility.maxPrice}] — rejecting`
       log.warn(
         { pair: pair.pairKey, pool: poolEntry.poolAddress, spotPrice },
-        msg
+        `Derived price ${spotPrice} for ${pair.pairKey} (${poolEntry.poolAddress}) outside plausible range [${config.plausibility.minPrice}, ${config.plausibility.maxPrice}] — rejecting`
       )
-      console.warn(msg)
       price_rejected_total.inc({
         pair: pair.pairKey,
         network,

@@ -13,6 +13,19 @@ vi.mock('../db', () => ({
   upsertPricePoints: vi.fn().mockResolvedValue(undefined),
 }))
 
+const mockLogger = vi.hoisted(() => ({
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+  debug: vi.fn(),
+  child: vi.fn(),
+}))
+
+vi.mock('../logger', () => ({
+  createLogger: () => mockLogger,
+  logger: mockLogger,
+}))
+
 vi.mock('../webhookDispatcher', () => ({
   dispatchPriceUpdate: vi.fn().mockResolvedValue(undefined),
 }))
@@ -236,20 +249,18 @@ describe('ingestPool', () => {
   it('rejects derived price outside plausible sanity range and increments metric (#227)', async () => {
     // Extremely small price (1n / 100_000_000_000_000n = 1e-14 < 1e-10 min)
     const mockFetch = vi.fn().mockResolvedValue([1n, 100_000_000_000_000n])
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
     await ingestPool(mockPoolEntry, mockPair as any, mockFetch, 'testnet')
 
     expect(upsertPricePoints).not.toHaveBeenCalled()
-    expect(warnSpy).toHaveBeenCalledWith(
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ spotPrice: expect.any(Number) }),
       expect.stringContaining('outside plausible range')
     )
 
     const metric = await price_rejected_total.get()
     const rejectedEntry = metric.values.find((v) => v.labels.pair === mockPair.pairKey)
     expect(rejectedEntry?.value).toBeGreaterThanOrEqual(1)
-
-    warnSpy.mockRestore()
   })
 })
 
