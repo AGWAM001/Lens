@@ -8,10 +8,13 @@ vi.mock('../db', () => ({
   pgPool: { query: mockQuery },
 }))
 
+import { activeNetwork } from '../config'
+import { registerNetworkSelector } from '../middleware/network'
 import { registerHistoryRoutes, HISTORY_INTERVAL_SECONDS, MAX_HISTORY_POINTS } from '../api/history'
 
 async function buildApp() {
   const app = Fastify({ logger: false })
+  await app.register(registerNetworkSelector)
   await registerHistoryRoutes(app)
   await app.ready()
   return app
@@ -160,5 +163,64 @@ describe('GET /prices/history', () => {
   it('MAX_HISTORY_POINTS guard math is interval-aware', () => {
     // Sanity: the cap is points, not seconds — coarser intervals allow longer spans.
     expect(MAX_HISTORY_POINTS).toBeGreaterThan(0)
+  })
+})
+
+describe('GET /prices/history network selection', () => {
+  beforeEach(() => {
+    mockQuery.mockReset()
+  })
+
+  // One table, two networks: the mock filters on the network bind ($5) the way
+  // the WHERE clause would, so a handler binding the wrong value gets wrong rows.
+  const table = [
+    { network: 'testnet', price: '0.10' },
+    { network: 'mainnet', price: '0.90' },
+  ]
+  function useTable() {
+    mockQuery.mockImplementation(async (_sql: string, params: unknown[]) => ({
+      rows: table
+        .filter(r => r.network === params[4])
+        .map(r => ({ bucket: new Date('2025-01-01T00:00:00Z'), price: r.price, volume: '1' })),
+    }))
+  }
+
+  it('returns different rows for ?network=mainnet and ?network=testnet and echoes the network', async () => {
+    const app = await buildApp()
+    useTable()
+
+    const main = await app.inject({ method: 'GET', url: '/prices/history?pair=XLM/USDC&network=mainnet' })
+    const test = await app.inject({ method: 'GET', url: '/prices/history?pair=XLM/USDC&network=testnet' })
+
+    expect(main.statusCode).toBe(200)
+    expect(main.json().network).toBe('mainnet')
+    expect(main.json().points[0].price).toBe(0.9)
+    expect(test.json().network).toBe('testnet')
+    expect(test.json().points[0].price).toBe(0.1)
+  })
+
+  it('honors the x-network header', async () => {
+    const app = await buildApp()
+    useTable()
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/prices/history?pair=XLM/USDC',
+      headers: { 'x-network': 'mainnet' },
+    })
+
+    expect(res.json().network).toBe('mainnet')
+    expect(mockQuery.mock.calls[0][1][4]).toBe('mainnet')
+  })
+
+  it('defaults to the active network and rejects an unknown one', async () => {
+    const app = await buildApp()
+    useTable()
+
+    const def = await app.inject({ method: 'GET', url: '/prices/history?pair=XLM/USDC' })
+    expect(def.json().network).toBe(activeNetwork)
+
+    const bad = await app.inject({ method: 'GET', url: '/prices/history?pair=XLM/USDC&network=nope' })
+    expect(bad.statusCode).toBe(400)
   })
 })

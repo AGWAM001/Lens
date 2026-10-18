@@ -188,7 +188,11 @@ describe('per-key rate quotas', () => {
 describe('admin endpoints', () => {
   const ORIGINAL = process.env.ADMIN_TOKEN
   beforeEach(() => { process.env.ADMIN_TOKEN = 'admin-secret' })
-  afterEach(() => { process.env.ADMIN_TOKEN = ORIGINAL })
+  afterEach(() => {
+    // Node stringifies undefined → "undefined"; delete to truly clear.
+    if (ORIGINAL === undefined) delete process.env.ADMIN_TOKEN
+    else process.env.ADMIN_TOKEN = ORIGINAL
+  })
 
   async function buildAdminApp() {
     const app = Fastify()

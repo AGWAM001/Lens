@@ -52,10 +52,20 @@ async function main() {
 
   console.log('[agent] Starting MCP server child process...');
   
-  // Start the MCP server as a child process
+  // Start the MCP server as a child process.
+  // paid_call spends real USDC, so the server only pays origins the operator
+  // allow-lists (MCP_PAID_CALL_ALLOWED_HOSTS, empty by default). This demo
+  // spends against the mock server above, so it names that origin and nothing
+  // else. A real deployment lists its own endpoints and leaves the rest refused.
+  const demoAllowlist = 'localhost:3000';
+
   const transport = new StdioClientTransport({
     command: process.platform === 'win32' ? 'npx.cmd' : 'npx',
     args: ['tsx', path.join(__dirname, 'run.ts')],
+    env: {
+      ...process.env as Record<string, string>,
+      MCP_PAID_CALL_ALLOWED_HOSTS: process.env.MCP_PAID_CALL_ALLOWED_HOSTS || demoAllowlist,
+    },
   });
 
   const client = new Client(

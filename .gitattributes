@@ -1,0 +1,9 @@
+# Normalise line endings in text artifacts so tooling that byte-compares them
+# does not depend on a contributor's git config. In particular,
+# tests/openapi.test.ts compares openapi.json byte-for-byte, which fails on
+# Windows with core.autocrlf=true unless the checkout is forced to LF.
+*.json text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+# tests/historical.golden.test.ts byte-compares these against the CSV export.
+*.csv text eol=lf

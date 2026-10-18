@@ -7,23 +7,36 @@ register.setDefaultLabels({
   app: 'lens'
 })
 
+// Ingest metrics are network-scoped. One ingester set runs per enabled network
+// against one shared Registry, so without `network` the testnet loop and the
+// mainnet loop write to the SAME series for the same pair — the gauge case
+// being worse than a merge, because `last_trade_timestamp.set()` is a
+// last-writer-wins overwrite rather than an additive increment. That made the
+// only staleness signal Lens exports unusable on a dual-network deployment.
+//
+// `network` is deliberately the ONLY added label. See docs/ingest-metrics.md:
+// series count is `pairs x networks`, which is bounded by configuration.
+// Do NOT add `issuer` or a raw pool id here — the cardinality notes in that
+// doc explain why those labels do not belong on these metrics.
+
 export const trades_ingested_total = new Counter({
   name: 'trades_ingested_total',
   help: 'Total number of trades ingested from SDEX/AMM',
-  labelNames: ['pair'],
+  labelNames: ['pair', 'network'],
   registers: [register]
 })
 
 export const amm_snapshots_total = new Counter({
   name: 'amm_snapshots_total',
   help: 'Total number of AMM pool snapshots captured',
-  labelNames: ['pool'],
+  labelNames: ['pool', 'network'],
   registers: [register]
 })
 
 export const price_snapshots_total = new Counter({
   name: 'price_snapshots_total',
   help: 'Total number of 1-minute price snapshots appended',
+  labelNames: ['network'],
   registers: [register]
 })
 
@@ -42,7 +55,7 @@ export const x402_payments_received_total = new Counter({
 export const last_trade_timestamp = new Gauge({
   name: 'last_trade_timestamp',
   help: 'Unix timestamp of the last trade ingested for a pair',
-  labelNames: ['pair'],
+  labelNames: ['pair', 'network'],
   registers: [register]
 })
 

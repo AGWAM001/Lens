@@ -30,6 +30,10 @@ function verifySignature(payload: string, secret: string, signature: string): bo
 
 // ── Route Tests ───────────────────────────────────────────────────────────────
 describe('POST /webhooks', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
   it('registers a webhook and returns id + secret', async () => {
     const app = await buildApp()
     const fakeWebhook = { id: 'abc-123', secret: 'deadbeef'.repeat(8) }
@@ -92,6 +96,47 @@ describe('POST /webhooks', () => {
       },
     })
     expect(res.statusCode).toBe(400)
+  })
+
+  it('registers a webhook with explicit network', async () => {
+    const app = await buildApp()
+    const fakeWebhook = { id: 'abc-mainnet', secret: 'beefdead'.repeat(8) }
+    vi.mocked(prisma.webhook.create).mockResolvedValue(fakeWebhook as any)
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/webhooks',
+      payload: {
+        url: 'https://example.com/mainnet-hook',
+        assetA: 'XLM',
+        assetB: 'USD',
+        threshold: 0.20,
+        direction: 'above',
+        network: 'mainnet',
+      },
+    })
+
+    expect(res.statusCode).toBe(201)
+    const callArg = vi.mocked(prisma.webhook.create).mock.calls[0][0].data
+    expect(callArg.network).toBe('mainnet')
+  })
+
+  it('rejects invalid network', async () => {
+    const app = await buildApp()
+    const res = await app.inject({
+      method: 'POST',
+      url: '/webhooks',
+      payload: {
+        url: 'https://example.com/hook',
+        assetA: 'XLM',
+        assetB: 'USD',
+        threshold: 0.10,
+        direction: 'above',
+        network: 'invalidnet',
+      },
+    })
+    expect(res.statusCode).toBe(400)
+    expect(res.json().error).toMatch(/Invalid network/)
   })
 })
 
@@ -218,5 +263,44 @@ describe('dispatchPriceUpdate', () => {
 
     // Should NOT have retried — only 1 call
     expect(global.fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('filters webhooks by the provided network and ignores other networks', async () => {
+    vi.mocked(prisma.webhook.findMany).mockResolvedValue([])
+
+    await dispatchPriceUpdate({
+      assetA: 'XLM',
+      assetB: 'USD',
+      previousPrice: 0.09,
+      currentPrice: 0.11,
+      network: 'mainnet',
+    })
+
+    expect(prisma.webhook.findMany).toHaveBeenCalledWith({
+      where: {
+        network: 'mainnet',
+        assetA: 'XLM',
+        assetB: 'USD',
+      },
+    })
+  })
+
+  it('falls back to activeNetwork when network is omitted', async () => {
+    vi.mocked(prisma.webhook.findMany).mockResolvedValue([])
+
+    await dispatchPriceUpdate({
+      assetA: 'XLM',
+      assetB: 'USD',
+      previousPrice: 0.09,
+      currentPrice: 0.11,
+    })
+
+    expect(prisma.webhook.findMany).toHaveBeenCalledWith({
+      where: {
+        network: 'testnet',
+        assetA: 'XLM',
+        assetB: 'USD',
+      },
+    })
   })
 })

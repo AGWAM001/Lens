@@ -15,14 +15,20 @@ Lens is a unified Stellar price oracle aggregating SDEX and AMM prices, gated be
 lens/
 ├── src/
 │   ├── index.ts            # Fastify entry point
-│   ├── db.ts               # Postgres / Supabase (Prisma)
-│   ├── routes/             # REST + GraphQL handlers
-│   ├── ingest/             # SDEX + AMM ingesters
-│   ├── pricing/            # Best-route calculation
-│   └── x402/               # Payment middleware
+│   ├── config.ts           # Per-network config (STELLAR_NETWORK + overrides)
+│   ├── db.ts               # Postgres pool / Prisma client
+│   ├── api/                # REST + GraphQL route implementations
+│   ├── routes/             # Additional REST route modules
+│   ├── ingesters/          # SDEX + AMM ingester loops
+│   ├── ingest/             # Venue/oracle adapters (Horizon AMM, Aquarius, Reflector)
+│   ├── aggregator/         # VWAP + best-route calculation
+│   ├── pricing/            # TWAP, depth and aggregate helpers
+│   ├── middleware/         # Network selector, x402, auth, metrics
+│   └── x402/               # x402 facilitator client + metering
 ├── prisma/
-│   └── schema.prisma
-└── sql/                    # Raw SQL helpers (OHLCV, etc.)
+│   └── schema.prisma       # Network-discriminated data models
+├── tests/                  # Integration, load and property suites
+└── docs/                   # Architecture, ops and design docs
 ```
 
 ## Development setup
@@ -44,13 +50,16 @@ npx prisma db push
 npm run dev
 ```
 
-API runs on `http://localhost:3000`.
+API runs on `http://localhost:3002`.
 
 ### Environment variables
 - `DATABASE_URL` — Postgres connection string (Supabase or local)
 - `REDIS_URL` — optional, enables aggregate refresh worker
 - `WATCHED_PAIRS` — comma-separated `CODE:ISSUER/CODE:ISSUER` (e.g. `XLM:native/USDC:GBBD...`)
-- `NETWORK` — `testnet` or `mainnet`
+- `STELLAR_NETWORK` — this instance's default network, `testnet` or `mainnet` (default: `testnet`)
+- `ENABLED_NETWORKS` — optional, comma-separated networks to ingest (`testnet,mainnet`); falls back to `STELLAR_NETWORK`
+
+Per-network overrides use a `_TESTNET` / `_MAINNET` suffix (e.g. `HORIZON_URL_MAINNET`, `WATCHED_PAIRS_TESTNET`); see `.env.example` for the full list.
 
 ## Commit conventions
 
@@ -68,7 +77,18 @@ npm test --if-present
 
 ## Testing
 
-Tests are being set up — see [`area:tests`](https://github.com/Miracle656/Lens/labels/area%3Atests). Candidates: route handlers, price math, x402 flow, ingester bisection, DB queries.
+Tests run under [Vitest](https://vitest.dev):
+
+```bash
+npm test                          # full suite (vitest run)
+npx vitest run path/to/file.test.ts   # a single file
+```
+
+The suite is ~53 files / ~520 tests covering route handlers, price math
+(including property-based tests with [fast-check](https://fast-check.dev)),
+the x402 flow, per-network config and ingesters, HTTP metrics, and integration
+scenarios under `tests/`. Open test work is tracked under
+[`area:tests`](https://github.com/Miracle656/Lens/labels/area%3Atests).
 
 ## Releases
 

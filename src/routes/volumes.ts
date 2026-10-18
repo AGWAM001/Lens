@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify'
 import { pgPool } from '../db'
+import { activeNetwork, type NetworkName } from '../config'
 
 // Supported windows → lookback in hours.
 const WINDOW_HOURS = {
@@ -15,18 +16,22 @@ const WINDOWS = Object.keys(WINDOW_HOURS) as VolumeWindow[]
 /**
  * Register the aggregated cross-venue volume endpoint.
  *
- * GET /volumes/:asset?window=24h|7d|30d
+ * GET /volumes/:asset?window=24h|7d|30d&network=testnet|mainnet
  *
  * Sums traded volume for `asset` across every pair it appears in and across all
  * venues (SDEX, AMM, …) over the requested window. Volume is measured in the
  * asset's own units: when it is the base asset of a pair we count `base_volume`,
  * when it is the counter asset we count `counter_volume`. The response breaks the
  * total down per venue and also returns the cross-venue sum.
+ *
+ * Only one network's rows are summed: testnet and mainnet volume added together
+ * is not a volume of anything. `network` defaults to this process's own network,
+ * an unrecognised value is a 400, and the network answered for is echoed back.
  */
 export async function registerVolumeRoutes(app: FastifyInstance) {
   app.get<{
     Params: { asset: string }
-    Querystring: { window?: string }
+    Querystring: { window?: string; network?: string }
   }>('/volumes/:asset', async (req, reply) => {
     const { asset } = req.params
     const window = req.query.window ?? '24h'
@@ -36,6 +41,12 @@ export async function registerVolumeRoutes(app: FastifyInstance) {
         .status(400)
         .send({ error: `window must be one of: ${WINDOWS.join(', ')}` })
     }
+
+    const requested = req.query.network
+    if (requested !== undefined && requested !== 'testnet' && requested !== 'mainnet') {
+      return reply.status(400).send({ error: 'network must be one of: testnet, mainnet' })
+    }
+    const network: NetworkName = (requested as NetworkName) ?? activeNetwork
 
     const hours = WINDOW_HOURS[window as VolumeWindow]
     const endTime = new Date()
@@ -56,9 +67,10 @@ export async function registerVolumeRoutes(app: FastifyInstance) {
                 COUNT(*)::int AS trade_count
            FROM price_points
           WHERE (asset_a = $1 OR asset_b = $1)
-            AND timestamp >= $2
+            AND network = $2
+            AND timestamp >= $3
           GROUP BY source`,
-        [asset, startTime],
+        [asset, network, startTime],
       )
 
       const byVenue: Record<string, number> = {}
@@ -74,6 +86,7 @@ export async function registerVolumeRoutes(app: FastifyInstance) {
 
       return {
         asset,
+        network,
         window,
         startTime: startTime.toISOString(),
         endTime: endTime.toISOString(),

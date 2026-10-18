@@ -11,13 +11,15 @@ the safe demo/QA surface while mainnet serves real price data.
    issues below (per-network config, network-aware storage, per-network clients
    and ingesters, a network selector on the API).
 
-Storage must be network-segregated: the schema has **no `network` column**, so
-the same `pairKey` (e.g. `XLM/USDC`) on two networks collides and corrupts each
-other's VWAP/aggregates. Redis keys need a per-network prefix too.
+Storage is network-segregated: every model carries a `network` discriminator and
+every write is tagged with the network it came from (#114), so the same
+`pairKey` (e.g. `XLM/USDC`) on two networks is stored as distinct rows instead
+of colliding. Redis cache keys carry a per-network prefix too.
 
-> Heads-up: today's defaults are incoherent — `HORIZON_URL`/`RPC_URL` default to
-> **testnet** while the Soroswap factory, Reflector oracle and Aquarius API
-> default to **mainnet** addresses. #116 / #113 reconcile this.
+> Resolved: each network now has its own fully-resolved config block
+> (`config.networks.testnet` / `.mainnet`, #113) with matching defaults, so
+> Horizon/RPC, the Soroswap factory, the Reflector oracle and Aquarius no longer
+> disagree about which network they point at.
 
 ## Env matrix
 
@@ -26,25 +28,30 @@ other's VWAP/aggregates. Redis keys need a per-network prefix too.
 | `HORIZON_URL` | `https://horizon-testnet.stellar.org` | `https://horizon.stellar.org` |
 | `RPC_URL` | `https://soroban-testnet.stellar.org` | external provider (**secret — host env only**) |
 | `NETWORK_PASSPHRASE` | `Test SDF Network ; September 2015` | `Public Global Stellar Network ; September 2015` |
-| `SOROSWAP_FACTORY_ADDRESS` | (n/a on testnet) | `CA4HEQTL…` |
-| `REFLECTOR_CONTRACT_ID` | — | `CCYXZMNH…` |
+| `SOROSWAP_FACTORY_ADDRESS` | `CDP3HMUH6SMS3S7NPGNDJLULCOXXEPSHY4JKUKMBNQMATHDHWXRRJTBY` | `CA4HEQTL2WPEUYKYKCDOHCDNIV4QHNJ7EL4J4NQ6VADP7SYHVRYZ7AW2` |
+| `REFLECTOR_CONTRACT_ID` | — (disabled) | — (disabled) — paste an id from [reflector.network](https://reflector.network) to enable |
 | `WATCHED_PAIRS` | testnet USDC issuer | mainnet USDC issuer |
 | `DATABASE_URL` / `REDIS_URL` | testnet | **separate** mainnet instances |
 
-## Ordered work (next Wave)
+## Ordered work
+
+Every item below is implemented and merged. The issues for #114–#120 are
+closed; #113 is still open as a tracking item only — its code shipped
+(`config.networks.testnet` / `.mainnet`, `src/config.ts`). The table is kept as
+a reference for the dependency order.
 
 Dependencies: **#113 → #115 → #116 → #117**; #114 before the network selector.
 
-| # | Issue | Dep |
-|---|-------|-----|
-| [#113](../../issues/113) | `config.ts` → per-network config map | — |
-| [#114](../../issues/114) | `network` discriminator on all models + Redis prefix | — |
-| [#115](../../issues/115) | Per-network Horizon/RPC clients across ingesters | #113 |
-| [#116](../../issues/116) | Per-network Soroswap/Reflector/Aquarius/token-list | #113 |
-| [#117](../../issues/117) | Launch ingesters per network | #113–#116 |
-| [#118](../../issues/118) | Network selector on routes + per-request x402 | #114 |
-| [#119](../../issues/119) | Nightly `pg_dump` backup + [restore runbook](backup-restore.md) | — |
-| [#120](../../issues/120) | Mainnet deploy guide | the rest |
+| # | Issue | Dep | Status |
+|---|-------|-----|--------|
+| [#113](../../issues/113) | `config.ts` → per-network config map | — | ✅ Code merged (issue still open) |
+| [#114](../../issues/114) | `network` discriminator on all models + Redis prefix | — | ✅ Done |
+| [#115](../../issues/115) | Per-network Horizon/RPC clients across ingesters | #113 | ✅ Done |
+| [#116](../../issues/116) | Per-network Soroswap/Reflector/Aquarius/token-list | #113 | ✅ Done |
+| [#117](../../issues/117) | Launch ingesters per network | #113–#116 | ✅ Done |
+| [#118](../../issues/118) | Network selector on routes + per-request x402 | #114 | ✅ Done |
+| [#119](../../issues/119) | Nightly `pg_dump` backup + [restore runbook](backup-restore.md) | — | ✅ Done |
+| [#120](../../issues/120) | Mainnet deploy guide | the rest | ✅ Done |
 
 ## Ops (Render + UptimeRobot + external Postgres)
 

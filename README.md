@@ -16,19 +16,52 @@ Aggregates price data from Stellar's Classic Order Book (SDEX) and AMM Liquidity
 |---|---|---|
 | GET | `/price/:assetA/:assetB` | Current VWAP, 24h volume, best route |
 | GET | `/price/:assetA/:assetB/route?amount=1000` | Best execution route for a given amount |
+| GET | `/price/:assetA/:assetB/depth?amount=1000` | Simulated order-book depth and execution slippage |
+| GET | `/book/:assetA/:assetB?depth=0.1&step=0.01&network=testnet` | Aggregated SDEX book and synthetic AMM price ladder with cumulative size and venue provenance |
 | GET | `/price/:assetA/:assetB/history?window=1h` | OHLCV history (`1m`, `5m`, `1h`, `24h`) |
-| GET | `/prices/history?pair=XLM/USDC&from=…&to=…&interval=1m` | Historical 1-minute price snapshots, optionally aggregated (`1m`, `5m`, `1h`); ~30-day retention |
+| GET | `/price/twap/:assetA/:assetB?window=60&sampleInterval=60&method=iqr` | Manipulation-resistant time-weighted average price |
+| GET | `/price/vwap/:assetA/:assetB?window=60&source=SDEX&method=iqr` | Volume-weighted average price |
+| GET | `/candles/:assetA/:assetB?interval=1h&from=…&to=…` | OHLCV candles (`1m`, `5m`, `15m`, `1h`, `4h`, `1d`) |
+| GET | `/prices/history?pair=XLM/USDC&from=…&to=…&interval=1m` | Historical 1-minute price snapshots, optionally aggregated (`1m`, `5m`, `1h`); honours `?network=`; `?format=csv` serves the points as `text/csv` (`ts,price,volume`); ~30-day retention |
 | GET | `/pools` | Active AMM pools being watched |
 | GET | `/pairs` | Watched trading pairs |
+| GET | `/volumes/:asset?window=24h` | Cross-venue traded volume (`24h`, `7d`, `30d`) with a per-venue breakdown |
+| GET | `/spreads/:asset?window=5m` | Per-venue bid/ask spread, tightest first (`5m`, `15m`, `1h`, `24h`) |
+| GET | `/compare/:asset` | Lens vs configured oracle prices, with per-oracle deviation and availability |
+| GET | `/screener?sortBy=volume&order=desc&limit=20` | Screen pairs by volume, 24h change, liquidity and price |
+| GET | `/benchmark/:asset?target=USD` | Peg-deviation statistics versus a target |
+| GET | `/basket?asset=XLM&asset=USDC&weight=0.6&weight=0.4` | Weighted price of a basket of assets |
 | GET | `/status` | Indexer health |
 | GET | `/discovery/resources?type=&payTo=&network=&extensions=&limit=&offset=` | Bazaar catalog of x402-discoverable resources (spec: [`bazaar`](https://github.com/x402-foundation/x402/blob/main/specs/extensions/bazaar.md)) |
+| GET | `/usage/me` | Usage and quota for the calling API key (requires `Authorization: Bearer <key>`) |
+| GET | `/supported` | Payment kinds and extensions this facilitator supports |
+| POST | `/verify` | Verify an x402 payment payload |
+| POST | `/settle` | Settle an x402 payment (idempotent — retries replay the stored result) |
+| POST | `/webhooks` | Subscribe to a price-threshold webhook |
+| DELETE | `/webhooks/:id` | Delete a webhook subscription |
+| GET/POST | `/graphql` | GraphQL query/mutation endpoint (GraphiQL IDE at `/graphiql`, docs: [`docs/graphql.md`](docs/graphql.md)) |
 
-Every route accepts an optional `?network=testnet\|mainnet` query param (or
-`x-network` header) to pick the Stellar network — default is `testnet`. An
-unrecognised value gets `400`. `/price/:assetA/:assetB` — its VWAP, OHLCV, AMM
-and best-route reads — and x402 payment `network`/`payTo` are per-request. The
-candle, TWAP/VWAP, history, screener, pools and depth endpoints still read
-across both networks and ignore the parameter.
+Every non-internal route above has a matching entry in [`openapi.yaml`](openapi.yaml);
+`tests/openapi.test.ts` boots the server and fails if a registered route is
+missing from the spec. Operator-only and non-HTTP routes (`/admin/keys*`,
+`/admin/usage*`, `/metrics`, `/ws`, `/graphiql*`) are deliberately excluded via
+the commented allow-list in [`src/openapi/coverage.ts`](src/openapi/coverage.ts).
+
+The `?network=testnet\|mainnet` query param (or `x-network` header) selects the
+Stellar network. It is validated on every request — an unrecognised value gets a
+`400` — and defaults to this instance's `STELLAR_NETWORK`. Only the routes whose
+spec entry declares a `network` parameter answer for the selected network; the
+ones listed below still read a single instance-wide network.
+
+Per-request today: `/price/:assetA/:assetB` (its VWAP, OHLCV, AMM and
+best-route reads), `/price/:assetA/:assetB/route`, `/price/:assetA/:assetB/depth`, `/book/:assetA/:assetB`,
+`/prices/history`, `/screener`, `/pools`, `/pairs`, `/spreads/:asset`,
+`/volumes/:asset`, `/status`, and the x402 payment `network`/`payTo`. That list
+is the same one `openapi.yaml` declares a `network` parameter on — if they ever
+disagree, the spec is the thing to fix.
+
+Still reading across both networks, and ignoring the parameter:
+`/candles/:assetA/:assetB`, `/price/twap/*`, and `/price/vwap/*`.
 
 ```bash
 curl "https://api.example.com/price/XLM/USDC?network=mainnet"
@@ -37,6 +70,8 @@ curl "https://api.example.com/price/XLM/USDC?network=mainnet"
 ### GraphQL
 Available at `/graphql` with GraphiQL IDE at `/graphiql`. Real-time price
 streaming is available via the `priceUpdated` [subscription](#graphql-subscriptions-live-prices).
+
+For complete GraphQL schema documentation, all queries with runnable `curl` examples, WebSocket `graphql-transport-ws` handshake specifications, and an explicit comparison against the REST surface, see [`docs/graphql.md`](docs/graphql.md).
 
 ```graphql
 query {
@@ -57,6 +92,17 @@ query {
   }
 }
 ```
+
+#### Schema Definition & SDL Artifact
+The GraphQL schema is exported as a canonical Schema Definition Language (SDL) artifact committed at [`schema.graphql`](schema.graphql).
+
+- **Location**: [`schema.graphql`](schema.graphql)
+- **Regenerate / Refresh**:
+  ```bash
+  npm run graphql:schema:gen
+  ```
+- **Drift Guard & Validation**: CI runs `src/__tests__/graphqlSchemaDrift.test.ts` to assert that `schema.graphql` matches the code-defined schema in `src/api/graphql.ts`, guarantees deterministic output, validates SDL syntax for client generators, and detects breaking schema changes.
+
 
 ## Observability
 
@@ -90,6 +136,22 @@ histogram_quantile(0.95,
 
 See [`docs/http-metrics.md`](docs/http-metrics.md) for the full label reference,
 the bucket rationale and suggested alerting rules.
+
+The ingestion metrics are labelled by `network` as well, so a dual-network
+deployment reports each network separately:
+
+| Metric | Type | Labels |
+|---|---|---|
+| `trades_ingested_total` | Counter | `pair`, `network` |
+| `amm_snapshots_total` | Counter | `pool`, `network` |
+| `price_snapshots_total` | Counter | `network` |
+| `last_trade_timestamp` | Gauge | `pair`, `network` |
+
+`last_trade_timestamp` is a gauge, so without the `network` label one network's
+ingester overwrites the other's value for the same pair — which would make the
+staleness signal silently unusable. See
+[`docs/ingest-metrics.md`](docs/ingest-metrics.md) for the cardinality notes
+(`pairs x networks`) and a staleness alert.
 
 ### GraphQL Subscriptions (live prices)
 
@@ -148,9 +210,22 @@ const unsubscribe = client.subscribe(
 > is safe *if* you read that field — and misleading if you do not.
 
 > **Note:** the `pair` argument is the canonical `pairKey` (alphabetically
-> sorted, e.g. `XLM:native/USDC:GA5...`). Use the `listPairs` query to discover
+> sorted, e.g. `USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN/XLM`). Use the `listPairs` query to discover
 > the exact keys being indexed. Only the pair you subscribe to is delivered;
-> updates for other pairs are filtered out server-side.
+> updates for other pairs are filtered out server-side. For full protocol handshake details and a raw WebSocket implementation, see [`docs/graphql.md`](docs/graphql.md#live-price-subscriptions-graphql-transport-ws).
+
+## MCP (Model Context Protocol)
+
+Lens exposes its Bazaar catalog of x402-discoverable resources as an MCP
+server, so any MCP-compatible client or agent can discover and pay for price
+data through two tools: `bazaar_search` and `paid_call`. The server signs
+x402 payment challenges with Stellar secret keys on both `stellar:testnet`
+and `stellar:pubnet`.
+
+**⚠️ Warning:** the mainnet key signs with real XLM. Read the configuration,
+spending warning, and worked example before running.
+
+Full documentation: [examples/mcp-server/README.md](examples/mcp-server/README.md)
 
 ## Usage Examples
 
@@ -162,11 +237,18 @@ Lens gates `/price`, `/pools`, and `/candles` behind x402 micropayments on Stell
 curl http://localhost:3002/status
 # {
 #   "ok": true,
+#   "network": "testnet",
 #   "watchedPairs": ["XLM:native/USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"],
 #   "lastIndexedLedger": 53842917,
-#   "lastProcessedAt": "2026-05-07T18:45:11.220Z"
+#   "lastProcessedAt": "2026-05-07T18:45:11.220Z",
+#   "ingestLagSeconds": 4
 # }
 ```
+
+`/status` answers for one network — pass `?network=mainnet` (or the
+`x-network` header) to check the mainnet indexer instead. `ingestLagSeconds` is
+`null` until that network has ingested, and `lastIndexedLedger` is `null` until
+its SDEX ingester has recorded a trade.
 
 ### 2. Paid request without `X-PAYMENT` → `402` with payment requirements
 
@@ -338,9 +420,130 @@ cp .env.example .env
 # 4. Push database schema
 npm run db:push
 
-# 5. Start dev server
+# 5. Seed the database with fixture data
+npm run seed
+
+# 6. Start dev server
 npm run dev
 ```
+
+## Seed & Query
+
+A fresh clone gives an empty database — every price endpoint returns zeros and
+you cannot tell working code from broken code. `npm run seed` writes
+deterministic fixture data so the API is immediately usable.
+
+### What it seeds
+
+| Table | Rows per network | Description |
+|---|---|---|
+| `pair_configs` | 1 | Default pair registration so `/pairs` and `/price` resolve immediately |
+| `price_points` | 36 (24 SDEX + 12 AMM) | Hourly SDEX trades and bi-hourly AMM trades over 24 h |
+| `pool_snapshots` | 6 | AMM pool reserves every 4 h |
+| `price_aggregates` | 49 (12×1m + 12×5m + 24×1h + 1×24h) | Pre-computed OHLCV buckets |
+
+Data is seeded for the default pair on each network:
+- **testnet:** `XLM / USDC:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5`
+- **mainnet:** `XLM / USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN`
+
+### Usage
+
+```bash
+# Seed both networks (default)
+npm run seed
+
+# Seed a single network
+npm run seed -- --network testnet
+npm run seed -- --network mainnet
+```
+
+### Idempotency
+
+The seed guarantees idempotency by **converging to the same deterministic row set**.
+Timestamps are anchored to the current UTC hour (`Math.floor(Date.now() / 3_600_000) * 3_600_000`), keeping fixture data fresh relative to `NOW()` (satisfying service-level queries bounded by 1 h / 24 h intervals).
+
+To prevent duplicate accumulation across runs while keeping timestamps fresh, re-seeding safely cleans up previously seed-owned rows (`where: { id: { startsWith: 'seed-' }, network }`) before inserting the fresh set. Default pair configs use `skipDuplicates: true` on `@@id([network, pairKey])` so existing pairs are preserved.
+
+```
+$ npm run seed
+
+🌱 Lens seed complete
+
+  testnet  (USDC:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5/XLM)
+    pair_configs     1 inserted (1 total)
+    price_points     36 inserted (36 total)
+    pool_snapshots   6 inserted (6 total)
+    price_aggregates 49 inserted (49 total)
+
+  mainnet  (USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN/XLM)
+    pair_configs     1 inserted (1 total)
+    price_points     36 inserted (36 total)
+    pool_snapshots   6 inserted (6 total)
+    price_aggregates 49 inserted (49 total)
+
+  ✅ testnet: 1 pair_configs, 36 price_points, 6 pool_snapshots, 49 price_aggregates
+  ✅ mainnet: 1 pair_configs, 36 price_points, 6 pool_snapshots, 49 price_aggregates
+
+$ npm run seed   # re-seed: cleans seed rows & converges to the same row set
+
+🌱 Lens seed complete
+
+  testnet  (USDC:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5/XLM)
+    pair_configs     0 inserted (1 total)
+    price_points     36 inserted (36 total)
+    pool_snapshots   6 inserted (6 total)
+    price_aggregates 49 inserted (49 total)
+
+  mainnet  (USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN/XLM)
+    pair_configs     0 inserted (1 total)
+    price_points     36 inserted (36 total)
+    pool_snapshots   6 inserted (6 total)
+    price_aggregates 49 inserted (49 total)
+
+  ✅ testnet: 1 pair_configs, 36 price_points, 6 pool_snapshots, 49 price_aggregates
+  ✅ mainnet: 1 pair_configs, 36 price_points, 6 pool_snapshots, 49 price_aggregates
+```
+
+### Verify with the API
+
+After seeding, start the server (`npm run dev`) and confirm the endpoints
+return real data:
+
+```bash
+# /pairs — lists watched pairs with latest price
+curl -s http://localhost:3002/pairs | jq '.pairs[0]'
+# {
+#   "pairKey": "USDC:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5/XLM",
+#   "assetA": { "code": "XLM", "issuer": null },
+#   "assetB": { "code": "USDC", "issuer": "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5" },
+#   "latestPrice": 0.11906825,
+#   "lastUpdated": "<seeded-anchor-timestamp>"
+# }
+
+# /pools — lists AMM pool snapshots
+curl -s http://localhost:3002/pools | jq '.pools[0]'
+# {
+#   "pool_id": "65c24738ce0ba076fd4f4d3b66618681ca1f9e9d78c95bb8db3a684a82bb3ee0",
+#   "asset_a": "XLM",
+#   "asset_b": "USDC",
+#   "reserve_a": 550000,
+#   "reserve_b": 66000,
+#   "spot_price": 0.12,
+#   "fee_bp": 30,
+#   "timestamp": "<seeded-anchor-timestamp>"
+# }
+
+# /price/:assetA/:assetB — aggregated VWAP + best route
+curl -s http://localhost:3002/price/XLM/USDC | jq '{price, ammPrice, lastUpdated}'
+# {
+#   "price": 0.11906825,
+#   "ammPrice": 0.12,
+#   "lastUpdated": "<request-timestamp>"
+# }
+```
+
+*(Note: timestamp values above reflect the dynamic hourly anchor at seed execution time and request time).*
+
 
 ## Environment Variables
 
@@ -374,3 +577,24 @@ npm run dev
 - **Cache:** Redis
 - **Queue:** BullMQ
 - **Stellar:** @stellar/stellar-sdk
+
+
+### Deployed smoke check
+
+Run against a real running instance (local, staging or production):
+
+```bash
+SMOKE_MAX_AGE_SECONDS=120 SMOKE_TIMEOUT_MS=8000 npm run smoke -- http://localhost:3002
+```
+
+Validate the smoke checker itself with `npm run test:smoke`.
+
+The check requires public `/status` and `/price/XLM/USDC` and checks `/ready` when available. It uses a
+`graphql-transport-ws` live price subscription at `/graphql`. An HTTP 404 on `/ready` is skipped until issue #334 provides the endpoint; any other readiness failure is fatal. It checks
+indexer and trade freshness, validates price shape, and waits for a real
+subscription event. It fails non-zero, naming the failing check, on timeout,
+stale data, a missing message, or HTTP errors. No synthetic price events are
+generated. On installations where x402 payment gates the price endpoint,
+a normal unauthenticated call receives HTTP 402 and the smoke check fails;
+it never bypasses payment requirements. A quiet pair without any new trades
+will likewise fail the live-message requirement.

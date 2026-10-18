@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 const PAYMENT_ADDRESS = 'GPAYMENTADDRESS123456789012345678901234567890123456789012'
 
@@ -78,6 +78,18 @@ beforeEach(() => {
   mockVerify.mockReset()
   mockSettle.mockReset().mockResolvedValue(undefined)
   mockInitialize.mockReset().mockResolvedValue(undefined)
+})
+
+const ENV_KEYS = ['ORACLE_PAYMENT_ADDRESS', 'STELLAR_NETWORK', 'REQUIRE_API_KEY'] as const
+const originalEnv: Partial<Record<(typeof ENV_KEYS)[number], string | undefined>> = {}
+beforeEach(() => {
+  for (const key of ENV_KEYS) originalEnv[key] = process.env[key]
+})
+afterEach(() => {
+  for (const key of ENV_KEYS) {
+    if (originalEnv[key] === undefined) delete process.env[key]
+    else process.env[key] = originalEnv[key]
+  }
 })
 
 async function buildAppWithAuth() {

@@ -30,6 +30,12 @@ beforeEach(() => {
   vi.clearAllMocks()
 })
 
+const ORIGINAL_ADMIN_TOKEN = process.env.ADMIN_TOKEN
+afterEach(() => {
+  if (ORIGINAL_ADMIN_TOKEN === undefined) delete process.env.ADMIN_TOKEN
+  else process.env.ADMIN_TOKEN = ORIGINAL_ADMIN_TOKEN
+})
+
 function buildUsageApp() {
   process.env.ADMIN_TOKEN = 'admin-secret'
   const app = Fastify()

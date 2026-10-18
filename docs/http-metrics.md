@@ -2,12 +2,20 @@
 
 Lens exports Prometheus metrics for the HTTP layer on the existing public
 `/metrics` route, alongside the ingestion and database metrics defined in
-[`src/metrics.ts`](../src/metrics.ts).
+[`src/metrics.ts`](../src/metrics.ts). The ingestion metrics have their own doc
+— [`ingest-metrics.md`](ingest-metrics.md) — because the label constraint there
+is different: they are labelled by `network` so the per-network ingester loops
+cannot overwrite each other's series.
 
 These three signals — request rate, error rate and p95 latency — are what answer
 "is the API healthy". The pre-existing `price_requests_total` counts price calls
 specifically and cannot answer that question; it is unchanged and still means
 what it always meant.
+
+The same cardinality rule applies to every metric family: labels must come from
+fixed buckets or server-defined values. Never put raw request paths, asset
+codes, issuer addresses, query values or websocket subscription strings in a
+Prometheus label.
 
 ## What is exported
 
@@ -49,6 +57,11 @@ So:
   `methods x routes x 5` rather than `methods x routes x ~60`. If a concrete
   need for an exact code appears, add it then — it is easy to add a label and
   painful to remove one dashboards depend on.
+- **Websocket pairs use fixed buckets.** `ws_clients_total`,
+  `ws_messages_sent_total` and `ws_messages_dropped_total` retain their `pair`
+  label, but pair-specific subscriptions are recorded as `other`; `*` remains
+  the aggregate across all subscriptions. Arbitrary pair names and issuer
+  addresses stay in fanout state only and cannot create Prometheus series.
 
 ## Bucket choice
 

@@ -1,5 +1,5 @@
 import { prisma } from './db'
-import { activeNetwork } from './config'
+import { activeNetwork, type NetworkName } from './config'
 import { buildThresholdAlertPayload, crossesThreshold, deliverJsonWithRetries } from './alerts'
 
 export interface PriceUpdate {
@@ -7,14 +7,15 @@ export interface PriceUpdate {
   assetB: string
   previousPrice: number
   currentPrice: number
+  network?: NetworkName
 }
 
 export async function dispatchPriceUpdate(update: PriceUpdate): Promise<void> {
-  const { assetA, assetB, previousPrice, currentPrice } = update
+  const { assetA, assetB, previousPrice, currentPrice, network = activeNetwork } = update
 
   const webhooks = await prisma.webhook.findMany({
     where: {
-      network: activeNetwork,
+      network,
       assetA: assetA.toUpperCase(),
       assetB: assetB.toUpperCase(),
     },

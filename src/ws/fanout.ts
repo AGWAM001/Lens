@@ -3,6 +3,9 @@ import { redis } from '../redis'
 import { activeNetwork } from '../config'
 import { priceEmitter, PRICE_UPDATE, PriceUpdateEvent } from '../events'
 import { register, Gauge, Counter } from 'prom-client'
+import { createLogger } from '../logger'
+
+const log = createLogger('ws:fanout')
 
 // ─── Metrics ──────────────────────────────────────────────────────────────────
 export const ws_clients_total = new Gauge({
@@ -29,6 +32,15 @@ export const ws_messages_dropped_total = new Counter({
 // ─── Configuration ─────────────────────────────────────────────────────────────
 const REDIS_CHANNEL = `lens:${activeNetwork}:price:updates`
 const DEFAULT_COALESCE_INTERVAL_MS = 100 // max 10 updates/sec per client
+
+/**
+ * Pair names can contain arbitrary asset codes and issuer identifiers supplied
+ * by websocket clients. Keep them out of Prometheus labels: `other` is the
+ * bounded bucket for pair-specific subscriptions and `*` remains the aggregate.
+ */
+function pairMetricLabel(pairKey: string): 'other' | null {
+  return pairKey === '*' ? null : 'other'
+}
 
 // ─── Client wrapper with backpressure & coalescing ────────────────────────────
 export interface FanOutClient {
@@ -81,9 +93,9 @@ class FanOutManager {
           // ignore malformed messages
         }
       })
-      console.log('[fanout] Redis pub/sub subscriber ready')
+      log.info('redis pub/sub subscriber ready')
     } catch (err) {
-      console.warn('[fanout] Redis pub/sub unavailable, running in single-instance mode:', (err as Error).message)
+      log.warn({ err }, 'redis pub/sub unavailable, running in single-instance mode')
       this.redisConnected = false
     }
   }
@@ -111,7 +123,8 @@ class FanOutManager {
     }
     clients.add(id)
 
-    ws_clients_total.labels(pairKey).inc()
+    const metricPair = pairMetricLabel(pairKey)
+    if (metricPair) ws_clients_total.labels(metricPair).inc()
     ws_clients_total.labels('*').inc()
 
     // Return unsubscribe function
@@ -133,7 +146,8 @@ class FanOutManager {
       }
     }
 
-    ws_clients_total.labels(client.pairKey).dec()
+    const metricPair = pairMetricLabel(client.pairKey)
+    if (metricPair) ws_clients_total.labels(metricPair).dec()
     ws_clients_total.labels('*').dec()
   }
 
@@ -214,7 +228,8 @@ class FanOutManager {
   private sendToClient(client: InternalClient, payload: string): void {
     try {
       client.socket.send(payload)
-      ws_messages_sent_total.labels(client.pairKey).inc()
+      const metricPair = pairMetricLabel(client.pairKey)
+      if (metricPair) ws_messages_sent_total.labels(metricPair).inc()
       ws_messages_sent_total.labels('*').inc()
     } catch {
       // Client likely disconnected

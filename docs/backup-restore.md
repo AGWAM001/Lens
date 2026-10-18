@@ -6,8 +6,9 @@ world-readable. GitHub Actions artifacts on this public repo are
 world-readable, so the workflow only uploads an `age`-encrypted file.
 
 Nightly `pg_dump` of each network's Postgres. Lens stores price history in
-**one database per network** (no `network` column); restoring a mainnet dump
-into the testnet instance would mix pairs. See [DUAL_NETWORK.md](DUAL_NETWORK.md).
+**one database per network** even though every row now carries a `network`
+discriminator (#114); restoring a mainnet dump into the testnet instance would
+still mix networks in the same tables. See [DUAL_NETWORK.md](DUAL_NETWORK.md).
 
 Neon also has branching and point-in-time restore. Use that for short-window
 accidents. The encrypted dump is the copy that survives a project delete or

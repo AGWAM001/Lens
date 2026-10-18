@@ -6,6 +6,29 @@
  * the env vars set for that test.
  */
 
+import { StrKey } from '@stellar/stellar-sdk'
+
+// config.ts logs invalid contract ids through the structured logger; capture
+// those calls so the tests can assert on the warning without a live sink.
+const { configLogger } = vi.hoisted(() => ({
+  configLogger: {
+    trace: vi.fn(),
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    fatal: vi.fn(),
+    child: vi.fn(),
+  },
+}))
+
+vi.mock('../logger', () => ({
+  createLogger: () => configLogger,
+  logger: configLogger,
+  loggerOptions: () => ({}),
+  createDestination: () => ({ write: () => {} }),
+}))
+
 const ENV_KEYS = [
   'STELLAR_NETWORK',
   'SOROSWAP_ENABLED_TESTNET',
@@ -18,10 +41,19 @@ const ENV_KEYS = [
   'REFLECTOR_CONTRACT_ID_TESTNET',
   'REFLECTOR_CONTRACT_ID_MAINNET',
   'REFLECTOR_ENABLED_TESTNET',
+  'REFLECTOR_CONTRACT_ID',
+  'SOROSWAP_FACTORY_ADDRESS',
+  'SOROSWAP_FACTORY_ADDRESS_TESTNET',
+  'SOROSWAP_FACTORY_ADDRESS_MAINNET',
   'WATCHED_PAIRS',
   'WATCHED_PAIRS_TESTNET',
   'WATCHED_PAIRS_MAINNET',
 ]
+
+const VALID_CONTRACT_ID = 'CA4HEQTL2WPEUYKYKCDOHCDNIV4QHNJ7EL4J4NQ6VADP7SYHVRYZ7AW2'
+// The two 55-character literals config.ts used to ship as defaults.
+const OLD_REFLECTOR_LITERAL = 'CCYXZMNHFXHKF3YEX4VJJ5TH3YHCVZIBPNBGM7C4PJIMCIMNNWDOQYA'
+const OLD_SOROSWAP_TESTNET_LITERAL = 'CDKP5WSEZMDL53VZFPBGCL47WBPKFCN5OPYQVXB3CJWUXHPZRPHSSZ3'
 
 async function loadConfig() {
   vi.resetModules()
@@ -132,11 +164,74 @@ describe('per-network venue config', () => {
     expect(getNetworkConfig('testnet').oracle.enabled).toBe(false)
   })
 
-  it('enables the Reflector oracle on mainnet where a default contract id exists', async () => {
+  it('has no built-in Reflector contract id: the oracle stays disabled until one is configured', async () => {
+    delete process.env.REFLECTOR_CONTRACT_ID_MAINNET
+    delete process.env.REFLECTOR_CONTRACT_ID
+
     const { getNetworkConfig } = await loadConfig()
 
-    expect(getNetworkConfig('mainnet').oracle.reflectorContractId).not.toBe('')
+    expect(getNetworkConfig('mainnet').oracle.reflectorContractId).toBe('')
+    expect(getNetworkConfig('mainnet').oracle.enabled).toBe(false)
+  })
+
+  it('enables the Reflector oracle when a valid 56-character contract id is configured', async () => {
+    process.env.REFLECTOR_CONTRACT_ID_MAINNET = VALID_CONTRACT_ID
+
+    const { getNetworkConfig } = await loadConfig()
+
     expect(getNetworkConfig('mainnet').oracle.enabled).toBe(true)
+    expect(getNetworkConfig('mainnet').oracle.reflectorContractId).toBe(VALID_CONTRACT_ID)
+  })
+
+  it('rejects the former 55-character mainnet Reflector default, disabling the oracle and naming the env var', async () => {
+    configLogger.warn.mockClear()
+    process.env.REFLECTOR_CONTRACT_ID_MAINNET = OLD_REFLECTOR_LITERAL
+
+    const { getNetworkConfig } = await loadConfig()
+
+    expect(OLD_REFLECTOR_LITERAL).toHaveLength(55)
+    expect(getNetworkConfig('mainnet').oracle.enabled).toBe(false)
+    expect(configLogger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ envVar: 'REFLECTOR_CONTRACT_ID_MAINNET', value: OLD_REFLECTOR_LITERAL }),
+      expect.stringContaining('invalid Soroban contract id')
+    )
+  })
+
+  it('rejects the former 55-character testnet Soroswap default, disabling Soroswap and naming the env var', async () => {
+    configLogger.warn.mockClear()
+    process.env.SOROSWAP_FACTORY_ADDRESS_TESTNET = OLD_SOROSWAP_TESTNET_LITERAL
+
+    const { getNetworkConfig } = await loadConfig()
+
+    expect(OLD_SOROSWAP_TESTNET_LITERAL).toHaveLength(55)
+    expect(getNetworkConfig('testnet').soroswap.enabled).toBe(false)
+    expect(configLogger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ envVar: 'SOROSWAP_FACTORY_ADDRESS_TESTNET' }),
+      expect.stringContaining('invalid Soroban contract id')
+    )
+  })
+
+  it('accepts a valid 56-character Soroswap factory id', async () => {
+    process.env.SOROSWAP_FACTORY_ADDRESS_TESTNET = VALID_CONTRACT_ID
+
+    const { getNetworkConfig } = await loadConfig()
+
+    expect(getNetworkConfig('testnet').soroswap.enabled).toBe(true)
+    expect(getNetworkConfig('testnet').soroswap.factoryAddress).toBe(VALID_CONTRACT_ID)
+  })
+
+  it('ships built-in Soroswap factory defaults that are valid contract ids', async () => {
+    delete process.env.SOROSWAP_FACTORY_ADDRESS
+    delete process.env.SOROSWAP_FACTORY_ADDRESS_TESTNET
+    delete process.env.SOROSWAP_FACTORY_ADDRESS_MAINNET
+
+    const { getNetworkConfig } = await loadConfig()
+
+    for (const network of ['testnet', 'mainnet'] as const) {
+      const { soroswap } = getNetworkConfig(network)
+      expect(StrKey.isValidContract(soroswap.factoryAddress)).toBe(true)
+      expect(soroswap.enabled).toBe(true)
+    }
   })
 
   it('resolves a custom Aquarius API URL override', async () => {

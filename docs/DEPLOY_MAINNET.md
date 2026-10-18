@@ -11,9 +11,11 @@ Soroban RPC provider.
 ## Why mainnet is different from testnet
 
 Lens is already closer to mainnet than testnet out of the box: its Soroswap
-factory, Reflector oracle and Aquarius defaults are **mainnet** addresses. To
-point a node at mainnet you mostly need to flip the network passphrase,
-Horizon/RPC URLs and set mainnet `WATCHED_PAIRS`.
+factory and Aquarius defaults are **mainnet** addresses. The Reflector oracle
+has no built-in default — supply `REFLECTOR_CONTRACT_ID_MAINNET` from
+[reflector.network](https://reflector.network) to enable it. To point a node at
+mainnet you mostly need to flip the network passphrase, Horizon/RPC URLs and
+set mainnet `WATCHED_PAIRS`.
 
 Two things have no free mainnet equivalent:
 
@@ -47,8 +49,8 @@ UptimeRobot ──GET /status──▶ Render web service (Lens)
 | `HORIZON_URL` | `https://horizon-testnet.stellar.org` | `https://horizon.stellar.org` |
 | `RPC_URL` | `https://soroban-testnet.stellar.org` | external provider — **placeholder only** (see below) |
 | `NETWORK_PASSPHRASE` | `Test SDF Network ; September 2015` | `Public Global Stellar Network ; September 2015` |
-| `SOROSWAP_FACTORY_ADDRESS` | `CDKP5WSEZMDL53VZFPBGCL47WBPKFCN5OPYQVXB3CJWUXHPZRPHSSZ3` | `CA4HEQTL2WPEUYKYKCDOHCDNIV4QHNJ7EL4J4NQ6VADP7SYHVRYZ7AW2` |
-| `REFLECTOR_CONTRACT_ID` | *(empty)* | `CCYXZMNHFXHKF3YEX4VJJ5TH3YHCVZIBPNBGM7C4PJIMCIMNNWDOQYA` |
+| `SOROSWAP_FACTORY_ADDRESS` | `CDP3HMUH6SMS3S7NPGNDJLULCOXXEPSHY4JKUKMBNQMATHDHWXRRJTBY` | `CA4HEQTL2WPEUYKYKCDOHCDNIV4QHNJ7EL4J4NQ6VADP7SYHVRYZ7AW2` |
+| `REFLECTOR_CONTRACT_ID` | *(empty)* | *(required to enable the oracle — copy from reflector.network)* |
 | `WATCHED_PAIRS` | testnet USDC issuer | mainnet USDC issuer |
 | `DATABASE_URL` | testnet DB | **separate** mainnet DB |
 | `REDIS_URL` | testnet Redis | **separate** mainnet Redis |
@@ -108,10 +110,10 @@ workflow and restore procedure.
 
 ## Running testnet + mainnet side-by-side
 
-Run **two separate deployments** (same image, one env set each). Storage must
-be network-segregated — the schema has no `network` column, so the same
-`pairKey` on two networks collides. Give each network its **own** database and
-Redis:
+Run **two separate deployments** (same image, one env set each). Give each
+network its **own** database and Redis: every row now carries a `network`
+discriminator (#114), but separate stores keep the two deployments — and any
+read path not yet network-scoped — from pooling networks.
 
 | | testnet node | mainnet node |
 |---|---|---|
@@ -148,7 +150,7 @@ HORIZON_URL_MAINNET=https://horizon.stellar.org
 RPC_URL_MAINNET=https://your-provider.example.com/soroban-rpc   # placeholder
 NETWORK_PASSPHRASE_MAINNET=Public Global Stellar Network ; September 2015
 SOROSWAP_FACTORY_ADDRESS_MAINNET=CA4HEQTL2WPEUYKYKCDOHCDNIV4QHNJ7EL4J4NQ6VADP7SYHVRYZ7AW2
-REFLECTOR_CONTRACT_ID_MAINNET=CCYXZMNHFXHKF3YEX4VJJ5TH3YHCVZIBPNBGM7C4PJIMCIMNNWDOQYA
+REFLECTOR_CONTRACT_ID_MAINNET=   # copy from https://reflector.network; empty disables the oracle
 WATCHED_PAIRS_MAINNET=XLM:native/USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN
 
 # --- Storage (separate from testnet) ---

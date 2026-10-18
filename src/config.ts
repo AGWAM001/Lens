@@ -1,6 +1,9 @@
 import 'dotenv/config'
-import { Networks } from '@stellar/stellar-sdk'
+import { Networks, StrKey } from '@stellar/stellar-sdk'
+import { createLogger } from './logger'
 import type { WatchedPair, AssetId } from './types'
+
+const log = createLogger('config')
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -66,6 +69,21 @@ function makePairKey(a: AssetId, b: AssetId): string {
   return [aStr, bStr].sort().join('/')
 }
 
+/**
+ * Parse a comma-separated hostname allowlist into a normalized, de-duplicated
+ * list. Empty entries and surrounding whitespace are dropped; hostnames are
+ * lowercased and any IPv6 brackets / trailing dot are stripped so the stored
+ * form matches what net/ssrf.ts compares against.
+ */
+function parseAllowedHosts(raw: string): string[] {
+  const seen = new Set<string>()
+  for (const part of raw.split(',')) {
+    const host = part.trim().toLowerCase().replace(/^\[(.*)\]$/, '$1').replace(/\.$/, '')
+    if (host.length > 0) seen.add(host)
+  }
+  return Array.from(seen)
+}
+
 const MAINNET_DEFAULT_PAIRS =
   'USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN/XLM'
 
@@ -94,6 +112,22 @@ function parseWatchedPairs(raw: string): WatchedPair[] {
  *   2. Generic env var — e.g. HORIZON_URL   (back-compat with single-network setups)
  *   3. Sensible default for that network
  */
+/**
+ * True when `id` is a well-formed Soroban contract id (`C...`, 56 chars,
+ * valid checksum). A malformed id otherwise surfaces later as an opaque decode
+ * error on every RPC call, so config refuses to hand one out: on failure it
+ * warns, naming the env var, and the caller disables the feature that needs it.
+ */
+function isUsableContractId(id: string, envVar: string): boolean {
+  if (id === '') return false
+  if (StrKey.isValidContract(id)) return true
+  log.warn(
+    { envVar, value: id },
+    'invalid Soroban contract id; the feature that needs it is disabled'
+  )
+  return false
+}
+
 function buildNetworkConfig(network: NetworkName): NetworkConfig {
   const suffix = network.toUpperCase() as 'TESTNET' | 'MAINNET'
 
@@ -125,7 +159,7 @@ function buildNetworkConfig(network: NetworkName): NetworkConfig {
     process.env.SOROSWAP_FACTORY_ADDRESS ||
     (network === 'mainnet'
       ? 'CA4HEQTL2WPEUYKYKCDOHCDNIV4QHNJ7EL4J4NQ6VADP7SYHVRYZ7AW2'
-      : 'CDKP5WSEZMDL53VZFPBGCL47WBPKFCN5OPYQVXB3CJWUXHPZRPHSSZ3')
+      : 'CDP3HMUH6SMS3S7NPGNDJLULCOXXEPSHY4JKUKMBNQMATHDHWXRRJTBY')
 
   // Soroswap token-list is a single canonical list covering both networks by
   // default, but can be overridden per network (e.g. a testnet-specific list).
@@ -135,7 +169,8 @@ function buildNetworkConfig(network: NetworkName): NetworkConfig {
     'https://raw.githubusercontent.com/soroswap/token-list/main/tokenList.json'
 
   const soroswapEnabled =
-    (process.env[`SOROSWAP_ENABLED_${suffix}`] ?? 'true').toLowerCase() !== 'false'
+    (process.env[`SOROSWAP_ENABLED_${suffix}`] ?? 'true').toLowerCase() !== 'false' &&
+    isUsableContractId(soroswapFactory, `SOROSWAP_FACTORY_ADDRESS_${suffix}`)
 
   const soroswapPollMs = parseInt(
     process.env[`SOROSWAP_POLL_INTERVAL_MS_${suffix}`] ||
@@ -156,16 +191,18 @@ function buildNetworkConfig(network: NetworkName): NetworkConfig {
     (process.env[`AQUARIUS_ENABLED_${suffix}`] ?? (network === 'mainnet' ? 'true' : 'false')).toLowerCase() !== 'false'
 
   // ── Reflector oracle ──────────────────────────────────────────────────────
+  // No built-in default: the previous mainnet literal was a malformed
+  // (55-character) id and a replacement could not be verified against
+  // Reflector's published deployments. Set REFLECTOR_CONTRACT_ID_<NETWORK> to
+  // the oracle contract listed at https://reflector.network to enable it.
   const reflectorContractId =
     process.env[`REFLECTOR_CONTRACT_ID_${suffix}`] ||
     process.env.REFLECTOR_CONTRACT_ID ||
-    (network === 'mainnet'
-      ? 'CCYXZMNHFXHKF3YEX4VJJ5TH3YHCVZIBPNBGM7C4PJIMCIMNNWDOQYA'
-      : '')
+    ''
 
   const oracleEnabled =
     (process.env[`REFLECTOR_ENABLED_${suffix}`] ?? 'true').toLowerCase() !== 'false' &&
-    reflectorContractId !== ''
+    isUsableContractId(reflectorContractId, `REFLECTOR_CONTRACT_ID_${suffix}`)
 
   // ── Watched pairs ─────────────────────────────────────────────────────────
   // Mainnet gets a default for the same reason every field above does: turning
@@ -232,6 +269,17 @@ const globalConfig = {
   },
   cache: {
     priceTtl: parseInt(process.env.PRICE_CACHE_TTL ?? '10', 10),
+  },
+  http: {
+    timeoutMs: parseInt(process.env.HTTP_TIMEOUT_MS ?? '10000', 10),
+  },
+  outbound: {
+    // One operator-maintained list for every outbound fetch the app makes to a
+    // caller-supplied target (Bazaar MCP discovery now, payment endpoints later).
+    // Empty = "any public host"; a non-empty list narrows reach to these
+    // hostnames. It never re-opens a private/link-local/metadata address — that
+    // block is unconditional (see net/ssrf.ts).
+    allowedHosts: parseAllowedHosts(process.env.OUTBOUND_ALLOWED_HOSTS ?? ''),
   },
 } as const
 
@@ -312,4 +360,6 @@ export const config = {
   api:     globalConfig.api,
   indexer: globalConfig.indexer,
   cache:   globalConfig.cache,
+  http:    globalConfig.http,
+  outbound: globalConfig.outbound,
 }

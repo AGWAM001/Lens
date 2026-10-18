@@ -26,6 +26,8 @@ interface VenueSpread {
   ask: number
   mid: number
   spreadBps: number
+  /** Same as spreadBps / 100 — convenient for display (e.g. "0.20 %"). */
+  spreadPct: number
   observations: number
   lastSeen: string
 }
@@ -133,6 +135,7 @@ export async function registerSpreadsRoutes(app: FastifyInstance) {
           ask,
           mid,
           spreadBps: ((ask - bid) / mid) * 10_000,
+          spreadPct: ((ask - bid) / mid) * 100,
           observations,
           lastSeen: new Date(row.last_seen).toISOString(),
         })

@@ -166,4 +166,14 @@ describe('GET /spreads/:asset', () => {
     expect(res.statusCode).toBe(500)
     expect(res.json().error).toMatch(/connection refused/)
   })
+  it('exposes spreadPct as spreadBps / 100', async () => {
+    // bid 99, ask 101 → spreadBps 200 → spreadPct 2.000000
+    mockQuery.mockResolvedValue({ rows: [row('sdex', 'XLM/USDC', '99', '101')] })
+    const app = await buildApp()
+
+    const body = (await app.inject({ method: 'GET', url: '/spreads/XLM' })).json()
+
+    expect(body.venues[0].spreadPct).toBeCloseTo(body.venues[0].spreadBps / 100, 6)
+    expect(body.venues[0].spreadPct).toBeCloseTo(2, 6)
+  })
 })

@@ -1,57 +1,37 @@
 import 'dotenv/config'
 import { execSync } from 'child_process'
-import Fastify from 'fastify'
 
 if (!process.env.DIRECT_DATABASE_URL && process.env.DATABASE_URL) {
   process.env.DIRECT_DATABASE_URL = process.env.DATABASE_URL
 }
-import cors from '@fastify/cors'
-import compress from '@fastify/compress'
-import rateLimit from '@fastify/rate-limit'
 import { config, type NetworkName } from './config'
 import { getEnabledNetworks } from './network/enabledNetworks'
+import { createLogger } from './logger'
 import { redis } from './redis'
 import { pgPool } from './db'
-import { registerRESTRoutes } from './api/rest'
-import { registerGraphQL } from './api/graphql'
-import { registerWebhookRoutes } from './routes/webhooks'
-import { registerCandleRoutes } from './routes/candles'
-import { registerPairsRoutes } from './routes/pairs'
-import { registerScreenerRoutes } from './routes/screener'
-import { registerHistoryRoutes } from './api/history'
-import { registerX402 } from './middleware/x402'
-import { registerNetworkSelector } from './middleware/network'
-import { registerHttpMetrics } from './middleware/httpMetrics'
-import { registerWebSocket } from './api/websocket'
-import { registerApiKeyAuth } from './api/auth'
-import { registerAdminRoutes } from './api/admin'
-import { registerUsageRoutes } from './api/usage'
-import { registerFacilitatorRoutes } from './api/facilitator'
-import { registerPriceRoutes } from './routes/price'
-import { registerVolumeRoutes } from './routes/volumes'
-import { registerSpreadsRoutes } from './routes/spreads'
-import { registerBenchmarkRoutes } from './routes/benchmark'
-import { registerOracleRoutes } from './routes/oracle'
-import { registerBasketRoutes } from './routes/basket'
-import { registerDiscoveryRoutes } from './routes/discovery'
-import { registerSettleRoute } from './routes/facilitator'
+import { buildApp } from './app'
 import { fanOutManager } from './ws/fanout'
 
-import { startSDEXIngester } from './ingesters/sdex'
-import { startAMMIngester } from './ingesters/amm'
-import { startSoroswapIngester } from './ingesters/soroswap'
+import { venueAdapters, startVenueAdapter } from './ingest/venues'
 import { startSnapshotIngester } from './ingesters/snapshot'
-import { startAquariusIngester } from './ingest/venues/aquarius'
 import { createAggregateQueue, startAggregateWorker, scheduleAggregateRefresh } from './jobs/aggregateRefresh'
-import { createSnapshotRetentionQueue, startSnapshotRetentionWorker, scheduleSnapshotRetention, pruneOldSnapshots, SNAPSHOT_RETENTION_DAYS } from './jobs/snapshotRetention'
+import { createSnapshotRetentionQueue, startSnapshotRetentionWorker, scheduleSnapshotRetention, pruneAllNetworks, SNAPSHOT_RETENTION_DAYS } from './jobs/snapshotRetention'
+import {
+  createPricePointsPartitionQueue,
+  startPricePointsPartitionWorker,
+  schedulePricePointsPartitionMaintenance,
+  runPricePointsMaintenance,
+  PRICE_POINTS_RETENTION_DAYS,
+} from './jobs/pricePointsPartitionJob'
 import { loadPersistedPairs, getActivePairs } from './pairsRegistry'
-import { getMetrics } from './metrics'
+
+const log = createLogger('startup')
 
 async function main() {
   // ── Ensure DB schema is up-to-date ────────────────────────────────────────
-  console.log('[lens] Running database migrations…')
+  log.info('running database migrations')
   execSync('node node_modules/prisma/build/index.js db push --accept-data-loss', { stdio: 'inherit' })
-  console.log('[lens] Database ready.')
+  log.info('database ready')
 
   // ── Connect dependencies ──────────────────────────────────────────────────
   // Redis is a cache and a job broker, not a source of truth: reads fall back
@@ -64,120 +44,33 @@ async function main() {
   // database, uncached, until Redis comes back.
   try {
     await redis.connect()
-    console.log('[lens] Redis connected')
+    log.info('redis connected')
   } catch (err) {
-    console.warn(
-      '[lens] Redis unavailable, continuing without cache:',
-      (err as Error).message,
-    )
+    log.warn({ err }, 'redis unavailable, continuing without cache')
   }
 
   await pgPool.connect()
-  console.log('[lens] PostgreSQL connected')
+  log.info('postgresql connected')
 
   // ── Load persisted runtime pairs ──────────────────────────────────────────
   await loadPersistedPairs()
 
   // ── Fastify API server ────────────────────────────────────────────────────
-  const app = Fastify({ logger: { level: 'warn' } })
-  await app.register(cors, { origin: true })
-  await app.register(compress)
-
-  // HTTP request/latency metrics. Registered FIRST, ahead of the network
-  // selector, API-key auth, the rate limiter and x402, so that requests those
-  // plugins reject (400/401/402/429) still have their timer started and are
-  // counted. See src/middleware/httpMetrics.ts.
-  await app.register(registerHttpMetrics)
-
-  // Resolves the per-request Stellar network (?network= query param / x-network
-  // header) onto req.network, validating it (400 on an unrecognised value).
-  // Runs in onRequest, ahead of API-key auth/rate-limiting/x402 and every route
-  // handler, so all of them can read req.network.
-  await app.register(registerNetworkSelector)
-
-  // API-key authentication — validates Authorization: Bearer <key> and attaches
-  // per-key quota metadata to req.apiKey. Registered BEFORE the rate limiter so
-  // that req.apiKey is populated when the limiter evaluates its per-key quota
-  // (both run in the onRequest phase, in registration order). Disabled when
-  // REQUIRE_API_KEY=false. Routes marked `config.public` bypass auth.
-  if (process.env.REQUIRE_API_KEY !== 'false') {
-    await app.register(registerApiKeyAuth)
-  } else {
-    app.log.warn('[auth] REQUIRE_API_KEY=false — API key authentication disabled')
-  }
-
-  // Per-key rate quotas: the limit is derived from the authenticated key's
-  // metadata (req.apiKey, set by the auth hook above). Unauthenticated/public
-  // requests fall back to a conservative shared limit keyed by IP. The IP
-  // fallback is overridable via RATE_LIMIT_IP_MAX so load tests (which flood
-  // from a single IP without a key) can measure the endpoint, not the limiter.
-  const ipRateLimitMax = parseInt(process.env.RATE_LIMIT_IP_MAX ?? '100', 10)
-  await app.register(rateLimit, {
-    max: (req) => req.apiKey?.ratePerMin ?? ipRateLimitMax,
-    timeWindow: '1 minute',
-    keyGenerator: (req) => req.apiKey?.id ?? req.ip,
-    allowList: (req) => req.url === '/status',
-    errorResponseBuilder: (req, context) => ({
-      statusCode: 429,
-      error: 'Too Many Requests',
-      message: `Rate limit exceeded, retry in ${context.after}`,
-      retryAfter: context.after
-    })
-  })
-
-  // Specific limit for /status (higher for monitoring)
-  app.addHook('onRoute', (routeOptions) => {
-    if (routeOptions.url === '/status') {
-      routeOptions.config = {
-        ...routeOptions.config,
-        rateLimit: {
-          max: 1000,
-          timeWindow: '1 minute'
-        }
-      }
-    }
-  })
-
-  // Admin endpoints (key issuance/revocation) — gated by ADMIN_TOKEN. Marked
-  // `config.public` so the API-key auth hook skips them.
-  await registerAdminRoutes(app)
-  await registerUsageRoutes(app)
-  await app.register(registerFacilitatorRoutes)
-
-  await app.register(registerX402)
-  await registerRESTRoutes(app)
-  await registerWebhookRoutes(app)
-  await registerCandleRoutes(app)
-  await registerPairsRoutes(app)
-  await registerScreenerRoutes(app)
-  await registerHistoryRoutes(app)
-  await registerPriceRoutes(app)
-  await registerVolumeRoutes(app)
-  await registerSpreadsRoutes(app)
-  await registerBenchmarkRoutes(app)
-  await registerOracleRoutes(app)
-  await registerBasketRoutes(app)
-  await registerDiscoveryRoutes(app)
-  await registerSettleRoute(app)
-  await registerGraphQL(app)
-  await registerWebSocket(app)
-
-  // Prometheus metrics endpoint (un-gated, public — no API key required)
-  app.get('/metrics', { config: { public: true } }, async (req, reply) => {
-    reply.type('text/plain; version=0.0.4; charset=utf-8')
-    return await getMetrics()
-  })
+  // All plugin and route wiring lives in buildApp() (src/app.ts) so tests can
+  // boot the exact same route surface without the connections and background
+  // workers started below.
+  const app = await buildApp()
 
   await app.listen({ port: config.api.port, host: config.api.host })
-  console.log(`[lens] API listening on http://${config.api.host}:${config.api.port}`)
-  console.log(`[lens] GraphiQL at http://localhost:${config.api.port}/graphiql`)
+  log.info({ url: `http://${config.api.host}:${config.api.port}` }, 'API listening')
+  log.info({ url: `http://localhost:${config.api.port}/graphiql` }, 'GraphiQL available')
 
   // ── WebSocket fan-out (non-blocking — requires Redis for multi-instance) ─
   try {
     await fanOutManager.initialize()
-    console.log('[lens] WebSocket fan-out manager initialized')
+    log.info('websocket fan-out manager initialized')
   } catch (err) {
-    console.warn('[lens] WebSocket fan-out init skipped:', (err as Error).message)
+    log.warn({ err }, 'websocket fan-out init skipped')
   }
 
   // ── Aggregate refresh worker (non-blocking — requires Redis) ─────────────
@@ -200,12 +93,12 @@ async function main() {
         await scheduleAggregateRefresh(queue, network)
         started.push(network)
       } catch (err) {
-        console.warn(`[lens] Aggregate refresh worker skipped for ${network} (Redis unavailable):`, (err as Error).message)
+        log.warn({ network, err }, 'aggregate refresh worker skipped (redis unavailable)')
         await Promise.allSettled([queue?.close(), worker?.close()])
       }
     }
     if (started.length > 0) {
-      console.log(`[lens] Aggregate refresh worker started for network(s): ${started.join(', ')}`)
+      log.info({ networks: started }, 'aggregate refresh worker started')
     }
   }
 
@@ -220,12 +113,14 @@ async function main() {
   // work in-process.
   const safePrune = async () => {
     try {
-      const pruned = await pruneOldSnapshots()
-      if (pruned > 0) {
-        console.log(`[lens] Pruned ${pruned} snapshot(s) older than ${SNAPSHOT_RETENTION_DAYS}d`)
+      const counts = await pruneAllNetworks()
+      for (const [network, pruned] of Object.entries(counts)) {
+        if (pruned > 0) {
+          log.info({ network, pruned, retentionDays: SNAPSHOT_RETENTION_DAYS }, 'pruned snapshots older than retention window')
+        }
       }
     } catch (err) {
-      console.error('[lens] Snapshot prune failed:', (err as Error).message)
+      log.error({ err }, 'snapshot prune failed')
     }
   }
 
@@ -238,12 +133,51 @@ async function main() {
       retentionQueue = createSnapshotRetentionQueue()
       retentionWorker = startSnapshotRetentionWorker()
       await scheduleSnapshotRetention(retentionQueue)
-      console.log('[lens] Snapshot retention worker started')
+      log.info('snapshot retention worker started')
     } catch (err) {
-      console.warn('[lens] Snapshot retention worker skipped (Redis unavailable):', (err as Error).message)
-      console.warn('[lens] Falling back to an in-process hourly prune')
+      log.warn({ err }, 'snapshot retention worker skipped (redis unavailable)')
+      log.warn('falling back to an in-process hourly prune')
       await Promise.allSettled([retentionQueue?.close(), retentionWorker?.close()])
       setInterval(() => { void safePrune() }, 60 * 60 * 1000).unref()
+    }
+  }
+
+  // ── Price points partition maintenance & retention ────────────────────────
+  // price_points is range-partitioned by timestamp. We pre-create future partitions
+  // ahead of need so ingesters never fail on unmapped timestamp ranges. Dropping
+  // expired partitions is opt-in via PRICE_POINTS_DROP_EXPIRED=true (default: off)
+  // to safeguard raw historical records until rollups are complete (#231).
+  const safeMaintainPartitions = async () => {
+    try {
+      const result = await runPricePointsMaintenance()
+      if (result.created.length > 0) {
+        log.info({ count: result.created.length }, 'pre-created price_points partitions')
+      }
+      if (result.dropped.length > 0) {
+        log.info(
+          { count: result.dropped.length, retentionDays: PRICE_POINTS_RETENTION_DAYS },
+          'dropped expired price_points partitions',
+        )
+      }
+    } catch (err) {
+      log.error({ err }, 'price_points partition maintenance failed')
+    }
+  }
+
+  await safeMaintainPartitions()
+
+  {
+    let partitionQueue: ReturnType<typeof createPricePointsPartitionQueue> | undefined
+    let partitionWorker: ReturnType<typeof startPricePointsPartitionWorker> | undefined
+    try {
+      partitionQueue = createPricePointsPartitionQueue()
+      partitionWorker = startPricePointsPartitionWorker()
+      await schedulePricePointsPartitionMaintenance(partitionQueue)
+      log.info('price_points partition worker started')
+    } catch (err) {
+      log.warn({ err }, 'price_points partition worker unavailable; falling back to hourly in-process maintenance')
+      await Promise.allSettled([partitionQueue?.close(), partitionWorker?.close()])
+      setInterval(() => { void safeMaintainPartitions() }, 60 * 60 * 1000).unref()
     }
   }
 
@@ -254,25 +188,27 @@ async function main() {
   // ingesters running on testnet.
   const restartIngester = (name: string, network: NetworkName, fn: () => Promise<void>) => {
     fn().catch(err => {
-      console.error(`[lens] ${name}/${network} ingester crashed, restarting in 10s:`, err.message)
+      log.error({ ingester: name, network, err }, 'ingester crashed; restarting in 10s')
       setTimeout(() => restartIngester(name, network, fn), 10_000)
     })
   }
 
   const enabledNetworks = getEnabledNetworks()
-  console.log(`[lens] Starting ingesters for network(s): ${enabledNetworks.join(', ')}`)
+  log.info({ networks: enabledNetworks }, 'starting ingesters')
   for (const network of enabledNetworks) {
-    restartIngester('SDEX', network, () => startSDEXIngester(network))
-    restartIngester('AMM', network, () => startAMMIngester(network))
-    restartIngester('Soroswap', network, () => startSoroswapIngester(network))
+    for (const adapter of venueAdapters) {
+      restartIngester(adapter.name, network, () => startVenueAdapter(adapter, network))
+    }
     restartIngester('Snapshot', network, () => startSnapshotIngester(network))
-    restartIngester('Aquarius', network, () => startAquariusIngester(network))
   }
 
-  console.log(`[lens] Watching ${getActivePairs().length} pairs: ${getActivePairs().map(p => p.pairKey).join(', ')}`)
+  log.info(
+    { count: getActivePairs().length, pairs: getActivePairs().map(p => p.pairKey) },
+    'watching pairs'
+  )
 }
 
 main().catch(err => {
-  console.error('[lens] Fatal startup error:', err)
+  log.error({ err }, 'fatal startup error')
   process.exit(1)
 })

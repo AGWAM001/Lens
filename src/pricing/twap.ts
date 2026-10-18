@@ -1,4 +1,5 @@
 import { pgPool } from '../db'
+import { activeNetwork, type NetworkName } from '../config'
 
 // ─── TWAP — Time-Weighted Average Price ───────────────────────────────────────
 // Computed by averaging the midpoints of successive price points weighted by
@@ -12,6 +13,7 @@ export interface TWAPResult {
   sampleCount: number
   outlierRejected: number
   filterMethod: string
+  network: NetworkName
 }
 
 export interface VWAPResult {
@@ -22,55 +24,7 @@ export interface VWAPResult {
   volumeTotal: number
   outlierRejected: number
   filterMethod: string
-}
-
-/**
- * Reject outliers using the Interquartile Range (IQR) method.
- * Prices outside [Q1 - 1.5*IQR, Q3 + 1.5*IQR] are considered outliers.
- * Returns the filtered array and count of rejected points.
- */
-function rejectOutliersIQR(prices: number[]): { filtered: number[]; rejected: number } {
-  if (prices.length < 4) return { filtered: prices, rejected: 0 }
-
-  const sorted = [...prices].sort((a, b) => a - b)
-  const n = sorted.length
-
-  // Q1 = median of lower half
-  const lowerHalf = sorted.slice(0, Math.floor(n / 2))
-  const upperHalf = sorted.slice(Math.ceil(n / 2))
-
-  const q1 = median(lowerHalf)
-  const q3 = median(upperHalf)
-  const iqr = q3 - q1
-
-  const lowerBound = q1 - 1.5 * iqr
-  const upperBound = q3 + 1.5 * iqr
-
-  const filtered = prices.filter(p => p >= lowerBound && p <= upperBound)
-  return { filtered, rejected: prices.length - filtered.length }
-}
-
-/**
- * Reject outliers using the Modified Z-Score method (more robust for small samples).
- * Points with |z_score| > 3.5 are rejected.
- */
-function rejectOutliersModifiedZScore(prices: number[]): { filtered: number[]; rejected: number } {
-  if (prices.length < 4) return { filtered: prices, rejected: 0 }
-
-  const sorted = [...prices].sort((a, b) => a - b)
-  const med = median(sorted)
-  const mad = median(sorted.map(v => Math.abs(v - med))) // Median Absolute Deviation
-
-  // If MAD is 0 (all same values), no outliers
-  if (mad === 0) return { filtered: prices, rejected: 0 }
-
-  const threshold = 3.5
-  const filtered = prices.filter(p => {
-    const zScore = 0.6745 * (p - med) / mad
-    return Math.abs(zScore) <= threshold
-  })
-
-  return { filtered, rejected: prices.length - filtered.length }
+  network: NetworkName
 }
 
 function median(arr: number[]): number {
@@ -97,19 +51,22 @@ export async function computeTWAP(
   options?: {
     sampleIntervalSeconds?: number
     outlierMethod?: 'iqr' | 'modified_zscore'
+    network?: NetworkName
   }
 ): Promise<TWAPResult> {
   const sampleIntervalSeconds = options?.sampleIntervalSeconds ?? 60
   const outlierMethod = options?.outlierMethod ?? 'iqr'
+  const network = options?.network ?? activeNetwork
 
-  // Fetch price points within the window, ordered by timestamp
+  // Fetch price points within the window for the specific network, ordered by timestamp
   const result = await pgPool.query(
     `SELECT price::numeric as price, timestamp
      FROM price_points
      WHERE pair_key = $1
+       AND network = $3
        AND timestamp > NOW() - ($2 || ' minutes')::interval
      ORDER BY timestamp ASC`,
-    [pairKey, windowMinutes]
+    [pairKey, windowMinutes, network]
   )
 
   const rows = result.rows
@@ -121,18 +78,34 @@ export async function computeTWAP(
       sampleCount: 0,
       outlierRejected: 0,
       filterMethod: outlierMethod,
+      network,
     }
   }
 
   // Extract raw prices for outlier rejection
   const rawPrices = rows.map((r: any) => parseFloat(r.price))
 
-  // Reject outliers
-  const { filtered: validPrices, rejected } = outlierMethod === 'iqr'
-    ? rejectOutliersIQR(rawPrices)
-    : rejectOutliersModifiedZScore(rawPrices)
+  // Reject outliers by original index so timestamps and prices stay paired.
+  const { rejectedIndices: statisticalOutliers } = outlierMethod === 'iqr'
+    ? rejectOutliersWithIndices(rawPrices)
+    : rejectOutliersModifiedZScoreWithIndices(rawPrices)
+  const rejectedIndices = new Set(statisticalOutliers)
+  rawPrices.forEach((price, i) => {
+    if (!Number.isFinite(price)) rejectedIndices.add(i)
+  })
+  const rejected = rejectedIndices.size
 
-  if (validPrices.length === 0) {
+  const validPoints = rows
+    .map((r: any, i: number) => ({
+      ts: new Date(r.timestamp).getTime(),
+      price: rawPrices[i],
+      rejected: rejectedIndices.has(i),
+    }))
+    .filter((point: any) => !point.rejected)
+    .map(({ ts, price }: any) => ({ ts, price }))
+    .sort((a: any, b: any) => a.ts - b.ts)
+
+  if (validPoints.length === 0) {
     return {
       twap: 0,
       startTime: rows[0].timestamp,
@@ -140,6 +113,7 @@ export async function computeTWAP(
       sampleCount: rawPrices.length,
       outlierRejected: rejected,
       filterMethod: outlierMethod,
+      network,
     }
   }
 
@@ -151,27 +125,19 @@ export async function computeTWAP(
   if (totalDurationMs <= 0) {
     // Single data point — use its price
     return {
-      twap: validPrices[0],
+      twap: validPoints[0].price,
       startTime: rows[0].timestamp,
       endTime: rows[rows.length - 1].timestamp,
       sampleCount: rawPrices.length,
       outlierRejected: rejected,
       filterMethod: outlierMethod,
+      network,
     }
   }
 
   const sampleIntervalMs = sampleIntervalSeconds * 1000
   const sampleCount = Math.max(1, Math.floor(totalDurationMs / sampleIntervalMs))
   const interpolatedPrices: { price: number; weight: number }[] = []
-
-  // Build sorted (timestamp, price) pairs for the valid points
-  const validPoints = rows
-    .map((r: any, i: number) => ({
-      ts: new Date(r.timestamp).getTime(),
-      price: validPrices[i],
-    }))
-    .filter((_: any, i: number) => i < validPrices.length)
-    .sort((a: any, b: any) => a.ts - b.ts)
 
   for (let i = 0; i <= sampleCount; i++) {
     const sampleTs = startTime + i * sampleIntervalMs
@@ -203,6 +169,7 @@ export async function computeTWAP(
     sampleCount: rawPrices.length,
     outlierRejected: rejected,
     filterMethod: outlierMethod,
+    network,
   }
 }
 
@@ -223,9 +190,11 @@ export async function computeVWAP(
   options?: {
     source?: 'SDEX' | 'AMM'
     outlierMethod?: 'iqr' | 'modified_zscore'
+    network?: NetworkName
   }
 ): Promise<VWAPResult> {
   const outlierMethod = options?.outlierMethod ?? 'iqr'
+  const network = options?.network ?? activeNetwork
 
   let query: string
   let params: any[]
@@ -234,17 +203,19 @@ export async function computeVWAP(
     query = `SELECT price::numeric as price, base_volume::numeric as volume, timestamp
              FROM price_points
              WHERE pair_key = $1
+               AND network = $4
                AND source = $3
                AND timestamp > NOW() - ($2 || ' minutes')::interval
              ORDER BY timestamp ASC`
-    params = [pairKey, windowMinutes, options.source]
+    params = [pairKey, windowMinutes, options.source, network]
   } else {
     query = `SELECT price::numeric as price, base_volume::numeric as volume, timestamp
              FROM price_points
              WHERE pair_key = $1
+               AND network = $3
                AND timestamp > NOW() - ($2 || ' minutes')::interval
              ORDER BY timestamp ASC`
-    params = [pairKey, windowMinutes]
+    params = [pairKey, windowMinutes, network]
   }
 
   const result = await pgPool.query(query, params)
@@ -259,6 +230,7 @@ export async function computeVWAP(
       volumeTotal: 0,
       outlierRejected: 0,
       filterMethod: outlierMethod,
+      network,
     }
   }
 
@@ -283,6 +255,7 @@ export async function computeVWAP(
       volumeTotal: 0,
       outlierRejected: rejectedIndices.size,
       filterMethod: outlierMethod,
+      network,
     }
   }
 
@@ -306,6 +279,7 @@ export async function computeVWAP(
     volumeTotal: totalVolume,
     outlierRejected: rejectedIndices.size,
     filterMethod: outlierMethod,
+    network,
   }
 }
 

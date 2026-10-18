@@ -63,9 +63,19 @@ export async function upsertPricePoints(points: {
   return result.count
 }
 
-export async function getIndexerCursor(id: string, network: NetworkName): Promise<string | null> {
+/**
+ * The cursor and the ledger it reached, read in one round trip. Ingesters need
+ * both: the cursor resumes pagination, and the ledger is the fallback when a
+ * trade's TOID can't be parsed (see ingesters/toid.ts).
+ */
+export interface IndexerState {
+  cursor: string | null
+  ledger: number | null
+}
+
+export async function getIndexerState(id: string, network: NetworkName): Promise<IndexerState> {
   const state = await prisma.indexerState.findUnique({ where: { network_id: { network, id } } })
-  return state?.lastCursor ?? null
+  return { cursor: state?.lastCursor ?? null, ledger: state?.lastLedger ?? null }
 }
 
 export async function setIndexerCursor(id: string, cursor: string, network: NetworkName, ledger?: number): Promise<void> {

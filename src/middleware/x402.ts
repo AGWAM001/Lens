@@ -5,12 +5,81 @@ import { X402_NETWORK_LABEL, paymentAddressFor, isX402Configured, getX402Resourc
 import fp from 'fastify-plugin'
 import './network' // declares req.network on the FastifyRequest type
 
-// Routes gated by x402 and their prices
-const GATED_ROUTES: Record<string, { price: string; description: string }> = {
-  '/price': { price: '$0.10', description: 'Unified SDEX+AMM price with VWAP and best route' },
-  '/pools': { price: '$0.05', description: 'AMM liquidity pool reserves and spot prices' },
-  '/candles': { price: '$0.05', description: 'OHLCV candle data for trading charts' },
-  '/graphql': { price: '$0.10', description: 'GraphQL queries for price data and market information' },
+export interface GatedRoute {
+  readonly path: string
+  readonly method: 'GET' | 'POST'
+  readonly price: string
+  readonly description: string
+}
+
+// Routes gated by x402 and their prices, declared in deliberate order
+export const GATED_ROUTES: readonly GatedRoute[] = [
+  {
+    path: '/price',
+    method: 'GET',
+    price: '$0.10',
+    description: 'Unified SDEX+AMM price with VWAP and best route',
+  },
+  {
+    path: '/pools',
+    method: 'GET',
+    price: '$0.05',
+    description: 'AMM liquidity pool reserves and spot prices',
+  },
+  {
+    path: '/candles',
+    method: 'GET',
+    price: '$0.05',
+    description: 'OHLCV candle data for trading charts',
+  },
+  {
+    path: '/graphql',
+    method: 'POST',
+    price: '$0.10',
+    description: 'GraphQL queries for price data and market information',
+  },
+] as const
+
+/**
+ * Checks whether `routedPath` matches `prefix` at a path-segment boundary.
+ *
+ * Query strings and fragments are stripped so they cannot affect whether a route
+ * matches. A path matches at a segment boundary if each segment of the prefix
+ * matches the corresponding segment of the path.
+ *
+ * For example:
+ *   - '/price' matches '/price'
+ *   - '/price/test' matches '/price'
+ *   - '/pricing' does NOT match '/price' (segment 'pricing' !== 'price')
+ *   - '/poolsize' does NOT match '/pools' (segment 'poolsize' !== 'pools')
+ */
+export function matchesPathSegment(routedPath: string, prefix: string): boolean {
+  const cleanPath = routedPath.split('?')[0].split('#')[0]
+  const cleanPrefix = prefix.split('?')[0].split('#')[0]
+
+  const pathSegments = cleanPath.split('/').filter(Boolean)
+  const prefixSegments = cleanPrefix.split('/').filter(Boolean)
+
+  if (pathSegments.length < prefixSegments.length) {
+    return false
+  }
+
+  return prefixSegments.every((seg, i) => pathSegments[i] === seg)
+}
+
+/**
+ * Finds the first matching gated route definition for a given path and HTTP method.
+ * Matches on the routed path at a path-segment boundary, never on raw URLs with query strings.
+ */
+export function matchGatedRoute(
+  path: string,
+  method: string,
+  routes: readonly GatedRoute[] = GATED_ROUTES,
+): GatedRoute | undefined {
+  const upperMethod = method.toUpperCase()
+  return routes.find(
+    route => route.method.toUpperCase() === upperMethod && matchesPathSegment(path, route.path)
+  )
 }
 
 /**
@@ -29,12 +98,9 @@ async function x402Plugin(app: FastifyInstance) {
   app.log.info('[oracle] x402 payment gating enabled')
 
   app.addHook('preHandler', async (req: FastifyRequest, reply: FastifyReply) => {
-    // Gate GET requests on matching path prefixes, or POST requests to /graphql
-    const matchedRoute = Object.keys(GATED_ROUTES).find(prefix => {
-      const pathMatches = req.url.startsWith(prefix)
-      const methodAllowed = prefix === '/graphql' ? req.method === 'POST' : req.method === 'GET'
-      return pathMatches && methodAllowed
-    })
+    // Gate requests matching declared gated routes at path-segment boundaries
+    const routedPath = req.routeOptions?.url ?? req.url
+    const matchedRoute = matchGatedRoute(routedPath, req.method)
     if (!matchedRoute) return
 
     // Falls back to testnet when the network selector plugin isn't
@@ -46,7 +112,7 @@ async function x402Plugin(app: FastifyInstance) {
       return
     }
 
-    const { price, description } = GATED_ROUTES[matchedRoute]
+    const { price, description } = matchedRoute
     const paymentHeader = req.headers['x-payment'] as string | undefined
 
     const requirements = {
