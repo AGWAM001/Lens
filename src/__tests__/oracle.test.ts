@@ -49,6 +49,7 @@ describe('GET /compare/:asset', () => {
         timestamp: new Date(1_760_000_000 * 1000).toISOString(),
         deviationPct: 0.9901,
         status: 'available',
+        ageSeconds: expect.any(Number),
       },
       {
         name: 'second-oracle',
@@ -56,6 +57,7 @@ describe('GET /compare/:asset', () => {
         timestamp: null,
         deviationPct: null,
         status: 'unreachable',
+        ageSeconds: null,
       },
     ])
     expect(mockQuery.mock.calls[0][1]).toEqual(['XLM', 'testnet'])

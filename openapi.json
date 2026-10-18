@@ -2847,7 +2847,8 @@
                 "price",
                 "timestamp",
                 "deviationPct",
-                "status"
+                "status",
+                "ageSeconds"
               ],
               "additionalProperties": false,
               "properties": {
@@ -2869,11 +2870,17 @@
                 },
                 "status": {
                   "type": "string",
+                  "description": "unreachable means the adapter failed; empty means it is configured but returned no quote.",
                   "enum": [
                     "available",
                     "unreachable",
+                    "empty",
                     "not_configured"
                   ]
+                },
+                "ageSeconds": {
+                  "type": "integer",
+                  "nullable": true
                 }
               }
             }

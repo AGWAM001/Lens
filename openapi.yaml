@@ -1802,7 +1802,7 @@ components:
           description: One result per configured adapter; unavailable sources remain present with a status.
           items:
             type: object
-            required: [name, price, timestamp, deviationPct, status]
+            required: [name, price, timestamp, deviationPct, status, ageSeconds]
             additionalProperties: false
             properties:
               name:
@@ -1819,7 +1819,11 @@ components:
                 nullable: true
               status:
                 type: string
-                enum: [available, unreachable, not_configured]
+                description: unreachable means the adapter failed; empty means it is configured but returned no quote.
+                enum: [available, unreachable, empty, not_configured]
+              ageSeconds:
+                type: integer
+                nullable: true
 
     ScreenerRow:
       type: object

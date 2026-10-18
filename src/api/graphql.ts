@@ -8,8 +8,11 @@ import { getCachedPrice } from '../redis'
 import { getAggregatedPrice } from '../aggregator/vwap'
 import { getBestRoute } from '../aggregator/bestRoute'
 import { pgPool } from '../db'
-import { config, activeNetwork } from '../config'
+import { config, activeNetwork, type NetworkName } from '../config'
 import { parseAssetStr } from '../pairsRegistry'
+import { reflectorOracleAdapter } from '../ingest/oracles/reflector'
+import type { OracleAdapter } from '../ingest/oracles/adapter'
+import { compareOracles } from '../services/oracleComparison'
 import { priceEmitter, PRICE_PUBLISHED, type PricePublishedEvent } from '../events'
 
 // Mercurius pubsub topic that carries every new price. A single app-level
@@ -108,6 +111,37 @@ const schema = `
     network: String!
   }
 
+  enum OracleSourceStatus {
+    NOT_CONFIGURED
+    AVAILABLE
+    UNREACHABLE
+    EMPTY
+  }
+
+  type OracleSource {
+    name: String!
+    price: Float
+    timestamp: String
+    deviationPct: Float
+    """
+    UNREACHABLE means the adapter failed; EMPTY means it is configured but
+    returned no quote.
+    """
+    status: OracleSourceStatus!
+    ageSeconds: Int
+  }
+
+  type OracleComparison {
+    asset: String!
+    network: String!
+    lens: Float
+    reflector: Float
+    deviationPct: Float
+    status: String!
+    fetchedAt: String!
+    oracles: [OracleSource!]!
+  }
+
   type Query {
     """
     Aggregated price for a pair. Three outcomes are kept distinct:
@@ -126,6 +160,11 @@ const schema = `
     getBestRoute(assetA: String!, assetB: String!, amount: Float!): RouteInfo
     getPriceHistory(assetA: String!, assetB: String!, window: String!, limit: Int): [PriceBucket]
     listPairs: [String]!
+    """
+    Compares the Lens price for an asset against every configured oracle.
+    The network argument defaults to the active network.
+    """
+    oracle(asset: String!, network: String): OracleComparison
   }
 
   type Subscription {
@@ -156,6 +195,8 @@ function findPair(assetA: string, assetB: string) {
     return (cA === pA && cB === pB) || (cA === pB && cB === pA)
   })
 }
+
+const oracleAdapters: OracleAdapter[] = [reflectorOracleAdapter]
 
 const resolvers = {
   Query: {
@@ -241,6 +282,25 @@ const resolvers = {
 
     listPairs() {
       return config.pairs.map(p => p.pairKey)
+    },
+
+    async oracle(_: unknown, { asset, network }: { asset: string; network?: string | null }) {
+      if (network != null && network !== 'testnet' && network !== 'mainnet') {
+        throw new ErrorWithProps('network must be one of: testnet, mainnet', {
+          code: 'INVALID_INPUT',
+          field: 'network',
+        })
+      }
+      const comparison = await compareOracles(
+        asset.toUpperCase(),
+        (network ?? activeNetwork) as NetworkName,
+        oracleAdapters
+      )
+      if (!comparison) return null
+      return {
+        ...comparison,
+        oracles: comparison.oracles.map(o => ({ ...o, status: o.status.toUpperCase() })),
+      }
     },
   },
 
