@@ -9,6 +9,9 @@ import {
   type PartitionCreationResult,
   type PartitionRetentionResult,
 } from '../partitioning/pricePoints'
+import { createLogger } from '../logger'
+
+const log = createLogger('job:price-points-partition')
 
 const QUEUE_NAME = `${activeNetwork}:price-points-partition`
 
@@ -78,20 +81,23 @@ export function startPricePointsPartitionWorker() {
       try {
         const result = await runPricePointsMaintenance()
         if (result.created.length > 0) {
-          console.log(`[price-points-partition] Pre-created ${result.created.length} partition(s): ${result.created.join(', ')}`)
+          log.info({ count: result.created.length, partitions: result.created }, 'pre-created price_points partitions')
         }
         if (result.dropped.length > 0) {
-          console.log(`[price-points-partition] Dropped ${result.dropped.length} expired partition(s) older than ${PRICE_POINTS_RETENTION_DAYS}d: ${result.dropped.join(', ')}`)
+          log.info(
+            { count: result.dropped.length, partitions: result.dropped, retentionDays: PRICE_POINTS_RETENTION_DAYS },
+            'dropped expired price_points partitions',
+          )
         }
       } catch (err) {
-        console.error('[price-points-partition] Maintenance failed:', (err as Error).message)
+        log.error({ err }, 'price_points partition maintenance failed')
       }
     },
     { connection: redisConnection(), concurrency: 1 }
   )
 
   worker.on('failed', (_job, err) => {
-    console.error('[price-points-partition] Job failed:', err.message)
+    log.error({ err }, 'price_points partition job failed')
   })
 
   return worker
