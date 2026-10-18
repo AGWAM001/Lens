@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 import { computeTWAP, computeVWAP } from '../pricing/twap'
 import { z } from 'zod'
+import { formatValidationError } from '../validation'
 import '../middleware/network'
 import { activeNetwork, type NetworkName } from '../config'
 
@@ -39,7 +40,7 @@ export async function registerPriceRoutes(app: FastifyInstance) {
       const { assetA, assetB } = req.params
       const parsed = TwapQuerySchema.safeParse(req.query)
       if (!parsed.success) {
-        return reply.status(400).send({ error: parsed.error.issues[0].message || 'Invalid parameters' })
+        return reply.status(400).send(formatValidationError(parsed.error))
       }
       const { window: windowMinutes, sampleInterval, method } = parsed.data
       const network: NetworkName = req.network ?? parsed.data.network ?? activeNetwork
@@ -90,7 +91,7 @@ export async function registerPriceRoutes(app: FastifyInstance) {
       const { assetA, assetB } = req.params
       const parsed = VwapQuerySchema.safeParse(req.query)
       if (!parsed.success) {
-        return reply.status(400).send({ error: parsed.error.issues[0].message || 'Invalid parameters' })
+        return reply.status(400).send(formatValidationError(parsed.error))
       }
       const { window: windowMinutes, source, method } = parsed.data
 
