@@ -14,12 +14,17 @@ import { reflectorOracleAdapter } from '../ingest/oracles/reflector'
 import type { OracleAdapter } from '../ingest/oracles/adapter'
 import { compareOracles } from '../services/oracleComparison'
 import { priceEmitter, PRICE_PUBLISHED, type PricePublishedEvent } from '../events'
+import { HISTORY_INTERVAL_SECONDS, MAX_HISTORY_POINTS } from './history'
+
+const WINDOW_SECONDS: Record<string, number> = {
+  ...HISTORY_INTERVAL_SECONDS,
+  '24h': 86400,
+}
 
 // Mercurius pubsub topic that carries every new price. A single app-level
 // listener bridges the ingesters' in-process `priceEmitter` onto this topic;
 // each subscriber then filters it down to the pair they asked for.
 const PRICE_TOPIC = 'PRICE_UPDATED'
-
 // Error codes that resolvers raise on purpose; their messages are written for
 // the caller and are safe to return as-is. Anything else is treated as an
 // unexpected internal failure and masked.
@@ -57,7 +62,7 @@ export function formatGraphQLErrors(execution: ExecutionResult, ctx: MercuriusCo
   return defaultErrorFormatter({ ...execution, errors }, ctx)
 }
 
-const schema = `
+export const schema = `
   type AggregatedPrice {
     assetA: String!
     assetB: String!
@@ -158,7 +163,21 @@ const schema = `
     """
     getPrice(assetA: String!, assetB: String!): AggregatedPrice
     getBestRoute(assetA: String!, assetB: String!, amount: Float!): RouteInfo
-    getPriceHistory(assetA: String!, assetB: String!, window: String!, limit: Int): [PriceBucket]
+    """
+    Returns historical price aggregate buckets for a pair over an optional [from, to] time range.
+
+    The time range is inclusive at both ends: a bucket is included if bucket >= from and bucket <= to.
+    Because both endpoints are inclusive, querying adjacent windows (e.g. [t0, t1] and [t1, t2]) will
+    return the boundary bucket at t1 in both results.
+    """
+    getPriceHistory(
+      assetA: String!
+      assetB: String!
+      window: String!
+      limit: Int
+      from: String
+      to: String
+    ): [PriceBucket]
     listPairs: [String]!
     """
     Compares the Lens price for an asset against every configured oracle.
@@ -252,21 +271,86 @@ const resolvers = {
 
     async getPriceHistory(
       _: unknown,
-      { assetA, assetB, window, limit = 100 }: { assetA: string; assetB: string; window: string; limit?: number }
+      {
+        assetA,
+        assetB,
+        window,
+        limit = 100,
+        from,
+        to,
+      }: {
+        assetA: string
+        assetB: string
+        window: string
+        limit?: number
+        from?: string
+        to?: string
+      }
     ) {
+      let fromDate: Date | undefined
+      let toDate: Date | undefined
+
+      if (from !== undefined && from !== null) {
+        fromDate = new Date(from)
+        if (isNaN(fromDate.getTime())) {
+          throw new ErrorWithProps('from must be a valid ISO 8601 date', { code: 'INVALID_INPUT' })
+        }
+      }
+
+      if (to !== undefined && to !== null) {
+        toDate = new Date(to)
+        if (isNaN(toDate.getTime())) {
+          throw new ErrorWithProps('to must be a valid ISO 8601 date', { code: 'INVALID_INPUT' })
+        }
+      }
+
+      if (fromDate && toDate && fromDate.getTime() > toDate.getTime()) {
+        throw new ErrorWithProps('from must be before to', { code: 'INVALID_INPUT' })
+      }
+
+      const intervalSecs = WINDOW_SECONDS[window] ?? HISTORY_INTERVAL_SECONDS[window] ?? 60
+
+      if (fromDate || toDate) {
+        const effectiveTo = toDate ?? new Date()
+        const effectiveFrom = fromDate ?? new Date(effectiveTo.getTime() - 24 * 60 * 60 * 1000)
+        const spanSecs = (effectiveTo.getTime() - effectiveFrom.getTime()) / 1000
+        if (spanSecs / intervalSecs > MAX_HISTORY_POINTS) {
+          throw new ErrorWithProps(
+            `requested window is too large for interval=${window} (max ${MAX_HISTORY_POINTS} points); narrow the range or use a coarser interval`,
+            { code: 'INVALID_INPUT' }
+          )
+        }
+      }
+
       const pairKey = makePairKey(assetA, assetB)
+      const conditions: string[] = ['pair_key = $1', 'window = $2']
+      const params: any[] = [pairKey, window]
+
+      if (fromDate) {
+        params.push(fromDate)
+        conditions.push(`bucket >= $${params.length}`)
+      }
+
+      if (toDate) {
+        params.push(toDate)
+        conditions.push(`bucket <= $${params.length}`)
+      }
+
+      params.push(Math.min(limit, 1000))
+      const limitParam = `$${params.length}`
+
       const result = await pgPool.query(
         `SELECT bucket, window, vwap::float, sdex_vwap::float, amm_vwap::float,
                 volume::float, trade_count, open_price::float, close_price::float,
                 high_price::float, low_price::float
          FROM price_aggregates
-         WHERE pair_key = $1 AND window = $2
+         WHERE ${conditions.join(' AND ')}
          ORDER BY bucket DESC
-         LIMIT $3`,
-        [pairKey, window, Math.min(limit, 1000)]
+         LIMIT ${limitParam}`,
+        params
       )
       return result.rows.map(r => ({
-        bucket: r.bucket.toISOString(),
+        bucket: (r.bucket instanceof Date ? r.bucket : new Date(r.bucket)).toISOString(),
         window: r.window,
         vwap: r.vwap,
         sdexVwap: r.sdex_vwap,
