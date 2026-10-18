@@ -26,6 +26,7 @@ import { registerOracleRoutes } from './routes/oracle'
 import { registerBasketRoutes } from './routes/basket'
 import { registerDiscoveryRoutes } from './routes/discovery'
 import { registerSettleRoute } from './routes/facilitator'
+import { registerCachePolicy } from './middleware/cachePolicy'
 import { getMetrics } from './metrics'
 
 export interface BuildAppOptions {
@@ -124,6 +125,12 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   await app.register(registerFacilitatorRoutes)
 
   await app.register(registerX402)
+
+  // Per-route Cache-Control policy (issue #266) — every response carries a
+  // deliberate Cache-Control header. Registered before the routes so the
+  // onSend hook observes all of them.
+  await app.register(registerCachePolicy)
+
   await registerRESTRoutes(app)
   await registerWebhookRoutes(app)
   await registerCandleRoutes(app)
