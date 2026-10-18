@@ -30,6 +30,7 @@ import { registerSettleRoute } from './routes/facilitator'
 import { registerCachePolicy } from './middleware/cachePolicy'
 import { getMetrics } from './metrics'
 import { loggerOptions, createDestination } from './logger'
+import { isPoolExhaustionError, recordPoolExhaustion } from './db'
 
 export interface BuildAppOptions {
   /**
@@ -155,6 +156,21 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   await registerSettleRoute(app)
   await registerGraphQL(app)
   await registerWebSocket(app)
+
+  // Global error handler: catches unhandled errors, ensuring database pool exhaustion
+  // is diagnosed with distinct logging and metric incrementation rather than a generic 500.
+  app.setErrorHandler((error, req, reply) => {
+    if (isPoolExhaustionError(error)) {
+      recordPoolExhaustion(error, `http:${req.method}:${req.url}`)
+      return reply.status(503).send({
+        error: 'Service Unavailable',
+        message: 'Database connection pool exhausted. Please retry shortly.',
+        code: 'DB_POOL_EXHAUSTED',
+      })
+    }
+    req.log.error(error)
+    return reply.send(error)
+  })
 
   // Prometheus metrics endpoint (un-gated, public — no API key required)
   app.get('/metrics', { config: { public: true } }, async (req, reply) => {

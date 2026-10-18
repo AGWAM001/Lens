@@ -98,6 +98,44 @@ export const db_query_duration_seconds = new Histogram({
   registers: [register]
 })
 
+// Database connection pool utilisation metrics
+export const db_pool_connections_in_use = new Gauge({
+  name: 'db_pool_connections_in_use',
+  help: 'Number of database connections currently checked out / in use',
+  registers: [register],
+})
+
+export const db_pool_connections_idle = new Gauge({
+  name: 'db_pool_connections_idle',
+  help: 'Number of idle database connections available in the pool',
+  registers: [register],
+})
+
+export const db_pool_connections_waiting = new Gauge({
+  name: 'db_pool_connections_waiting',
+  help: 'Number of queued requests currently waiting for a database connection',
+  registers: [register],
+})
+
+export const db_pool_exhaustion_errors_total = new Counter({
+  name: 'db_pool_exhaustion_errors_total',
+  help: 'Total number of database pool acquisition timeouts or exhaustion errors',
+  registers: [register],
+})
+
+let _poolMetricsUpdater: (() => void) | null = null
+
+export function setPoolMetricsUpdater(updater: () => void) {
+  _poolMetricsUpdater = updater
+}
+
 export async function getMetrics() {
+  if (_poolMetricsUpdater) {
+    try {
+      _poolMetricsUpdater()
+    } catch {
+      // Best-effort metric collection
+    }
+  }
   return await register.metrics()
 }
