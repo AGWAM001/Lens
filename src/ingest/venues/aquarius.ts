@@ -9,6 +9,7 @@
  */
 
 import { config, activeNetwork, getNetworkConfig, type NetworkName } from '../../config'
+import { createLogger } from '../../logger'
 import type { WatchedPair } from '../../types'
 import type { VenueAdapter, VenuePricePoint } from './types'
 import {
@@ -17,6 +18,9 @@ import {
   writeVenuePricePoints,
   startVenueAdapter,
 } from './runner'
+import { fetchWithTimeout } from '../../fetch'
+
+const log = createLogger('ingester:aquarius')
 
 export function _resetLastPrice(): void {
   resetLastPrice('Aquarius')
@@ -52,12 +56,12 @@ export async function fetchAquariusPools(
     params.append('assets[]', assetAStr)
     params.append('assets[]', assetBStr)
 
-    const res = await fetch(`${apiUrl}?${params.toString()}`)
+    const res = await fetchWithTimeout(`${apiUrl}?${params.toString()}`)
     if (!res.ok) return []
     const data = (await res.json()) as AquariusListResponse
     return data.results ?? []
   } catch (err) {
-    console.error(`[aquarius] Failed to fetch pools for ${pair.pairKey}:`, (err as Error).message)
+    log.error({ pair: pair.pairKey, err }, 'failed to fetch pools')
     return []
   }
 }
@@ -106,6 +110,7 @@ export async function ingestAquariusPair(
 
 export const aquariusAdapter: VenueAdapter<AquariusPool[], AquariusPool[]> = {
   name: 'Aquarius',
+  kind: 'amm',
   source: 'aquarius_amm',
 
   isEnabled(network: NetworkName): boolean {

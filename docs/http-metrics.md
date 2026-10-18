@@ -12,6 +12,11 @@ These three signals — request rate, error rate and p95 latency — are what an
 specifically and cannot answer that question; it is unchanged and still means
 what it always meant.
 
+The same cardinality rule applies to every metric family: labels must come from
+fixed buckets or server-defined values. Never put raw request paths, asset
+codes, issuer addresses, query values or websocket subscription strings in a
+Prometheus label.
+
 ## What is exported
 
 ### `http_requests_total`
@@ -52,6 +57,11 @@ So:
   `methods x routes x 5` rather than `methods x routes x ~60`. If a concrete
   need for an exact code appears, add it then — it is easy to add a label and
   painful to remove one dashboards depend on.
+- **Websocket pairs use fixed buckets.** `ws_clients_total`,
+  `ws_messages_sent_total` and `ws_messages_dropped_total` retain their `pair`
+  label, but pair-specific subscriptions are recorded as `other`; `*` remains
+  the aggregate across all subscriptions. Arbitrary pair names and issuer
+  addresses stay in fanout state only and cannot create Prometheus series.
 
 ## Bucket choice
 
