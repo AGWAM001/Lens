@@ -56,6 +56,16 @@ async function main() {
   const server = new BazaarMcpServer({
     fetchWithPayment,
     budget
+  // paid_call spends from the keys above, so the hosts it may pay for are the
+  // operator's decision. Unset means no host is payable at all (#404).
+  const paidCallAllowlist = (process.env.MCP_PAID_CALL_ALLOWED_HOSTS || '')
+    .split(',')
+    .map(entry => entry.trim())
+    .filter(Boolean);
+
+  const server = new BazaarMcpServer({
+    fetchWithPayment,
+    paidCallAllowlist
   });
 
   console.error('[mcp-server] Starting Bazaar MCP server on stdio...');
@@ -63,6 +73,12 @@ async function main() {
   // Limits and file paths only: the signing key is never logged.
   console.error(`[mcp-server] Spend limits: ${budget.describeLimits()}`);
   
+  console.error(
+    paidCallAllowlist.length > 0
+      ? `[mcp-server] paid_call may pay these allow-listed origins: ${paidCallAllowlist.join(', ')}`
+      : '[mcp-server] paid_call allow-list is empty: every paid call will be refused. Set MCP_PAID_CALL_ALLOWED_HOSTS to allow hosts.'
+  );
+
   await server.run();
 }
 

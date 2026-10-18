@@ -7,6 +7,13 @@ export const MCP_ERROR_CODES = {
   ERR_NO_RESULTS: 'ERR_NO_RESULTS',
   ERR_BAD_REQUEST: 'ERR_BAD_REQUEST',
   ERR_BUDGET_EXCEEDED: 'ERR_BUDGET_EXCEEDED',
+  // Refused before any request was made, for two different reasons:
+  //   ERR_URL_BLOCKED      the target resolves somewhere we will never fetch
+  //                        (private, loopback, link-local, metadata) — #488
+  //   ERR_HOST_NOT_ALLOWED the host is reachable but is not on the operator's
+  //                        paid_call allow-list — #487
+  ERR_URL_BLOCKED: 'ERR_URL_BLOCKED',
+  ERR_HOST_NOT_ALLOWED: 'ERR_HOST_NOT_ALLOWED',
   ERR_INTERNAL_FAILURE: 'ERR_INTERNAL_FAILURE'
 } as const;
 
