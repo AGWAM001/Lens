@@ -105,6 +105,93 @@
         }
       }
     },
+    "/tvl": {
+      "get": {
+        "operationId": "getTvl",
+        "summary": "Total Value Locked across Stellar DeFi venues",
+        "description": "Aggregates Total Value Locked (TVL) in USD across Stellar Classic AMM, Soroswap, and Aquarius. Reports totals, breakdown by venue, breakdown by asset with valuation sources named, and marks pools with unpriceable assets as unpriced rather than zero. Querying `?history=true` returns historical hourly TVL samples.",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/NetworkQuery"
+          },
+          {
+            "name": "history",
+            "in": "query",
+            "required": false,
+            "description": "Return historical time series of TVL when true",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          {
+            "name": "window",
+            "in": "query",
+            "required": false,
+            "description": "Historical lookback window in hours (default 24)",
+            "schema": {
+              "type": "string",
+              "default": 24
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Total Value Locked breakdown or historical series",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "network": {
+                      "type": "string",
+                      "enum": [
+                        "testnet",
+                        "mainnet"
+                      ]
+                    },
+                    "totalTvlUsd": {
+                      "type": "number"
+                    },
+                    "unpricedPoolsCount": {
+                      "type": "integer"
+                    },
+                    "pricedPoolsCount": {
+                      "type": "integer"
+                    },
+                    "venues": {
+                      "type": "object"
+                    },
+                    "byAsset": {
+                      "type": "object"
+                    },
+                    "pools": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    },
+                    "computedAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid parameters"
+          }
+        }
+      }
+    },
     "/status": {
       "get": {
         "operationId": "getStatus",

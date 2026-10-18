@@ -27,6 +27,7 @@ import { registerBasketRoutes } from './routes/basket'
 import { registerDiscoveryRoutes } from './routes/discovery'
 import { registerVenueRoutes } from './routes/venues'
 import { registerSettleRoute } from './routes/facilitator'
+import { registerTvlRoutes } from './routes/tvl'
 import { registerCachePolicy } from './middleware/cachePolicy'
 import { getMetrics } from './metrics'
 import { loggerOptions, createDestination } from './logger'
@@ -154,6 +155,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   await registerDiscoveryRoutes(app)
   await registerVenueRoutes(app)
   await registerSettleRoute(app)
+  await registerTvlRoutes(app)
   await registerGraphQL(app)
   await registerWebSocket(app)
 
