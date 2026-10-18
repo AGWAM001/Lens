@@ -19,6 +19,7 @@ import {
 } from '@stellar/stellar-sdk'
 import { activeNetwork, getNetworkConfig, type NetworkName } from '../../config'
 import { getRpcServer } from '../../network/clients'
+import type { OracleAdapter, OracleQuote } from './adapter'
 
 // Ephemeral fee payer — simulation only, no real funds needed
 const FEE_PAYER = Keypair.random()
@@ -27,6 +28,17 @@ export interface ReflectorPrice {
   asset: string
   price: number
   timestamp: number
+}
+
+/** Reflector implementation of the shared oracle adapter contract. */
+export const reflectorOracleAdapter: OracleAdapter = {
+  name: 'reflector',
+  isConfigured(network) {
+    return getNetworkConfig(network).oracle.enabled
+  },
+  getPrice(asset, network) {
+    return getCachedReflectorPrice(asset, network)
+  },
 }
 
 /**
@@ -82,22 +94,23 @@ export async function fetchReflectorPrice(
 }
 
 // In-memory cache (60 s TTL) to avoid hammering RPC on every comparison request
-const _cache = new Map<string, { price: number; fetchedAt: number }>()
+const _cache = new Map<string, { quote: OracleQuote; fetchedAt: number }>()
 const CACHE_TTL_MS = 60_000
 
 export async function getCachedReflectorPrice(
   asset: string,
   network: NetworkName = activeNetwork
-): Promise<number | null> {
+): Promise<OracleQuote | null> {
   const key = `${network}:${asset.toUpperCase()}`
   const entry = _cache.get(key)
   if (entry && Date.now() - entry.fetchedAt < CACHE_TTL_MS) {
-    return entry.price
+    return entry.quote
   }
   const fresh = await fetchReflectorPrice(asset, network)
   if (fresh) {
-    _cache.set(key, { price: fresh.price, fetchedAt: Date.now() })
-    return fresh.price
+    const quote = { price: fresh.price, timestamp: fresh.timestamp }
+    _cache.set(key, { quote, fetchedAt: Date.now() })
+    return quote
   }
   return null
 }

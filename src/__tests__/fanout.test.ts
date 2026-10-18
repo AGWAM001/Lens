@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
+const { metricLabelValues } = vi.hoisted(() => ({
+  metricLabelValues: [] as Array<{ metric: string; value: string }>,
+}))
+
 vi.mock('ioredis', () => {
   const mockRedis = {
     publish: vi.fn().mockResolvedValue(1),
@@ -32,12 +36,15 @@ vi.mock('../events', () => ({
 }))
 
 vi.mock('prom-client', () => {
-  function MockMetric() {
-    const labels = vi.fn(() => new MockMetric())
+  function MockMetric(options: { name: string }) {
+    const metricName = options.name
     this.inc = vi.fn()
     this.dec = vi.fn()
     this.set = vi.fn()
-    this.labels = labels
+    this.labels = vi.fn((value: string) => {
+      metricLabelValues.push({ metric: metricName, value })
+      return this
+    })
     this.observe = vi.fn()
     this.startTimer = vi.fn(() => vi.fn())
   }
@@ -54,6 +61,7 @@ import { fanOutManager } from '../ws/fanout'
 describe('FanOutManager', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    metricLabelValues.length = 0
   })
 
   afterEach(async () => {
@@ -94,6 +102,34 @@ describe('FanOutManager', () => {
 
     expect(unsub1).toBeInstanceOf(Function)
     expect(unsub2).toBeInstanceOf(Function)
+  })
+
+  it('uses bounded metric labels for arbitrary pair subscriptions and keeps the aggregate', () => {
+    const unsubscribers: Array<() => void> = []
+    for (let i = 0; i < 100; i++) {
+      unsubscribers.push(fanOutManager.register(`TOKEN${i}/ISSUER${i}`, {
+        id: `unknown-pair-${i}`,
+        send: vi.fn(),
+        close: vi.fn(),
+      }))
+    }
+
+    const clientLabels = metricLabelValues
+      .filter(({ metric }) => metric === 'ws_clients_total')
+      .map(({ value }) => value)
+    expect(new Set(clientLabels)).toEqual(new Set(['other', '*']))
+    expect(clientLabels.filter(value => value === 'other')).toHaveLength(100)
+    expect(clientLabels.filter(value => value === '*')).toHaveLength(100)
+
+    unsubscribers.forEach(unsubscribe => unsubscribe())
+  })
+
+  it('counts a wildcard subscriber once in the aggregate series', () => {
+    fanOutManager.register('*', { id: 'wildcard-client', send: vi.fn(), close: vi.fn() })
+
+    expect(metricLabelValues.filter(({ metric, value }) =>
+      metric === 'ws_clients_total' && value === '*'
+    )).toHaveLength(1)
   })
 
   it('destroy cleans up all state', async () => {

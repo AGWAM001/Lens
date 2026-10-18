@@ -5,33 +5,38 @@
  * Aquarius AMM API, calculates spot prices from constant-product invariants,
  * and stores them in price_points with source = 'aquarius_amm'.
  *
- * Issue: #103
+ * Issue: #103, #218
  */
 
 import { config, activeNetwork, getNetworkConfig, type NetworkName } from '../../config'
-import { getActivePairs } from '../../pairsRegistry'
-import { upsertPricePoints } from '../../db'
-import { dispatchPriceUpdate } from '../../webhookDispatcher'
+import { createLogger } from '../../logger'
 import type { WatchedPair } from '../../types'
+import type { VenueAdapter, VenuePricePoint } from './types'
+import {
+  getLastPrice,
+  resetLastPrice,
+  writeVenuePricePoints,
+  startVenueAdapter,
+} from './runner'
+import { fetchWithTimeout } from '../../fetch'
 
-// Last seen price per (network, pairKey) — used for threshold crossing detection
-const lastPrice = new Map<string, number>()
+const log = createLogger('ingester:aquarius')
 
 export function _resetLastPrice(): void {
-  lastPrice.clear()
+  resetLastPrice('Aquarius')
 }
 
 export function _getLastPrice(network: NetworkName, pairKey: string): number | undefined {
-  return lastPrice.get(`${network}:${pairKey}`)
+  return getLastPrice('Aquarius', network, pairKey)
 }
 
-interface AquariusPool {
+export interface AquariusPool {
   pool_hash: string
   reserves: string[]
   total_shares: string
 }
 
-interface AquariusListResponse {
+export interface AquariusListResponse {
   results?: AquariusPool[]
 }
 
@@ -51,24 +56,21 @@ export async function fetchAquariusPools(
     params.append('assets[]', assetAStr)
     params.append('assets[]', assetBStr)
 
-    const res = await fetch(`${apiUrl}?${params.toString()}`)
+    const res = await fetchWithTimeout(`${apiUrl}?${params.toString()}`)
     if (!res.ok) return []
-    const data = await res.json() as AquariusListResponse
+    const data = (await res.json()) as AquariusListResponse
     return data.results ?? []
   } catch (err) {
-    console.error(`[aquarius] Failed to fetch pools for ${pair.pairKey}:`, (err as Error).message)
+    log.error({ pair: pair.pairKey, err }, 'failed to fetch pools')
     return []
   }
 }
 
-export async function ingestAquariusPair(
-  pair: WatchedPair,
-  network: NetworkName = activeNetwork,
-): Promise<void> {
-  const pools = await fetchAquariusPools(pair, getNetworkConfig(network).aquarius.apiUrl)
-  if (pools.length === 0) return
-
-  const points = pools.flatMap(pool => {
+export function deriveAquariusPricePoints(
+  pools: AquariusPool[],
+  pair: WatchedPair
+): VenuePricePoint[] {
+  return pools.flatMap((pool) => {
     const [r0Str, r1Str] = pool.reserves
     if (!r0Str || !r1Str) return []
 
@@ -76,53 +78,74 @@ export async function ingestAquariusPair(
     const r1 = parseFloat(r1Str)
     if (r0 <= 0 || r1 <= 0) return []
 
-    return [{
-      assetA: pair.assetA.code,
-      assetB: pair.assetB.code,
-      pairKey: pair.pairKey,
-      source: 'aquarius_amm' as const,
-      poolId: pool.pool_hash,
-      price: r1 / r0,
-      baseVolume: 0,
-      counterVolume: 0,
-      ledger: 0,
-      timestamp: new Date(),
-    }]
+    return [
+      {
+        assetA: pair.assetA.code,
+        assetB: pair.assetB.code,
+        pairKey: pair.pairKey,
+        source: 'aquarius_amm',
+        poolId: pool.pool_hash,
+        price: r1 / r0,
+        baseVolume: 0,
+        counterVolume: 0,
+        ledger: 0,
+        timestamp: new Date(),
+      },
+    ]
   })
-
-  if (points.length === 0) return
-
-  await upsertPricePoints(points as any, network)
-
-  const latest = points[points.length - 1]
-  const trackerKey = `${network}:${pair.pairKey}`
-  const previousPrice = lastPrice.get(trackerKey) ?? latest.price
-  lastPrice.set(trackerKey, latest.price)
-
-  dispatchPriceUpdate({
-    assetA: pair.assetA.code,
-    assetB: pair.assetB.code,
-    previousPrice,
-    currentPrice: latest.price,
-    network,
-  }).catch(err => console.error('[aquarius] webhook dispatch error:', (err as Error).message))
 }
 
-async function sleep(ms: number) {
-  return new Promise(r => setTimeout(r, ms))
+export async function ingestAquariusPair(
+  pair: WatchedPair,
+  network: NetworkName = activeNetwork
+): Promise<void> {
+  const pools = await fetchAquariusPools(pair, getNetworkConfig(network).aquarius.apiUrl)
+  if (pools.length === 0) return
+
+  const points = deriveAquariusPricePoints(pools, pair)
+  if (points.length === 0) return
+
+  await writeVenuePricePoints('Aquarius', points, pair, network)
+}
+
+export const aquariusAdapter: VenueAdapter<AquariusPool[], AquariusPool[]> = {
+  name: 'Aquarius',
+  kind: 'amm',
+  source: 'aquarius_amm',
+
+  isEnabled(network: NetworkName): boolean {
+    return getNetworkConfig(network).aquarius.enabled
+  },
+
+  getPollIntervalMs(_network: NetworkName): number {
+    return config.indexer.pollIntervalMs
+  },
+
+  async discover(pair: WatchedPair, network: NetworkName): Promise<AquariusPool[][]> {
+    const pools = await fetchAquariusPools(pair, getNetworkConfig(network).aquarius.apiUrl)
+    return pools.length > 0 ? [pools] : []
+  },
+
+  async read(target: AquariusPool[], _pair: WatchedPair, _network: NetworkName): Promise<AquariusPool[] | null> {
+    return target
+  },
+
+  derive(raw: AquariusPool[], _target: AquariusPool[], pair: WatchedPair, _network: NetworkName): VenuePricePoint[] {
+    return deriveAquariusPricePoints(raw, pair)
+  },
+
+  async write(points: VenuePricePoint[], _target: AquariusPool[], pair: WatchedPair, network: NetworkName): Promise<void> {
+    await writeVenuePricePoints('Aquarius', points, pair, network)
+  },
+
+  async ingestPair(pair: WatchedPair, network: NetworkName): Promise<void> {
+    await ingestAquariusPair(pair, network)
+  },
+
+  _resetLastPrice,
+  _getLastPrice,
 }
 
 export async function startAquariusIngester(network: NetworkName = activeNetwork): Promise<void> {
-  if (!getNetworkConfig(network).aquarius.enabled) {
-    console.log(`[aquarius] Aquarius is disabled on ${network} — ingester not started`)
-    return
-  }
-
-  console.log(`[aquarius] Starting Aquarius AMM ingester for ${getActivePairs().length} pairs on ${network}`)
-  while (true) {
-    for (const pair of getActivePairs()) {
-      await ingestAquariusPair(pair, network)
-    }
-    await sleep(config.indexer.pollIntervalMs)
-  }
+  await startVenueAdapter(aquariusAdapter, network)
 }

@@ -1,54 +1,30 @@
 import type { FastifyInstance } from 'fastify'
-import { getCachedReflectorPrice } from '../ingest/oracles/reflector'
-import { pgPool } from '../db'
+import { activeNetwork, type NetworkName } from '../config'
+import type { OracleAdapter } from '../ingest/oracles/adapter'
+import { reflectorOracleAdapter } from '../ingest/oracles/reflector'
+import { compareOracles } from '../services/oracleComparison'
 
-export async function registerOracleRoutes(app: FastifyInstance) {
-  app.get<{ Params: { asset: string } }>('/compare/:asset', async (req, reply) => {
-    const { asset } = req.params
-    const assetCode = asset.toUpperCase()
+const oracleAdapters: OracleAdapter[] = [reflectorOracleAdapter]
 
-    const [reflectorPrice, dbResult] = await Promise.all([
-      getCachedReflectorPrice(assetCode),
-      pgPool.query(
-        `SELECT
-           pair_key,
-           COALESCE(
-             SUM(price::numeric * base_volume::numeric), 0
-           ) / NULLIF(SUM(base_volume::numeric), 0) AS vwap
-         FROM price_points
-         WHERE (asset_a = $1 OR asset_b = $1)
-           AND timestamp > NOW() - INTERVAL '5 minutes'
-         GROUP BY pair_key
-         LIMIT 1`,
-        [assetCode]
-      ),
-    ])
+export async function registerOracleRoutes(
+  app: FastifyInstance,
+  adapters: OracleAdapter[] = oracleAdapters
+) {
+  app.get<{ Params: { asset: string }; Querystring: { network?: NetworkName } }>(
+    '/compare/:asset',
+    async (req, reply) => {
+      const assetCode = req.params.asset.toUpperCase()
+      const requestedNetwork = req.query.network
+      if (requestedNetwork !== undefined && requestedNetwork !== 'testnet' && requestedNetwork !== 'mainnet') {
+        return reply.status(400).send({ error: 'network must be one of: testnet, mainnet' })
+      }
+      const network: NetworkName = requestedNetwork ?? activeNetwork
 
-    const lensPrice = dbResult.rows[0] ? parseFloat(dbResult.rows[0].vwap) : null
-
-    if (reflectorPrice === null && lensPrice === null) {
-      return reply.status(404).send({ error: `No price data found for asset ${assetCode}` })
+      const comparison = await compareOracles(assetCode, network, adapters)
+      if (!comparison) {
+        return reply.status(404).send({ error: `No price data found for asset ${assetCode}` })
+      }
+      return comparison
     }
-
-    const deviation =
-      reflectorPrice !== null && lensPrice !== null
-        ? Math.abs(reflectorPrice - lensPrice) / reflectorPrice
-        : null
-
-    return {
-      asset: assetCode,
-      lens: lensPrice,
-      reflector: reflectorPrice,
-      deviationPct: deviation !== null ? parseFloat((deviation * 100).toFixed(4)) : null,
-      status:
-        deviation !== null
-          ? deviation < 0.01
-            ? 'aligned'
-            : deviation < 0.05
-            ? 'minor_deviation'
-            : 'major_deviation'
-          : 'partial',
-      fetchedAt: new Date().toISOString(),
-    }
-  })
+  )
 }

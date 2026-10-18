@@ -17,16 +17,17 @@ Aggregates price data from Stellar's Classic Order Book (SDEX) and AMM Liquidity
 | GET | `/price/:assetA/:assetB` | Current VWAP, 24h volume, best route |
 | GET | `/price/:assetA/:assetB/route?amount=1000` | Best execution route for a given amount |
 | GET | `/price/:assetA/:assetB/depth?amount=1000` | Simulated order-book depth and execution slippage |
+| GET | `/book/:assetA/:assetB?depth=0.1&step=0.01&network=testnet` | Aggregated SDEX book and synthetic AMM price ladder with cumulative size and venue provenance |
 | GET | `/price/:assetA/:assetB/history?window=1h` | OHLCV history (`1m`, `5m`, `1h`, `24h`) |
 | GET | `/price/twap/:assetA/:assetB?window=60&sampleInterval=60&method=iqr` | Manipulation-resistant time-weighted average price |
 | GET | `/price/vwap/:assetA/:assetB?window=60&source=SDEX&method=iqr` | Volume-weighted average price |
 | GET | `/candles/:assetA/:assetB?interval=1h&from=…&to=…` | OHLCV candles (`1m`, `5m`, `15m`, `1h`, `4h`, `1d`) |
-| GET | `/prices/history?pair=XLM/USDC&from=…&to=…&interval=1m` | Historical 1-minute price snapshots, optionally aggregated (`1m`, `5m`, `1h`); honours `?network=`; ~30-day retention |
+| GET | `/prices/history?pair=XLM/USDC&from=…&to=…&interval=1m` | Historical 1-minute price snapshots, optionally aggregated (`1m`, `5m`, `1h`); honours `?network=`; `?format=csv` serves the points as `text/csv` (`ts,price,volume`); ~30-day retention |
 | GET | `/pools` | Active AMM pools being watched |
 | GET | `/pairs` | Watched trading pairs |
 | GET | `/volumes/:asset?window=24h` | Cross-venue traded volume (`24h`, `7d`, `30d`) with a per-venue breakdown |
 | GET | `/spreads/:asset?window=5m` | Per-venue bid/ask spread, tightest first (`5m`, `15m`, `1h`, `24h`) |
-| GET | `/compare/:asset` | Lens vs Reflector oracle price comparison |
+| GET | `/compare/:asset` | Lens vs configured oracle prices, with per-oracle deviation and availability |
 | GET | `/screener?sortBy=volume&order=desc&limit=20` | Screen pairs by volume, 24h change, liquidity and price |
 | GET | `/benchmark/:asset?target=USD` | Peg-deviation statistics versus a target |
 | GET | `/basket?asset=XLM&asset=USDC&weight=0.6&weight=0.4` | Weighted price of a basket of assets |
@@ -38,7 +39,7 @@ Aggregates price data from Stellar's Classic Order Book (SDEX) and AMM Liquidity
 | POST | `/settle` | Settle an x402 payment (idempotent — retries replay the stored result) |
 | POST | `/webhooks` | Subscribe to a price-threshold webhook |
 | DELETE | `/webhooks/:id` | Delete a webhook subscription |
-| GET/POST | `/graphql` | GraphQL query/mutation endpoint (GraphiQL IDE at `/graphiql`) |
+| GET/POST | `/graphql` | GraphQL query/mutation endpoint (GraphiQL IDE at `/graphiql`, docs: [`docs/graphql.md`](docs/graphql.md)) |
 
 Every non-internal route above has a matching entry in [`openapi.yaml`](openapi.yaml);
 `tests/openapi.test.ts` boots the server and fails if a registered route is
@@ -53,17 +54,14 @@ spec entry declares a `network` parameter answer for the selected network; the
 ones listed below still read a single instance-wide network.
 
 Per-request today: `/price/:assetA/:assetB` (its VWAP, OHLCV, AMM and
-best-route reads), `/price/:assetA/:assetB/route`, `/price/:assetA/:assetB/depth`,
+best-route reads), `/price/:assetA/:assetB/route`, `/price/:assetA/:assetB/depth`, `/book/:assetA/:assetB`,
 `/prices/history`, `/screener`, `/pools`, `/pairs`, `/spreads/:asset`,
 `/volumes/:asset`, `/status`, and the x402 payment `network`/`payTo`. That list
 is the same one `openapi.yaml` declares a `network` parameter on — if they ever
 disagree, the spec is the thing to fix.
 
 Still reading across both networks, and ignoring the parameter:
-`/candles/:assetA/:assetB`, `/price/twap/*`, `/price/vwap/*`, and
-`/price/:assetA/:assetB/history` — the last one reads `price_aggregates`, which
-is now written per network, so on an instance running both networks
-(`ENABLED_NETWORKS`) its buckets interleave the two chains.
+`/candles/:assetA/:assetB`, `/price/twap/*`, and `/price/vwap/*`.
 
 ```bash
 curl "https://api.example.com/price/XLM/USDC?network=mainnet"
@@ -72,6 +70,8 @@ curl "https://api.example.com/price/XLM/USDC?network=mainnet"
 ### GraphQL
 Available at `/graphql` with GraphiQL IDE at `/graphiql`. Real-time price
 streaming is available via the `priceUpdated` [subscription](#graphql-subscriptions-live-prices).
+
+For complete GraphQL schema documentation, all queries with runnable `curl` examples, WebSocket `graphql-transport-ws` handshake specifications, and an explicit comparison against the REST surface, see [`docs/graphql.md`](docs/graphql.md).
 
 ```graphql
 query {
@@ -199,9 +199,22 @@ const unsubscribe = client.subscribe(
 > is safe *if* you read that field — and misleading if you do not.
 
 > **Note:** the `pair` argument is the canonical `pairKey` (alphabetically
-> sorted, e.g. `XLM:native/USDC:GA5...`). Use the `listPairs` query to discover
+> sorted, e.g. `USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN/XLM`). Use the `listPairs` query to discover
 > the exact keys being indexed. Only the pair you subscribe to is delivered;
-> updates for other pairs are filtered out server-side.
+> updates for other pairs are filtered out server-side. For full protocol handshake details and a raw WebSocket implementation, see [`docs/graphql.md`](docs/graphql.md#live-price-subscriptions-graphql-transport-ws).
+
+## MCP (Model Context Protocol)
+
+Lens exposes its Bazaar catalog of x402-discoverable resources as an MCP
+server, so any MCP-compatible client or agent can discover and pay for price
+data through two tools: `bazaar_search` and `paid_call`. The server signs
+x402 payment challenges with Stellar secret keys on both `stellar:testnet`
+and `stellar:pubnet`.
+
+**⚠️ Warning:** the mainnet key signs with real XLM. Read the configuration,
+spending warning, and worked example before running.
+
+Full documentation: [examples/mcp-server/README.md](examples/mcp-server/README.md)
 
 ## Usage Examples
 
@@ -516,3 +529,24 @@ curl -s http://localhost:3002/price/XLM/USDC | jq '{price, ammPrice, lastUpdated
 - **Cache:** Redis
 - **Queue:** BullMQ
 - **Stellar:** @stellar/stellar-sdk
+
+
+### Deployed smoke check
+
+Run against a real running instance (local, staging or production):
+
+```bash
+SMOKE_MAX_AGE_SECONDS=120 SMOKE_TIMEOUT_MS=8000 npm run smoke -- http://localhost:3002
+```
+
+Validate the smoke checker itself with `npm run test:smoke`.
+
+The check requires public `/status` and `/price/XLM/USDC` and checks `/ready` when available. It uses a
+`graphql-transport-ws` live price subscription at `/graphql`. An HTTP 404 on `/ready` is skipped until issue #334 provides the endpoint; any other readiness failure is fatal. It checks
+indexer and trade freshness, validates price shape, and waits for a real
+subscription event. It fails non-zero, naming the failing check, on timeout,
+stale data, a missing message, or HTTP errors. No synthetic price events are
+generated. On installations where x402 payment gates the price endpoint,
+a normal unauthenticated call receives HTTP 402 and the smoke check fails;
+it never bypasses payment requirements. A quiet pair without any new trades
+will likewise fail the live-message requirement.
