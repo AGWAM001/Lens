@@ -21,6 +21,7 @@
     "key:issue": "tsx scripts/issue-api-key.ts",
     "db:push": "prisma db push",
     "db:generate": "prisma generate",
+    "db:migrate:partitioning": "tsx scripts/migrate-price-points-partitioning.ts",
     "seed": "tsx scripts/seed.ts"
   },
   "dependencies": {

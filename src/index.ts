@@ -15,6 +15,13 @@ import { venueAdapters, startVenueAdapter } from './ingest/venues'
 import { startSnapshotIngester } from './ingesters/snapshot'
 import { createAggregateQueue, startAggregateWorker, scheduleAggregateRefresh } from './jobs/aggregateRefresh'
 import { createSnapshotRetentionQueue, startSnapshotRetentionWorker, scheduleSnapshotRetention, pruneAllNetworks, SNAPSHOT_RETENTION_DAYS } from './jobs/snapshotRetention'
+import {
+  createPricePointsPartitionQueue,
+  startPricePointsPartitionWorker,
+  schedulePricePointsPartitionMaintenance,
+  runPricePointsMaintenance,
+  PRICE_POINTS_RETENTION_DAYS,
+} from './jobs/pricePointsPartitionJob'
 import { loadPersistedPairs, getActivePairs } from './pairsRegistry'
 
 async function main() {
@@ -132,6 +139,43 @@ async function main() {
       console.warn('[lens] Falling back to an in-process hourly prune')
       await Promise.allSettled([retentionQueue?.close(), retentionWorker?.close()])
       setInterval(() => { void safePrune() }, 60 * 60 * 1000).unref()
+    }
+  }
+
+  // ── Price points partition maintenance & retention ────────────────────────
+  // price_points is range-partitioned by timestamp. We pre-create future partitions
+  // ahead of need so ingesters never fail on unmapped timestamp ranges. Dropping
+  // expired partitions is opt-in via PRICE_POINTS_DROP_EXPIRED=true (default: off)
+  // to safeguard raw historical records until rollups are complete (#231).
+  const safeMaintainPartitions = async () => {
+    try {
+      const result = await runPricePointsMaintenance()
+      if (result.created.length > 0) {
+        console.log(`[lens] Pre-created ${result.created.length} price_points partition(s)`)
+      }
+      if (result.dropped.length > 0) {
+        console.log(`[lens] Dropped ${result.dropped.length} price_points partition(s) older than ${PRICE_POINTS_RETENTION_DAYS}d`)
+      }
+    } catch (err) {
+      console.error('[lens] Price points partition maintenance failed:', (err as Error).message)
+    }
+  }
+
+  await safeMaintainPartitions()
+
+  {
+    let partitionQueue: ReturnType<typeof createPricePointsPartitionQueue> | undefined
+    let partitionWorker: ReturnType<typeof startPricePointsPartitionWorker> | undefined
+    try {
+      partitionQueue = createPricePointsPartitionQueue()
+      partitionWorker = startPricePointsPartitionWorker()
+      await schedulePricePointsPartitionMaintenance(partitionQueue)
+      console.log('[lens] Price points partition worker started')
+    } catch (err) {
+      console.warn('[lens] Price points partition worker skipped (Redis unavailable):', (err as Error).message)
+      console.warn('[lens] Falling back to an in-process hourly partition maintenance')
+      await Promise.allSettled([partitionQueue?.close(), partitionWorker?.close()])
+      setInterval(() => { void safeMaintainPartitions() }, 60 * 60 * 1000).unref()
     }
   }
 
