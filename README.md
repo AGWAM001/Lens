@@ -93,6 +93,17 @@ query {
 }
 ```
 
+#### Schema Definition & SDL Artifact
+The GraphQL schema is exported as a canonical Schema Definition Language (SDL) artifact committed at [`schema.graphql`](schema.graphql).
+
+- **Location**: [`schema.graphql`](schema.graphql)
+- **Regenerate / Refresh**:
+  ```bash
+  npm run graphql:schema:gen
+  ```
+- **Drift Guard & Validation**: CI runs `src/__tests__/graphqlSchemaDrift.test.ts` to assert that `schema.graphql` matches the code-defined schema in `src/api/graphql.ts`, guarantees deterministic output, validates SDL syntax for client generators, and detects breaking schema changes.
+
+
 ## Observability
 
 Prometheus metrics are exposed on `GET /metrics` (public, no API key required).
