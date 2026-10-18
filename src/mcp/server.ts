@@ -2,18 +2,28 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { MCP_ERROR_CODES, McpErrorCode } from './codes.js';
+import { SpendBudget } from './budget.js';
 import { fetchWithTimeout } from '../fetch.js';
 
 export interface McpServerConfig {
   fetchWithPayment: typeof fetch;
+  /**
+   * Cumulative ceiling over paid calls. Optional so a server can still run with
+   * per-call limits only, but leaving it out means nothing bounds a day: the
+   * per-payment cap only answers how much one mistake can cost, so a caller in a
+   * retry loop can pay it again and again without limit.
+   */
+  budget?: SpendBudget;
 }
 
 export class BazaarMcpServer {
   private server: Server;
   private fetchWithPayment: typeof fetch;
+  private budget?: SpendBudget;
 
   constructor(config: McpServerConfig) {
     this.fetchWithPayment = config.fetchWithPayment;
+    this.budget = config.budget;
     this.server = new Server(
       {
         name: 'bazaar-mcp-server',
@@ -52,7 +62,11 @@ export class BazaarMcpServer {
         },
         {
           name: 'paid_call',
-          description: 'Make a paid API call to a Bazaar resource, handling the 402 loop automatically.',
+          description:
+            'Make a paid API call to a Bazaar resource, handling the 402 loop automatically. ' +
+            (this.budget
+              ? this.budget.describeLimits()
+              : 'No cumulative spend ceiling is configured for this server; payments are bounded per call only.'),
           inputSchema: {
             type: 'object',
             properties: {
@@ -68,6 +82,21 @@ export class BazaarMcpServer {
             required: ['url'],
           },
         },
+        ...(this.budget
+          ? [
+              {
+                name: 'payment_budget',
+                description:
+                  "Report the payment limits this server enforces and how much of today's budget is left, " +
+                  'without making a paid call. Read this before spending to plan cost.',
+                inputSchema: {
+                  type: 'object',
+                  properties: {},
+                  required: [],
+                },
+              },
+            ]
+          : []),
       ],
     }));
 
@@ -104,20 +133,40 @@ export class BazaarMcpServer {
         }
       }
 
+      if (request.params.name === 'payment_budget') {
+        if (!this.budget) {
+          return this.createErrorResponse('ERR_BAD_REQUEST', 'This server has no spend budget configured.');
+        }
+        return {
+          content: [{ type: 'text', text: JSON.stringify(this.budget.snapshot(), null, 2) }],
+        };
+      }
+
       if (request.params.name === 'paid_call') {
         const url = String(request.params.arguments?.url);
         const method = request.params.arguments?.method ? String(request.params.arguments?.method) : 'GET';
-        
+
+        const decision = this.budget?.authorize();
+        if (decision && !decision.allowed) {
+          return this.createErrorResponse('ERR_BUDGET_EXCEEDED', decision.reason, { budget: decision.snapshot });
+        }
+        const reservationId = decision?.allowed ? decision.reservationId : undefined;
+
         try {
           const res = await this.fetchWithPayment(url, { method });
-          
+
           if (!res.ok) {
             if (res.status === 402) {
+              // The seller rejected the payment, so nothing settled and the budget is untouched.
+              this.settleReservation(reservationId, false);
               return this.createErrorResponse('ERR_PAYMENT_REJECTED', 'Payment required but was rejected or failed.');
             }
+            // The resource failed after the payment loop ran; the payment may have settled anyway.
+            this.settleReservation(reservationId, true);
             return this.createErrorResponse('ERR_BAD_REQUEST', `Request failed with status ${res.status}`);
           }
-          
+
+          this.settleReservation(reservationId, true);
           const text = await res.text();
           let parsed;
           try {
@@ -130,6 +179,7 @@ export class BazaarMcpServer {
             content: [{ type: 'text', text: typeof parsed === 'string' ? parsed : JSON.stringify(parsed, null, 2) }],
           };
         } catch (e: any) {
+          this.settleReservation(reservationId, !this.paymentCouldNotHaveSettled(e));
           return this.handlePaidCallError(e);
         }
       }
@@ -160,12 +210,48 @@ export class BazaarMcpServer {
     return this.createErrorResponse('ERR_INTERNAL_FAILURE', e.message || 'An unknown error occurred during the paid call.');
   }
 
-  private createErrorResponse(code: McpErrorCode, reason: string) {
+  /**
+   * Books or drops the worst-case hold taken by authorize(). `mayHaveSettled`
+   * is true unless the failure proves no payment went through; anything that
+   * cannot be proven is counted, so the ceiling stays an upper bound.
+   */
+  private settleReservation(reservationId: number | undefined, mayHaveSettled: boolean): void {
+    if (reservationId === undefined || !this.budget) {
+      return;
+    }
+    if (mayHaveSettled) {
+      this.budget.commit(reservationId);
+    } else {
+      this.budget.release(reservationId);
+    }
+  }
+
+  /**
+   * True when an error proves the payment never settled: the transport failed
+   * before offering payment, or the wallet could not fund or submit it. A
+   * network failure mid-flight is not proof, and neither is an unknown error.
+   */
+  private paymentCouldNotHaveSettled(e: any): boolean {
+    const msg = String(e?.message || e).toLowerCase();
+    return (
+      msg.includes('failed to parse payment requirements') ||
+      msg.includes('failed to create payment payload') ||
+      msg.includes('signatureexpirationledger') ||
+      msg.includes('signature expired') ||
+      msg.includes('trustline') ||
+      msg.includes('op_no_trust') ||
+      msg.includes('insufficient') ||
+      msg.includes('underfunded')
+    );
+  }
+
+  private createErrorResponse(code: McpErrorCode, reason: string, details?: Record<string, unknown>) {
     // For MCP, returning isError: true with a JSON payload is the standard way to return tool errors.
     const payload = {
       isError: true,
       code,
       reason,
+      ...(details ? { details } : {}),
     };
     return {
       content: [{ type: 'text', text: JSON.stringify(payload) }],
