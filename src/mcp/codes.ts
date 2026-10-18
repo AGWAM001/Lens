@@ -6,6 +6,8 @@ export const MCP_ERROR_CODES = {
   ERR_SERVICE_UNREACHABLE: 'ERR_SERVICE_UNREACHABLE',
   ERR_NO_RESULTS: 'ERR_NO_RESULTS',
   ERR_BAD_REQUEST: 'ERR_BAD_REQUEST',
+  ERR_BUDGET_EXCEEDED: 'ERR_BUDGET_EXCEEDED',
+  ERR_UNAUTHORIZED: 'ERR_UNAUTHORIZED',
   ERR_INTERNAL_FAILURE: 'ERR_INTERNAL_FAILURE'
 } as const;
 
@@ -15,4 +17,6 @@ export interface McpErrorResponse {
   isError: true;
   code: McpErrorCode;
   reason: string;
+  /** Structured context for the caller, e.g. the spend budget behind ERR_BUDGET_EXCEEDED. */
+  details?: Record<string, unknown>;
 }
