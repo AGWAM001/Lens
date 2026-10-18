@@ -516,3 +516,24 @@ curl -s http://localhost:3002/price/XLM/USDC | jq '{price, ammPrice, lastUpdated
 - **Cache:** Redis
 - **Queue:** BullMQ
 - **Stellar:** @stellar/stellar-sdk
+
+
+### Deployed smoke check
+
+Run against a real running instance (local, staging or production):
+
+```bash
+SMOKE_MAX_AGE_SECONDS=120 SMOKE_TIMEOUT_MS=8000 npm run smoke -- http://localhost:3002
+```
+
+Validate the smoke checker itself with `npm run test:smoke`.
+
+The check requires public `/status` and `/price/XLM/USDC` and checks `/ready` when available. It uses a
+`graphql-transport-ws` live price subscription at `/graphql`. An HTTP 404 on `/ready` is skipped until issue #334 provides the endpoint; any other readiness failure is fatal. It checks
+indexer and trade freshness, validates price shape, and waits for a real
+subscription event. It fails non-zero, naming the failing check, on timeout,
+stale data, a missing message, or HTTP errors. No synthetic price events are
+generated. On installations where x402 payment gates the price endpoint,
+a normal unauthenticated call receives HTTP 402 and the smoke check fails;
+it never bypasses payment requirements. A quiet pair without any new trades
+will likewise fail the live-message requirement.

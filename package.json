@@ -8,6 +8,8 @@
     "build": "node node_modules/prisma/build/index.js generate && tsc",
     "start": "node dist/index.js",
     "test": "vitest run",
+    "smoke": "node scripts/deployed-smoke.mjs",
+    "test:smoke": "node --test scripts/test-deployed-smoke.mjs",
     "openapi:gen": "tsx scripts/generate-openapi.ts",
     "changeset": "changeset",
     "version-packages": "changeset version",
