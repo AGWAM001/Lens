@@ -64,3 +64,11 @@ new BazaarMcpServer({
 
 Reading an unknown URI fails with a JSON-RPC `InvalidParams` error; a resource
 source that throws surfaces as `InternalError`.
+
+## Dependencies
+
+The resource handlers live in the same `src/mcp/server.ts` as the tool-result
+bounds introduced for #416 (`./limits.js`), so the resources work builds on
+that commit rather than on `main` alone. When the two land, #416 has to merge
+first; #418 then retargets to `main` and its diff reduces to the resources
+change set.
