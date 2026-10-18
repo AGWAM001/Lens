@@ -7,10 +7,10 @@ Lens exports Prometheus metrics for the HTTP layer on the existing public
 is different: they are labelled by `network` so the per-network ingester loops
 cannot overwrite each other's series.
 
-These three signals — request rate, error rate and p95 latency — are what answer
-"is the API healthy". The pre-existing `price_requests_total` counts price calls
-specifically and cannot answer that question; it is unchanged and still means
-what it always meant.
+Request rate, error rate, latency, authentication failures and load shedding
+help answer "is the API healthy". The pre-existing `price_requests_total`
+counts price calls specifically and cannot answer that question; it is
+unchanged and still means what it always meant.
 
 The same cardinality rule applies to every metric family: labels must come from
 fixed buckets or server-defined values. Never put raw request paths, asset
@@ -36,6 +36,53 @@ Histogram. Labels: `method`, `route`.
 Buckets: `0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10`.
 
 Observed for every request that produces a response, successful or not.
+
+### `api_key_auth_failures_total`
+
+Counter. Label: `reason`, with the bounded values `missing`, `malformed`,
+`unknown`, `revoked` and `expired`. The `reason` value matches the
+machine-readable `code` in the corresponding API-key 401 response.
+
+### `admin_auth_failures_total`
+
+Counter. No labels. This tracks rejected authentication attempts on admin
+routes independently of API-key failures.
+
+### Rate-limit counters
+
+`rate_limit_rejections_total` is a counter labelled by the bounded `scope`
+values `key` and `ip`; it counts requests rejected by the per-key or fallback
+IP limiter. Those requests return HTTP 429 and code `PER_KEY_RATE_LIMITED` or
+`IP_RATE_LIMITED`.
+
+`global_shed_requests_total` is an unlabeled counter for requests shed by the
+per-instance global ceiling. Those requests return HTTP 503 with code
+`GLOBAL_RATE_LIMITED`.
+
+Authentication metrics never include keys, hashes, tokens, key prefixes or
+caller addresses as labels.
+
+## Global request ceiling
+
+`GLOBAL_RATE_LIMIT_MAX` configures the maximum accepted non-health requests
+per rolling 60-second window on each instance; it defaults to `1000` and must
+be a positive integer. The global check runs after the per-key/IP limiter, so
+per-key 429 responses remain distinct and are not counted against the global
+ceiling.
+
+At 80% of the ceiling, rounded up, the service starts shedding expensive
+route templates (GraphQL, price, route, pools, candles, history, screener,
+benchmark, oracle, compare, basket, venues, spreads, volumes, book, verify
+and settle) to preserve room for other routes. Once the ceiling is full, it
+sheds all non-health routes.
+`/status`, `/live` and `/ready` are always exempt. Shed requests include a
+`Retry-After` header.
+
+The ceiling is **per instance**, not deployment-wide. With `N` equally
+configured instances the approximate aggregate ceiling is
+`GLOBAL_RATE_LIMIT_MAX x N`; choose the per-instance value based on instance
+capacity and expected autoscaling so scaling out does not imply a higher
+deployment-wide traffic budget than intended.
 
 ## Why the labels look like this
 

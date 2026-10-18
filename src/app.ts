@@ -28,7 +28,8 @@ import { registerDiscoveryRoutes } from './routes/discovery'
 import { registerVenueRoutes } from './routes/venues'
 import { registerSettleRoute } from './routes/facilitator'
 import { registerCachePolicy } from './middleware/cachePolicy'
-import { getMetrics } from './metrics'
+import { registerGlobalRateLimit, parseGlobalRateLimit } from './middleware/globalRateLimit'
+import { getMetrics, rate_limit_rejections_total } from './metrics'
 import { loggerOptions, createDestination } from './logger'
 
 export interface BuildAppOptions {
@@ -103,13 +104,21 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     timeWindow: '1 minute',
     keyGenerator: (req) => req.apiKey?.id ?? req.ip,
     allowList: (req) => req.url === '/status',
-    errorResponseBuilder: (req, context) => ({
-      statusCode: 429,
-      error: 'Too Many Requests',
-      message: `Rate limit exceeded, retry in ${context.after}`,
-      retryAfter: context.after
-    })
+    errorResponseBuilder: (req, context) => {
+      rate_limit_rejections_total.inc({ scope: req.apiKey ? 'key' : 'ip' })
+      return {
+        statusCode: 429,
+        error: 'Too Many Requests',
+        code: req.apiKey ? 'PER_KEY_RATE_LIMITED' : 'IP_RATE_LIMITED',
+        message: `Rate limit exceeded, retry in ${context.after}`,
+        retryAfter: context.after
+      }
+    }
   })
+
+  // The per-instance ceiling runs after the per-key/IP limiter. Health checks
+  // bypass it, and expensive route templates are shed before other routes.
+  registerGlobalRateLimit(app, parseGlobalRateLimit(process.env.GLOBAL_RATE_LIMIT_MAX))
 
   // Specific limit for /status (higher for monitoring)
   app.addHook('onRoute', (routeOptions) => {
