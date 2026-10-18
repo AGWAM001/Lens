@@ -1,6 +1,9 @@
 import 'dotenv/config'
 import { Networks, StrKey } from '@stellar/stellar-sdk'
+import { createLogger } from './logger'
 import type { WatchedPair, AssetId } from './types'
+
+const log = createLogger('config')
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -103,8 +106,9 @@ function parseWatchedPairs(raw: string): WatchedPair[] {
 function isUsableContractId(id: string, envVar: string): boolean {
   if (id === '') return false
   if (StrKey.isValidContract(id)) return true
-  console.warn(
-    `[config] ${envVar}="${id}" is not a valid Soroban contract id (expected a 56-character C... address); the feature that needs it is disabled`
+  log.warn(
+    { envVar, value: id },
+    'invalid Soroban contract id; the feature that needs it is disabled'
   )
   return false
 }

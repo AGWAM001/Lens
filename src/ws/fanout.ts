@@ -3,6 +3,9 @@ import { redis } from '../redis'
 import { activeNetwork } from '../config'
 import { priceEmitter, PRICE_UPDATE, PriceUpdateEvent } from '../events'
 import { register, Gauge, Counter } from 'prom-client'
+import { createLogger } from '../logger'
+
+const log = createLogger('ws:fanout')
 
 // ─── Metrics ──────────────────────────────────────────────────────────────────
 export const ws_clients_total = new Gauge({
@@ -90,9 +93,9 @@ class FanOutManager {
           // ignore malformed messages
         }
       })
-      console.log('[fanout] Redis pub/sub subscriber ready')
+      log.info('redis pub/sub subscriber ready')
     } catch (err) {
-      console.warn('[fanout] Redis pub/sub unavailable, running in single-instance mode:', (err as Error).message)
+      log.warn({ err }, 'redis pub/sub unavailable, running in single-instance mode')
       this.redisConnected = false
     }
   }

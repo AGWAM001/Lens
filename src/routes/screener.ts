@@ -85,6 +85,7 @@ export async function registerScreenerRoutes(app: FastifyInstance) {
       limit?: string
     }
   }>('/screener', async (req, reply) => {
+    const log = req.log.child({ component: 'route:screener' })
     try {
       const q = req.query
 
@@ -237,7 +238,7 @@ export async function registerScreenerRoutes(app: FastifyInstance) {
         total: null,
       }
     } catch (error) {
-      console.error('[screener]', error)
+      log.error({ err: error }, 'screener query failed')
       return reply.status(500).send({ error: 'Internal server error' })
     }
   })
