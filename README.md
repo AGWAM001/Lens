@@ -203,6 +203,19 @@ const unsubscribe = client.subscribe(
 > the exact keys being indexed. Only the pair you subscribe to is delivered;
 > updates for other pairs are filtered out server-side. For full protocol handshake details and a raw WebSocket implementation, see [`docs/graphql.md`](docs/graphql.md#live-price-subscriptions-graphql-transport-ws).
 
+## MCP (Model Context Protocol)
+
+Lens exposes its Bazaar catalog of x402-discoverable resources as an MCP
+server, so any MCP-compatible client or agent can discover and pay for price
+data through two tools: `bazaar_search` and `paid_call`. The server signs
+x402 payment challenges with Stellar secret keys on both `stellar:testnet`
+and `stellar:pubnet`.
+
+**⚠️ Warning:** the mainnet key signs with real XLM. Read the configuration,
+spending warning, and worked example before running.
+
+Full documentation: [examples/mcp-server/README.md](examples/mcp-server/README.md)
+
 ## Usage Examples
 
 Lens gates `/price`, `/pools`, and `/candles` behind x402 micropayments on Stellar (testnet by default). The `/status` endpoint is free.
