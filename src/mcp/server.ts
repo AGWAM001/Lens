@@ -7,6 +7,22 @@ import { fetchWithTimeout } from '../fetch.js';
 import { config } from '../config.js';
 import { ssrfSafeFetch, SsrfError, type SsrfFetchOptions } from '../net/ssrf.js';
 
+// Same deadline as the alert delivery path (src/alerts/delivery.ts).
+const UPSTREAM_TIMEOUT_MS = 10_000;
+
+function isTimeoutError(e: unknown): boolean {
+  const name = (e as { name?: string } | null)?.name;
+  return name === 'TimeoutError' || name === 'AbortError';
+}
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return 'unknown host';
+  }
+}
+
 export interface McpServerConfig {
   fetchWithPayment: typeof fetch;
   /**
@@ -120,14 +136,32 @@ export class BazaarMcpServer {
             ? `${url.replace(/\/$/, '')}/discovery/search?q=${encodeURIComponent(query)}`
             : `${url.replace(/\/$/, '')}/discovery/resources`;
             
-          const res = await ssrfSafeFetch(endpoint, {}, this.bazaarFetchOptions);
-          
+          const upstream = new URL(endpoint).host;
+          const res = await ssrfSafeFetch(
+            endpoint,
+            { signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS) },
+            this.bazaarFetchOptions,
+          );
+
           if (!res.ok) {
-            return this.createErrorResponse('ERR_SERVICE_UNREACHABLE', `Service returned ${res.status}`);
+            return this.createErrorResponse('ERR_SERVICE_UNREACHABLE', `Upstream ${upstream} returned HTTP ${res.status}`);
           }
-          
-          const data = await res.json();
-          
+
+          const contentType = res.headers.get('content-type') ?? '';
+          if (!/\bjson\b/i.test(contentType)) {
+            return this.createErrorResponse(
+              'ERR_SERVICE_UNREACHABLE',
+              `Upstream ${upstream} returned content-type "${contentType || 'none'}", expected JSON`,
+            );
+          }
+
+          let data: unknown;
+          try {
+            data = await res.json();
+          } catch {
+            return this.createErrorResponse('ERR_SERVICE_UNREACHABLE', `Upstream ${upstream} returned a body that is not valid JSON`);
+          }
+
           const hasResources = (d: unknown): d is { resources: unknown[] } => 
             typeof d === 'object' && d !== null && 'resources' in d && Array.isArray((d as Record<string, unknown>).resources);
 
@@ -142,7 +176,13 @@ export class BazaarMcpServer {
           if (e instanceof SsrfError) {
             return this.createErrorResponse('ERR_URL_BLOCKED', `Blocked request: ${e.message}`);
           }
-          return this.createErrorResponse('ERR_SERVICE_UNREACHABLE', e.message);
+          if (isTimeoutError(e)) {
+            return this.createErrorResponse(
+              'ERR_SERVICE_UNREACHABLE',
+              `Upstream ${hostOf(url)} did not respond within ${UPSTREAM_TIMEOUT_MS}ms`,
+            );
+          }
+          return this.createErrorResponse('ERR_SERVICE_UNREACHABLE', `Upstream ${hostOf(url)} failed: ${e.message}`);
         }
       }
 
@@ -158,7 +198,7 @@ export class BazaarMcpServer {
         }
 
         try {
-          const res = await this.fetchWithPayment(url, { method });
+          const res = await this.fetchWithPayment(url, { method, signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS) });
           
           if (!res.ok) {
             if (res.status === 402) {
@@ -188,8 +228,12 @@ export class BazaarMcpServer {
   }
 
   private handlePaidCallError(e: any) {
+    if (isTimeoutError(e)) {
+      return this.createErrorResponse('ERR_SERVICE_UNREACHABLE', `Upstream did not respond within ${UPSTREAM_TIMEOUT_MS}ms`);
+    }
+
     const msg = String(e.message || e).toLowerCase();
-    
+
     if (msg.includes('signatureexpirationledger') || msg.includes('signature expired')) {
       return this.createErrorResponse('ERR_EXPIRED_AUTHORISATION', 'The transaction signature expired before it could be submitted.');
     }

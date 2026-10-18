@@ -134,7 +134,10 @@ describe('BazaarMcpServer bazaar_search SSRF guard (#407)', () => {
 
   const publicLookup = { lookup: async () => ['93.184.216.34'] };
   const okFetchImpl = async () =>
-    new Response(JSON.stringify({ resources: [{ name: 'x' }] }), { status: 200 });
+    new Response(JSON.stringify({ resources: [{ name: 'x' }] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
 
   it('rejects a non-http(s) scheme', async () => {
     const server = new BazaarMcpServer({
@@ -198,5 +201,69 @@ describe('BazaarMcpServer bazaar_search SSRF guard (#407)', () => {
     const response = await handler({ params: { name: 'bazaar_search', arguments: { url: 'https://ok.example', query: 'xlm' } } });
     expect(response.isError).toBeFalsy();
     expect(JSON.parse(response.content[0].text).resources[0].name).toBe('x');
+  });
+});
+
+describe('BazaarMcpServer bazaar_search upstream failures (#349)', () => {
+  function run(fetchImpl: (input: string | URL, init?: RequestInit) => Promise<Response>) {
+    const server: any = new BazaarMcpServer({
+      fetchWithPayment: vi.fn(),
+      bazaarFetch: { allowedHosts: [], lookup: async () => ['93.184.216.34'], fetchImpl },
+    });
+    let handler: any = null;
+    server.server.setRequestHandler = (schema: any, fn: any) => {
+      if (schema === CallToolRequestSchema) handler = fn;
+    };
+    server.setupHandlers();
+    return handler({ params: { name: 'bazaar_search', arguments: { url: 'https://ok.example' } } });
+  }
+
+  it('passes a deadline signal to the upstream call', async () => {
+    let signal: AbortSignal | null | undefined;
+    await run(async (_input, init) => {
+      signal = init?.signal;
+      return new Response('{"resources":[{"a":1}]}', { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+    expect(signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('returns a structured error naming the upstream when the call times out', async () => {
+    const response = await run(async () => {
+      throw new DOMException('The operation timed out.', 'TimeoutError');
+    });
+    expect(response.isError).toBe(true);
+    const body = JSON.parse(response.content[0].text);
+    expect(body.code).toBe('ERR_SERVICE_UNREACHABLE');
+    expect(body.reason).toContain('ok.example');
+    expect(body.reason).toContain('did not respond');
+  });
+
+  it('rejects a non-2xx response naming the upstream and status', async () => {
+    const response = await run(async () => new Response('<html>Bad Gateway</html>', { status: 502 }));
+    expect(response.isError).toBe(true);
+    const body = JSON.parse(response.content[0].text);
+    expect(body.code).toBe('ERR_SERVICE_UNREACHABLE');
+    expect(body.reason).toContain('ok.example');
+    expect(body.reason).toContain('502');
+  });
+
+  it('rejects a 200 with a non-JSON content type before parsing', async () => {
+    const response = await run(
+      async () => new Response('<html>oops</html>', { status: 200, headers: { 'content-type': 'text/html' } }),
+    );
+    expect(response.isError).toBe(true);
+    const body = JSON.parse(response.content[0].text);
+    expect(body.code).toBe('ERR_SERVICE_UNREACHABLE');
+    expect(body.reason).toContain('ok.example');
+    expect(body.reason).toContain('text/html');
+  });
+
+  it('rejects a JSON content type with an unparseable body', async () => {
+    const response = await run(
+      async () => new Response('not json', { status: 200, headers: { 'content-type': 'application/json' } }),
+    );
+    expect(response.isError).toBe(true);
+    const body = JSON.parse(response.content[0].text);
+    expect(body.reason).toContain('not valid JSON');
   });
 });
