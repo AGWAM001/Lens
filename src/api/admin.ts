@@ -1,29 +1,11 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
-import { randomBytes, timingSafeEqual } from 'crypto'
+import { randomBytes } from 'crypto'
 import { prisma } from '../db'
-import { hashApiKey } from './auth'
+import { hashApiKey, isAdminAuthorized } from './auth'
 
 /** Generates a new opaque API key with a recognizable `lens_` prefix. */
 export function generateApiKey(): string {
   return `lens_${randomBytes(24).toString('hex')}`
-}
-
-/**
- * Guards admin routes with a shared secret supplied via the `ADMIN_TOKEN`
- * env var, sent as `X-Admin-Token` (or `Authorization: Bearer <token>`).
- * Returns true if the caller is authorized.
- */
-function isAdminAuthorized(req: FastifyRequest): boolean {
-  const adminToken = process.env.ADMIN_TOKEN
-  if (!adminToken) return false
-  const supplied =
-    (req.headers['x-admin-token'] as string | undefined) ??
-    req.headers['authorization']?.replace(/^Bearer\s+/i, '')
-  if (!supplied) return false
-  const a = Buffer.from(supplied)
-  const b = Buffer.from(adminToken)
-  // Constant-time comparison (timingSafeEqual requires equal-length buffers).
-  return a.length === b.length && timingSafeEqual(a, b)
 }
 
 interface CreateKeyBody {
@@ -89,7 +71,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     },
   )
 
-  app.delete<{ Params: { id: string } }>(
+  app.delete< { Params: { id: string } }>(
     '/admin/keys/:id',
     { config: { public: true } },
     async (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
