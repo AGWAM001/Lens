@@ -5,7 +5,7 @@ import { CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 describe('BazaarMcpServer', () => {
   it('should map signature expiration ledger error to ERR_EXPIRED_AUTHORISATION', async () => {
     const mockFetch = vi.fn().mockRejectedValue(new Error('Transaction signature expired. Signature expiration ledger 123 is less than current ledger 125'));
-    const server = new BazaarMcpServer({ fetchWithPayment: mockFetch });
+    const server = new BazaarMcpServer({ fetchWithPayment: mockFetch, paidCallAllowlist: ['example.com'] });
 
     // The SDK server doesn't expose the router directly without a client, but we can test the handlePaidCallError method directly,
     // or by overriding setRequestHandler to capture our handler.
@@ -35,7 +35,7 @@ describe('BazaarMcpServer', () => {
 
   it('should map missing trustline error to ERR_MISSING_TRUSTLINE', async () => {
     const mockFetch = vi.fn().mockRejectedValue(new Error('op_no_trust: The account does not have a trustline for this asset'));
-    const server = new BazaarMcpServer({ fetchWithPayment: mockFetch });
+    const server = new BazaarMcpServer({ fetchWithPayment: mockFetch, paidCallAllowlist: ['example.com'] });
 
     let handler: any = null;
     (server as any).server.setRequestHandler = (schema: any, fn: any) => {
@@ -66,7 +66,7 @@ describe('BazaarMcpServer', () => {
       text: async () => 'Payment Required'
     });
     
-    const server = new BazaarMcpServer({ fetchWithPayment: mockFetch });
+    const server = new BazaarMcpServer({ fetchWithPayment: mockFetch, paidCallAllowlist: ['example.com'] });
 
     let handler: any = null;
     (server as any).server.setRequestHandler = (schema: any, fn: any) => {
@@ -97,7 +97,7 @@ describe('BazaarMcpServer', () => {
       text: async () => JSON.stringify({ success: true, data: "hello" })
     });
     
-    const server = new BazaarMcpServer({ fetchWithPayment: mockFetch });
+    const server = new BazaarMcpServer({ fetchWithPayment: mockFetch, paidCallAllowlist: ['example.com'] });
 
     let handler: any = null;
     (server as any).server.setRequestHandler = (schema: any, fn: any) => {
