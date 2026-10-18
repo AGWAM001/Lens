@@ -25,6 +25,7 @@ import { registerBenchmarkRoutes } from './routes/benchmark'
 import { registerOracleRoutes } from './routes/oracle'
 import { registerBasketRoutes } from './routes/basket'
 import { registerDiscoveryRoutes } from './routes/discovery'
+import { registerVenueRoutes } from './routes/venues'
 import { registerSettleRoute } from './routes/facilitator'
 import { registerCachePolicy } from './middleware/cachePolicy'
 import { getMetrics } from './metrics'
@@ -145,6 +146,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   await registerOracleRoutes(app)
   await registerBasketRoutes(app)
   await registerDiscoveryRoutes(app)
+  await registerVenueRoutes(app)
   await registerSettleRoute(app)
   await registerGraphQL(app)
   await registerWebSocket(app)

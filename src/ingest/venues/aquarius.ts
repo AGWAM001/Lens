@@ -107,6 +107,7 @@ export async function ingestAquariusPair(
 
 export const aquariusAdapter: VenueAdapter<AquariusPool[], AquariusPool[]> = {
   name: 'Aquarius',
+  kind: 'amm',
   source: 'aquarius_amm',
 
   isEnabled(network: NetworkName): boolean {
