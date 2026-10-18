@@ -151,13 +151,13 @@ async function main() {
     try {
       const result = await runPricePointsMaintenance()
       if (result.created.length > 0) {
-        console.log(`[lens] Pre-created ${result.created.length} price_points partition(s)`)
+        log.info(`pre-created ${result.created.length} price_points partition(s)`)
       }
       if (result.dropped.length > 0) {
-        console.log(`[lens] Dropped ${result.dropped.length} price_points partition(s) older than ${PRICE_POINTS_RETENTION_DAYS}d`)
+        log.info(`dropped ${result.dropped.length} price_points partition(s) older than ${PRICE_POINTS_RETENTION_DAYS}d`)
       }
     } catch (err) {
-      console.error('[lens] Price points partition maintenance failed:', (err as Error).message)
+      log.error({ err }, `price points partition maintenance failed: ${(err as Error).message}`)
     }
   }
 
@@ -170,10 +170,10 @@ async function main() {
       partitionQueue = createPricePointsPartitionQueue()
       partitionWorker = startPricePointsPartitionWorker()
       await schedulePricePointsPartitionMaintenance(partitionQueue)
-      console.log('[lens] Price points partition worker started')
+      log.info('price points partition worker started')
     } catch (err) {
-      console.warn('[lens] Price points partition worker skipped (Redis unavailable):', (err as Error).message)
-      console.warn('[lens] Falling back to an in-process hourly partition maintenance')
+      log.warn({ err }, `price points partition worker skipped (Redis unavailable): ${(err as Error).message}`)
+      log.warn('falling back to an in-process hourly partition maintenance')
       await Promise.allSettled([partitionQueue?.close(), partitionWorker?.close()])
       setInterval(() => { void safeMaintainPartitions() }, 60 * 60 * 1000).unref()
     }
