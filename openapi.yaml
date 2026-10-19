@@ -117,6 +117,42 @@ paths:
         '429':
           $ref: '#/components/responses/TooManyRequests'
 
+  /snapshot:
+    get:
+      operationId: getSnapshot
+      summary: Whole-network snapshot (venues, TVL, 24h volume, top pairs, pegs, freshness)
+      description: >-
+        A single timestamped summary of one network: every venue's liveness,
+        AMM pool reserves (TVL), 24h traded volume, the busiest pairs, stablecoin
+        peg readings and how fresh the underlying data is. All figures are read
+        in one consistent database statement, so `asOf` is a real instant and
+        every age is measured from it. Missing data is reported as `null` with a
+        reason (or an empty list), never invented — a cross-pair volume total is
+        only returned when the pairs share one unit. Responses are cached briefly
+        per network; `cache.ageSeconds` states the age of a served copy.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/NetworkQuery'
+      responses:
+        '200':
+          description: Network snapshot
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+              description: Freshness/brief-caching policy for the snapshot.
+            X-Cache:
+              schema:
+                type: string
+                enum: [HIT, MISS]
+              description: Whether this response came from the short-lived cache.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SnapshotResponse'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
   /price/{assetA}/{assetB}:
     get:
       operationId: getPrice
@@ -1432,6 +1468,306 @@ components:
         issuer:
           type: string
           nullable: true
+
+    SnapshotAsset:
+      type: object
+      description: >-
+        A Stellar asset. The issuer is kept because a code such as USDC names a
+        different asset per issuer; `issuer` is null only for the native asset.
+      properties:
+        code:
+          type: string
+        issuer:
+          type: string
+          nullable: true
+
+    SnapshotVenue:
+      type: object
+      properties:
+        name:
+          type: string
+        source:
+          type: string
+        type:
+          type: string
+          enum: [orderbook, amm, unknown]
+        enabled:
+          type: boolean
+          nullable: true
+        status:
+          type: string
+          enum: [reporting, stale, silent, disabled]
+        samples:
+          type: integer
+        samples24h:
+          type: integer
+        pairs24h:
+          type: integer
+        lastUpdated:
+          type: string
+          format: date-time
+          nullable: true
+        ageSeconds:
+          type: integer
+          nullable: true
+
+    SnapshotPool:
+      type: object
+      properties:
+        poolId:
+          type: string
+        pairKey:
+          type: string
+          nullable: true
+        assetA:
+          $ref: '#/components/schemas/SnapshotAsset'
+        assetB:
+          $ref: '#/components/schemas/SnapshotAsset'
+        reserveA:
+          type: number
+          nullable: true
+        reserveB:
+          type: number
+          nullable: true
+        spotPrice:
+          type: number
+          nullable: true
+        feeBp:
+          type: integer
+          nullable: true
+        lastUpdated:
+          type: string
+          format: date-time
+          nullable: true
+        ageSeconds:
+          type: integer
+          nullable: true
+
+    SnapshotVolume:
+      type: object
+      properties:
+        value:
+          type: number
+          nullable: true
+        unit:
+          allOf:
+            - $ref: '#/components/schemas/SnapshotAsset'
+          nullable: true
+        reason:
+          type: string
+          nullable: true
+
+    SnapshotTopPair:
+      type: object
+      properties:
+        pairKey:
+          type: string
+        configured:
+          type: boolean
+          description: >-
+            Whether the pair is in this network's watched-pair config. When
+            false the asset order (and therefore the price direction) is taken
+            from the alphabetically-sorted pair key.
+        assetA:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/SnapshotAsset'
+        assetB:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/SnapshotAsset'
+        price:
+          type: number
+          nullable: true
+          description: Stored as assetB-per-assetA in the config's order.
+        baseVolume24h:
+          type: number
+        counterVolume24h:
+          type: number
+        samples24h:
+          type: integer
+        venues:
+          type: array
+          items:
+            type: string
+        lastUpdated:
+          type: string
+          format: date-time
+          nullable: true
+        ageSeconds:
+          type: integer
+          nullable: true
+
+    SnapshotPeg:
+      type: object
+      properties:
+        asset:
+          $ref: '#/components/schemas/SnapshotAsset'
+        target:
+          type: string
+        pairKey:
+          type: string
+        quote:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/SnapshotAsset'
+        price:
+          type: number
+          nullable: true
+          description: The pegged asset's price in its quote asset.
+        deviationBp:
+          type: number
+          nullable: true
+        status:
+          type: string
+          enum: [on_peg, off_peg, no_reference, no_data]
+        reason:
+          type: string
+          nullable: true
+        samples24h:
+          type: integer
+        lastUpdated:
+          type: string
+          format: date-time
+          nullable: true
+
+    SnapshotResponse:
+      type: object
+      properties:
+        network:
+          type: string
+          enum: [testnet, mainnet]
+        asOf:
+          type: string
+          format: date-time
+          description: The single instant (from one database statement) every window and age is measured from.
+        generatedAt:
+          type: string
+          format: date-time
+        window:
+          type: string
+          enum: ['24h']
+        cache:
+          type: object
+          properties:
+            ttlSeconds:
+              type: integer
+            maxAgeSeconds:
+              type: integer
+            hit:
+              type: boolean
+            storedAt:
+              type: string
+              format: date-time
+            ageSeconds:
+              type: integer
+              nullable: true
+        venues:
+          type: array
+          items:
+            $ref: '#/components/schemas/SnapshotVenue'
+        tvl:
+          type: object
+          properties:
+            note:
+              type: string
+            poolCount:
+              type: integer
+            sampleCount:
+              type: integer
+            lastUpdated:
+              type: string
+              format: date-time
+              nullable: true
+            ageSeconds:
+              type: integer
+              nullable: true
+            stale:
+              type: boolean
+            byAsset:
+              type: array
+              items:
+                type: object
+                properties:
+                  asset:
+                    $ref: '#/components/schemas/SnapshotAsset'
+                  amount:
+                    type: number
+                  pools:
+                    type: integer
+            pools:
+              type: array
+              items:
+                $ref: '#/components/schemas/SnapshotPool'
+        volume24h:
+          type: object
+          properties:
+            window:
+              type: string
+              enum: ['24h']
+            sampleCount:
+              type: integer
+            byVenue:
+              type: array
+              items:
+                type: object
+                properties:
+                  venue:
+                    type: string
+                  baseVolume:
+                    type: number
+                  counterVolume:
+                    type: number
+                  samples:
+                    type: integer
+                  pairs:
+                    type: integer
+                  lastUpdated:
+                    type: string
+                    format: date-time
+                    nullable: true
+                  ageSeconds:
+                    type: integer
+                    nullable: true
+            total:
+              $ref: '#/components/schemas/SnapshotVolume'
+        topPairs:
+          type: array
+          items:
+            $ref: '#/components/schemas/SnapshotTopPair'
+        pegs:
+          type: array
+          items:
+            $ref: '#/components/schemas/SnapshotPeg'
+        freshness:
+          type: object
+          properties:
+            asOf:
+              type: string
+              format: date-time
+            windowStart:
+              type: string
+              format: date-time
+            windowEnd:
+              type: string
+              format: date-time
+            lastUpdated:
+              type: string
+              format: date-time
+              nullable: true
+            ageSeconds:
+              type: integer
+              nullable: true
+            staleAfterSeconds:
+              type: integer
+            stale:
+              type: boolean
+            venuesReporting:
+              type: integer
+            venuesExpected:
+              type: integer
+            venuesSilent:
+              type: integer
 
     AggregatedPrice:
       type: object

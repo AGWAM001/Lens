@@ -318,6 +318,299 @@ export const benchmarkResponseSchema = {
   },
 } as const
 
+// An asset identifier, shared by the /snapshot sub-objects below. `issuer` is
+// null only for the native asset (XLM); every issued asset keeps its issuer,
+// since the same code from a different issuer is a different asset.
+const assetIdSchema = {
+  type: 'object',
+  required: ['code', 'issuer'],
+  additionalProperties: false,
+  properties: {
+    code: { type: 'string' },
+    issuer: { type: ['string', 'null'] },
+  },
+} as const
+
+/**
+ * GET /snapshot
+ *
+ * The whole-network summary. `additionalProperties: false` throughout so an
+ * accidental new field fails validation in dev/test rather than shipping
+ * silently; nullable numbers/strings are explicit, because the endpoint
+ * reports "unknown" as null with a reason instead of inventing a value.
+ */
+export const snapshotResponseSchema = {
+  type: 'object',
+  required: [
+    'network',
+    'asOf',
+    'generatedAt',
+    'window',
+    'cache',
+    'venues',
+    'tvl',
+    'volume24h',
+    'topPairs',
+    'pegs',
+    'freshness',
+  ],
+  additionalProperties: false,
+  properties: {
+    network: { type: 'string', enum: ['testnet', 'mainnet'] },
+    asOf: { type: 'string' },
+    generatedAt: { type: 'string' },
+    window: { type: 'string', enum: ['24h'] },
+    cache: {
+      type: 'object',
+      required: ['ttlSeconds', 'maxAgeSeconds', 'hit', 'storedAt', 'ageSeconds'],
+      additionalProperties: false,
+      properties: {
+        ttlSeconds: { type: 'integer' },
+        maxAgeSeconds: { type: 'integer' },
+        hit: { type: 'boolean' },
+        storedAt: { type: 'string' },
+        ageSeconds: { type: ['integer', 'null'] },
+      },
+    },
+    venues: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: [
+          'name',
+          'source',
+          'type',
+          'enabled',
+          'status',
+          'samples',
+          'samples24h',
+          'pairs24h',
+          'lastUpdated',
+          'ageSeconds',
+        ],
+        additionalProperties: false,
+        properties: {
+          name: { type: 'string' },
+          source: { type: 'string' },
+          type: { type: 'string', enum: ['orderbook', 'amm', 'unknown'] },
+          enabled: { type: ['boolean', 'null'] },
+          status: { type: 'string', enum: ['reporting', 'stale', 'silent', 'disabled'] },
+          samples: { type: 'integer' },
+          samples24h: { type: 'integer' },
+          pairs24h: { type: 'integer' },
+          lastUpdated: { type: ['string', 'null'] },
+          ageSeconds: { type: ['integer', 'null'] },
+        },
+      },
+    },
+    tvl: {
+      type: 'object',
+      required: [
+        'note',
+        'poolCount',
+        'sampleCount',
+        'lastUpdated',
+        'ageSeconds',
+        'stale',
+        'byAsset',
+        'pools',
+      ],
+      additionalProperties: false,
+      properties: {
+        note: { type: 'string' },
+        poolCount: { type: 'integer' },
+        sampleCount: { type: 'integer' },
+        lastUpdated: { type: ['string', 'null'] },
+        ageSeconds: { type: ['integer', 'null'] },
+        stale: { type: 'boolean' },
+        byAsset: {
+          type: 'array',
+          items: {
+            type: 'object',
+            required: ['asset', 'amount', 'pools'],
+            additionalProperties: false,
+            properties: {
+              asset: assetIdSchema,
+              amount: { type: 'number' },
+              pools: { type: 'integer' },
+            },
+          },
+        },
+        pools: {
+          type: 'array',
+          items: {
+            type: 'object',
+            required: [
+              'poolId',
+              'pairKey',
+              'assetA',
+              'assetB',
+              'reserveA',
+              'reserveB',
+              'spotPrice',
+              'feeBp',
+              'lastUpdated',
+              'ageSeconds',
+            ],
+            additionalProperties: false,
+            properties: {
+              poolId: { type: 'string' },
+              pairKey: { type: ['string', 'null'] },
+              assetA: assetIdSchema,
+              assetB: assetIdSchema,
+              reserveA: { type: ['number', 'null'] },
+              reserveB: { type: ['number', 'null'] },
+              spotPrice: { type: ['number', 'null'] },
+              feeBp: { type: ['integer', 'null'] },
+              lastUpdated: { type: ['string', 'null'] },
+              ageSeconds: { type: ['integer', 'null'] },
+            },
+          },
+        },
+      },
+    },
+    volume24h: {
+      type: 'object',
+      required: ['window', 'sampleCount', 'byVenue', 'total'],
+      additionalProperties: false,
+      properties: {
+        window: { type: 'string', enum: ['24h'] },
+        sampleCount: { type: 'integer' },
+        byVenue: {
+          type: 'array',
+          items: {
+            type: 'object',
+            required: [
+              'venue',
+              'baseVolume',
+              'counterVolume',
+              'samples',
+              'pairs',
+              'lastUpdated',
+              'ageSeconds',
+            ],
+            additionalProperties: false,
+            properties: {
+              venue: { type: 'string' },
+              baseVolume: { type: 'number' },
+              counterVolume: { type: 'number' },
+              samples: { type: 'integer' },
+              pairs: { type: 'integer' },
+              lastUpdated: { type: ['string', 'null'] },
+              ageSeconds: { type: ['integer', 'null'] },
+            },
+          },
+        },
+        total: {
+          type: 'object',
+          required: ['value', 'unit', 'reason'],
+          additionalProperties: false,
+          properties: {
+            value: { type: ['number', 'null'] },
+            unit: { ...assetIdSchema, type: ['object', 'null'] },
+            reason: { type: ['string', 'null'] },
+          },
+        },
+      },
+    },
+    topPairs: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: [
+          'pairKey',
+          'configured',
+          'assetA',
+          'assetB',
+          'price',
+          'baseVolume24h',
+          'counterVolume24h',
+          'samples24h',
+          'venues',
+          'lastUpdated',
+          'ageSeconds',
+        ],
+        additionalProperties: false,
+        properties: {
+          pairKey: { type: 'string' },
+          configured: { type: 'boolean' },
+          assetA: { ...assetIdSchema, type: ['object', 'null'] },
+          assetB: { ...assetIdSchema, type: ['object', 'null'] },
+          price: { type: ['number', 'null'] },
+          baseVolume24h: { type: 'number' },
+          counterVolume24h: { type: 'number' },
+          samples24h: { type: 'integer' },
+          venues: { type: 'array', items: { type: 'string' } },
+          lastUpdated: { type: ['string', 'null'] },
+          ageSeconds: { type: ['integer', 'null'] },
+        },
+      },
+    },
+    pegs: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: [
+          'asset',
+          'target',
+          'pairKey',
+          'quote',
+          'price',
+          'deviationBp',
+          'status',
+          'reason',
+          'samples24h',
+          'lastUpdated',
+        ],
+        additionalProperties: false,
+        properties: {
+          asset: assetIdSchema,
+          target: { type: 'string' },
+          pairKey: { type: 'string' },
+          quote: { ...assetIdSchema, type: ['object', 'null'] },
+          price: { type: ['number', 'null'] },
+          deviationBp: { type: ['number', 'null'] },
+          status: {
+            type: 'string',
+            enum: ['on_peg', 'off_peg', 'no_reference', 'no_data'],
+          },
+          reason: { type: ['string', 'null'] },
+          samples24h: { type: 'integer' },
+          lastUpdated: { type: ['string', 'null'] },
+        },
+      },
+    },
+    freshness: {
+      type: 'object',
+      required: [
+        'asOf',
+        'windowStart',
+        'windowEnd',
+        'lastUpdated',
+        'ageSeconds',
+        'staleAfterSeconds',
+        'stale',
+        'venuesReporting',
+        'venuesExpected',
+        'venuesSilent',
+      ],
+      additionalProperties: false,
+      properties: {
+        asOf: { type: 'string' },
+        windowStart: { type: 'string' },
+        windowEnd: { type: 'string' },
+        lastUpdated: { type: ['string', 'null'] },
+        ageSeconds: { type: ['integer', 'null'] },
+        staleAfterSeconds: { type: 'integer' },
+        stale: { type: 'boolean' },
+        venuesReporting: { type: 'integer' },
+        venuesExpected: { type: 'integer' },
+        venuesSilent: { type: 'integer' },
+      },
+    },
+  },
+} as const
+
 /**
  * Install response-shape validation on a Fastify instance.
  *

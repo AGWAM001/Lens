@@ -32,6 +32,7 @@ Aggregates price data from Stellar's Classic Order Book (SDEX) and AMM Liquidity
 | GET | `/benchmark/:asset?target=USD` | Peg-deviation statistics versus a target |
 | GET | `/basket?asset=XLM&asset=USDC&weight=0.6&weight=0.4` | Weighted price of a basket of assets |
 | GET | `/status` | Indexer health |
+| GET | `/snapshot?network=testnet\|mainnet` | Whole-network snapshot: venues, TVL, 24h volume, top pairs, peg readings and data freshness in one cached, timestamped object |
 | GET | `/discovery/resources?type=&payTo=&network=&extensions=&limit=&offset=` | Bazaar catalog of x402-discoverable resources (spec: [`bazaar`](https://github.com/x402-foundation/x402/blob/main/specs/extensions/bazaar.md)) |
 | GET | `/usage/me` | Usage and quota for the calling API key (requires `Authorization: Bearer <key>`) |
 | GET | `/supported` | Payment kinds and extensions this facilitator supports |

@@ -269,6 +269,11 @@ const globalConfig = {
   },
   cache: {
     priceTtl: parseInt(process.env.PRICE_CACHE_TTL ?? '10', 10),
+    // How long a network's GET /snapshot response is served from Redis before
+    // it is recomputed from Postgres. Deliberately short: the endpoint is a
+    // cheap, pollable summary, so a slightly stale copy is preferable to a
+    // per-request scan, but callers must never be shown a minutes-old market.
+    snapshotTtl: parseInt(process.env.SNAPSHOT_CACHE_TTL ?? '15', 10),
   },
   http: {
     timeoutMs: parseInt(process.env.HTTP_TIMEOUT_MS ?? '10000', 10),
