@@ -19,7 +19,7 @@ declare module 'fastify' {
     apiKey?: ApiKeyContext
   }
   interface FastifyContextConfig {
-    /** When true, the API-hey auth hook skips this route (e.g. health, admin). */
+    /** When true, the API-key auth hook skips this route (e.g. health, admin). */
     public?: boolean
   }
 }
@@ -83,7 +83,7 @@ export function isAdminAuthorized(req: FastifyRequest): boolean {
  *
  * Runs as an `onRequest` hook (and must be registered BEFORE @fastify/rate-limit)
  * so that `req.apiKey` is populated before the rate limiter — which also runs in
- * `onRequest` — evaluates its per-key `max`/keyGenerator.
+ * `onRequest` — evaluates its per-key `max`/`keyGenerator`.
  *
  * Routes can opt out of auth (e.g. health/metrics) by setting
  * `config.public = true` on the route definition.

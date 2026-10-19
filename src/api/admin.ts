@@ -71,7 +71,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     },
   )
 
-  app.delete< { Params: { id: string } }>(
+  app.delete<{ Params: { id: string } }>(
     '/admin/keys/:id',
     { config: { public: true } },
     async (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
