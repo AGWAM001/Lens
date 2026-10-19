@@ -93,6 +93,17 @@ query {
 }
 ```
 
+#### Schema Definition & SDL Artifact
+The GraphQL schema is exported as a canonical Schema Definition Language (SDL) artifact committed at [`schema.graphql`](schema.graphql).
+
+- **Location**: [`schema.graphql`](schema.graphql)
+- **Regenerate / Refresh**:
+  ```bash
+  npm run graphql:schema:gen
+  ```
+- **Drift Guard & Validation**: CI runs `src/__tests__/graphqlSchemaDrift.test.ts` to assert that `schema.graphql` matches the code-defined schema in `src/api/graphql.ts`, guarantees deterministic output, validates SDL syntax for client generators, and detects breaking schema changes.
+
+
 ## Observability
 
 Prometheus metrics are exposed on `GET /metrics` (public, no API key required).
@@ -202,6 +213,19 @@ const unsubscribe = client.subscribe(
 > sorted, e.g. `USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN/XLM`). Use the `listPairs` query to discover
 > the exact keys being indexed. Only the pair you subscribe to is delivered;
 > updates for other pairs are filtered out server-side. For full protocol handshake details and a raw WebSocket implementation, see [`docs/graphql.md`](docs/graphql.md#live-price-subscriptions-graphql-transport-ws).
+
+## MCP (Model Context Protocol)
+
+Lens exposes its Bazaar catalog of x402-discoverable resources as an MCP
+server, so any MCP-compatible client or agent can discover and pay for price
+data through two tools: `bazaar_search` and `paid_call`. The server signs
+x402 payment challenges with Stellar secret keys on both `stellar:testnet`
+and `stellar:pubnet`.
+
+**⚠️ Warning:** the mainnet key signs with real XLM. Read the configuration,
+spending warning, and worked example before running.
+
+Full documentation: [examples/mcp-server/README.md](examples/mcp-server/README.md)
 
 ## Usage Examples
 
@@ -516,3 +540,24 @@ curl -s http://localhost:3002/price/XLM/USDC | jq '{price, ammPrice, lastUpdated
 - **Cache:** Redis
 - **Queue:** BullMQ
 - **Stellar:** @stellar/stellar-sdk
+
+
+### Deployed smoke check
+
+Run against a real running instance (local, staging or production):
+
+```bash
+SMOKE_MAX_AGE_SECONDS=120 SMOKE_TIMEOUT_MS=8000 npm run smoke -- http://localhost:3002
+```
+
+Validate the smoke checker itself with `npm run test:smoke`.
+
+The check requires public `/status` and `/price/XLM/USDC` and checks `/ready` when available. It uses a
+`graphql-transport-ws` live price subscription at `/graphql`. An HTTP 404 on `/ready` is skipped until issue #334 provides the endpoint; any other readiness failure is fatal. It checks
+indexer and trade freshness, validates price shape, and waits for a real
+subscription event. It fails non-zero, naming the failing check, on timeout,
+stale data, a missing message, or HTTP errors. No synthetic price events are
+generated. On installations where x402 payment gates the price endpoint,
+a normal unauthenticated call receives HTTP 402 and the smoke check fails;
+it never bypasses payment requirements. A quiet pair without any new trades
+will likewise fail the live-message requirement.

@@ -52,10 +52,20 @@ async function main() {
 
   console.log('[agent] Starting MCP server child process...');
   
-  // Start the MCP server as a child process
+  // Start the MCP server as a child process.
+  // paid_call spends real USDC, so the server only pays origins the operator
+  // allow-lists (MCP_PAID_CALL_ALLOWED_HOSTS, empty by default). This demo
+  // spends against the mock server above, so it names that origin and nothing
+  // else. A real deployment lists its own endpoints and leaves the rest refused.
+  const demoAllowlist = 'localhost:3000';
+
   const transport = new StdioClientTransport({
     command: process.platform === 'win32' ? 'npx.cmd' : 'npx',
     args: ['tsx', path.join(__dirname, 'run.ts')],
+    env: {
+      ...process.env as Record<string, string>,
+      MCP_PAID_CALL_ALLOWED_HOSTS: process.env.MCP_PAID_CALL_ALLOWED_HOSTS || demoAllowlist,
+    },
   });
 
   const client = new Client(
@@ -75,6 +85,27 @@ async function main() {
   console.log('[agent] Available tools:', tools.tools.map(t => t.name).join(', '));
 
   const BAZAAR_URL = 'http://localhost:3000';
+
+  // Step 0 is the one that needs no Bazaar node and no payment: Lens answering
+  // for its own data. It reads the ingestion database, so a machine without one
+  // gets a deterministic refusal instead of a number.
+  console.log('\n[agent] 0. Asking Lens directly for a price...');
+
+  const priceResult = await client.callTool({
+    name: 'lens_get_price',
+    arguments: { assetA: 'native', assetB: 'USDC' },
+  });
+
+  if (priceResult.isError) {
+    console.log('[agent] lens_get_price refused:', JSON.parse(priceResult.content[0].text).reason);
+  } else {
+    const price: any = priceResult.structuredContent ?? JSON.parse(priceResult.content[0].text);
+    console.log(
+      `[agent] ${price.pairKey} on ${price.network}: ${price.price} ${price.quote.code} per ${price.base.code} ` +
+        `(confidence ${price.confidence}, ${price.sources} source(s), last trade ${price.lastTradeAgeSeconds}s ago, ` +
+        `route ${price.bestRoute?.route ?? 'unknown'})`
+    );
+  }
 
   console.log(`\n[agent] 1. Discovering resources at ${BAZAAR_URL}...`);
   console.log(`[agent] Executing tool: bazaar_search`);

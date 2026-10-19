@@ -37,6 +37,9 @@ Lens exposes a high-performance GraphQL API alongside its REST interface, powere
 
 ## Schema & Types
 
+The complete, canonical Schema Definition Language (SDL) artifact is committed at [`schema.graphql`](../schema.graphql).
+It can be regenerated from code definitions using `npm run graphql:schema:gen`, and is continuously validated against drift in CI.
+
 ### Root Operation Types
 
 ```graphql

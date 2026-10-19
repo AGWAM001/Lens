@@ -3,8 +3,11 @@ import { getActivePairs } from '../../pairsRegistry'
 import { upsertPricePoints } from '../../db'
 import { dispatchPriceUpdate } from '../../webhookDispatcher'
 import { publishPriceUpdate } from '../../events'
+import { createLogger } from '../../logger'
 import type { WatchedPair } from '../../types'
 import type { VenueAdapter, VenuePricePoint } from './types'
+
+const log = createLogger('ingester:runner')
 
 // ── Centralized Last Price Cache ──────────────────────────────────────────────
 // Keyed by `${venue}:${network}:${pairKey}`
@@ -66,7 +69,9 @@ export async function writeVenuePricePoints(
     previousPrice,
     currentPrice,
     network,
-  }).catch((err) => console.error(`[${venue}] webhook dispatch error:`, (err as Error).message))
+  }).catch((err) =>
+    createLogger(`ingester:${venue.toLowerCase()}`).error({ err }, 'webhook dispatch error')
+  )
 }
 
 // ── Sleep Helper ──────────────────────────────────────────────────────────────
@@ -91,11 +96,11 @@ export async function startVenueAdapter(
   network: NetworkName = activeNetwork
 ): Promise<void> {
   if (!adapter.isEnabled(network)) {
-    console.log(`[${adapter.name}] ${adapter.name} is disabled on ${network} — ingester not started`)
+    log.info({ venue: adapter.name, network }, 'venue adapter is disabled — ingester not started')
     return
   }
 
-  console.log(`[${adapter.name}] Starting ${adapter.name} venue adapter on ${network}`)
+  log.info({ venue: adapter.name, network }, 'starting venue adapter')
 
   let consecutiveErrors = 0
   while (true) {
@@ -108,9 +113,9 @@ export async function startVenueAdapter(
     } catch (err) {
       consecutiveErrors++
       const backoffMs = Math.min(10_000 * Math.pow(2, consecutiveErrors - 1), 60_000)
-      console.error(
-        `[${adapter.name}] Cycle failed on ${network} (attempt ${consecutiveErrors}), retrying in ${backoffMs}ms:`,
-        (err as Error).message
+      log.error(
+        { venue: adapter.name, network, attempt: consecutiveErrors, backoffMs, err },
+        'venue adapter cycle failed; retrying'
       )
       await sleep(backoffMs)
       continue
@@ -129,10 +134,10 @@ export async function startAllVenueAdapters(
   adapters: VenueAdapter[],
   network: NetworkName = activeNetwork
 ): Promise<void> {
-  console.log(`[runner] Launching ${adapters.length} venue adapter(s) on ${network}`)
+  log.info({ count: adapters.length, network }, 'launching venue adapters')
   for (const adapter of adapters) {
     void startVenueAdapter(adapter, network).catch((err) => {
-      console.error(`[runner] Unhandled error starting ${adapter.name} on ${network}:`, err)
+      log.error({ venue: adapter.name, network, err }, 'unhandled error starting venue adapter')
     })
   }
 }
