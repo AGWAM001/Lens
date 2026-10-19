@@ -3,6 +3,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { MCP_ERROR_CODES, McpErrorCode } from './codes.js';
 import { checkPaidCallTarget, parsePaidCallAllowlist, type PaidCallAllowRule } from './paidCallAllowlist.js';
+import { LENS_PRICE_TOOL_NAME, lensPriceToolDefinition, readLensPrice, type LensPriceQueries } from './priceTool.js';
 import { fetchWithTimeout } from '../fetch.js';
 import { config } from '../config.js';
 import { ssrfSafeFetch, SsrfError, type SsrfFetchOptions } from '../net/ssrf.js';
@@ -16,6 +17,12 @@ export interface McpServerConfig {
    */
   paidCallAllowlist?: readonly string[];
   /**
+   * Lens's own aggregated prices, for `lens_get_price`. Hosts that can read the
+   * price data pass {@link createLensPriceQueries}; leaving it out simply does
+   * not advertise the tool, so an agent is never offered a price it cannot get.
+   */
+  priceQueries?: LensPriceQueries;
+  /**
    * Outbound fetch policy for `bazaar_search`. Falls back to the operator's
    * shared `OUTBOUND_ALLOWED_HOSTS` allowlist. `lookup`/`fetchImpl` exist so
    * tests can drive DNS resolution and the transport without real sockets.
@@ -28,9 +35,11 @@ export class BazaarMcpServer {
   private fetchWithPayment: typeof fetch;
   private paidCallRules: PaidCallAllowRule[];
   private bazaarFetchOptions: SsrfFetchOptions;
+  private priceQueries?: LensPriceQueries;
 
   constructor(config_: McpServerConfig) {
     this.fetchWithPayment = config_.fetchWithPayment;
+    this.priceQueries = config_.priceQueries;
 
     // Two independent gates, deliberately separate: this one decides which
     // hosts may be PAID (#404), the one below decides which addresses may be
@@ -63,8 +72,8 @@ export class BazaarMcpServer {
   }
 
   private setupHandlers() {
-    this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
-      tools: [
+    this.server.setRequestHandler(ListToolsRequestSchema, async () => {
+      const tools: Record<string, unknown>[] = [
         {
           name: 'bazaar_search',
           description: 'Search for resources in a Stellar Bazaar node',
@@ -107,10 +116,46 @@ export class BazaarMcpServer {
             additionalProperties: false,
           },
         },
-      ],
-    }));
+      ];
+
+      // #408: without this the server could spend money on someone else's price
+      // feed while being unable to state Lens's own.
+      if (this.priceQueries) {
+        tools.push(lensPriceToolDefinition());
+      }
+
+      return { tools };
+    });
 
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+      if (request.params.name === LENS_PRICE_TOOL_NAME) {
+        if (!this.priceQueries) {
+          return this.createErrorResponse(
+            'ERR_INTERNAL_FAILURE',
+            'lens_get_price is not available: this server has no Lens price source configured.'
+          );
+        }
+
+        try {
+          const outcome = await readLensPrice(request.params.arguments, this.priceQueries);
+
+          if (!outcome.ok) {
+            return this.createErrorResponse(outcome.error.code, outcome.error.reason);
+          }
+
+          // structuredContent is what the agent reads; the text block keeps the
+          // same payload visible to clients that only render content.
+          return {
+            content: [{ type: 'text', text: JSON.stringify(outcome.result, null, 2) }],
+            structuredContent: outcome.result,
+          };
+        } catch (e: any) {
+          // Prices come from Postgres and Horizon, so a throw here is the data
+          // layer being unreachable — never an answer about the pair.
+          return this.createErrorResponse('ERR_SERVICE_UNREACHABLE', e.message || 'Price lookup failed.');
+        }
+      }
+
       if (request.params.name === 'bazaar_search') {
         const url = String(request.params.arguments?.url);
         const query = request.params.arguments?.query ? String(request.params.arguments?.query) : undefined;
