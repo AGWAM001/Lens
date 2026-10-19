@@ -23,6 +23,11 @@ info:
     Per-caller responses (`/usage/me`), operator routes
     (`/admin/*`), mutations and error responses are `no-store` and must never
     sit in a shared cache.
+
+    Data Quality Guarantees: see `docs/data-quality.md` for explicit SLAs
+    and guarantees on freshness (e.g. 300s staleness bound), completeness,
+    precision (PostgreSQL Decimal(36,18) and negotiated string serialization),
+    and multi-venue coverage across SDEX, Stellar AMM, Soroswap, and Aquarius.
   version: 0.1.0
   license:
     name: MIT
