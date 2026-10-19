@@ -6,6 +6,7 @@ import { upsertPricePoints, getIndexerState, setIndexerCursor } from '../../db'
 import { resolvePageLedgers } from '../../ingesters/toid'
 import { dispatchPriceUpdate } from '../../webhookDispatcher'
 import { publishPriceUpdate } from '../../events'
+import { createLogger } from '../../logger'
 import type { WatchedPair } from '../../types'
 import type { VenueAdapter, VenuePricePoint } from './types'
 import {
@@ -14,6 +15,8 @@ import {
   setLastPrice,
   startVenueAdapter,
 } from './runner'
+
+const log = createLogger('ingester:sdex')
 
 export function _resetLastPrice(): void {
   resetLastPrice('SDEX')
@@ -65,7 +68,7 @@ export async function fetchSdexTrades(
       lastLedger: state.ledger,
     }
   } catch (err) {
-    console.error(`[sdex] Error fetching trades for ${pair.pairKey}:`, (err as Error).message)
+    log.error({ pair: pair.pairKey, err }, 'error fetching trades')
     return null
   }
 }
@@ -82,7 +85,10 @@ export function deriveSdexPricePoints(
     lastLedger,
   )
   if (ledgers === null) {
-    console.error(`[sdex] ${pair.pairKey}: no ledger derivable from ${records.length} trades; skipping batch`)
+    log.error(
+      { pair: pair.pairKey, trades: records.length },
+      'no ledger derivable from trades; skipping batch'
+    )
     return null
   }
 
@@ -137,7 +143,7 @@ export async function writeSdexPricePoints(
   )
 
   await setIndexerCursor(stateId, lastPagingToken, network, finalLedger)
-  console.log(`[sdex] ${pair.pairKey}: ingested ${points.length} trades`)
+  log.info({ pair: pair.pairKey, trades: points.length }, 'ingested trades')
 
   publishPriceUpdate({
     pair: pair.pairKey,
@@ -152,7 +158,7 @@ export async function writeSdexPricePoints(
     previousPrice,
     currentPrice,
     network,
-  }).catch((err) => console.error('[sdex] webhook dispatch error:', err.message))
+  }).catch((err) => log.error({ pair: pair.pairKey, err }, 'webhook dispatch error'))
 }
 
 export async function ingestPair(pair: WatchedPair, network: NetworkName = activeNetwork): Promise<void> {
@@ -167,6 +173,7 @@ export async function ingestPair(pair: WatchedPair, network: NetworkName = activ
 
 export const sdexAdapter: VenueAdapter<WatchedPair, SdexRawTrades> = {
   name: 'SDEX',
+  kind: 'orderbook',
   source: 'SDEX',
 
   isEnabled(_network: NetworkName): boolean {
