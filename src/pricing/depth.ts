@@ -90,26 +90,21 @@ export async function getAMMDepth(
   amount: number,
   network: NetworkName = activeNetwork
 ): Promise<DepthResult | null> {
-  const query = network
-    ? `SELECT DISTINCT ON (ps.pool_id) ps.reserve_a, ps.reserve_b, ps.fee_bp
+  // Always network-scoped. `network` defaults to `activeNetwork`, so there is
+  // no caller that can ask for an unscoped read — which is the point: these
+  // tables carry rows for every network the process indexes, and an unfiltered
+  // read mixed testnet reserves into a mainnet depth answer.
+  const result = await pgPool.query(
+    `SELECT DISTINCT ON (ps.pool_id) ps.reserve_a, ps.reserve_b, ps.fee_bp
        FROM pool_snapshots ps
        WHERE ps.network = $2 AND ps.pool_id IN (
          SELECT DISTINCT pool_id FROM price_points
          WHERE pair_key = $1 AND network = $2 AND source = 'AMM' AND pool_id IS NOT NULL
        )
        ORDER BY ps.pool_id, ps.timestamp DESC
-       LIMIT 1`
-    : `SELECT DISTINCT ON (ps.pool_id) ps.reserve_a, ps.reserve_b, ps.fee_bp
-       FROM pool_snapshots ps
-       WHERE ps.pool_id IN (
-         SELECT DISTINCT pool_id FROM price_points
-         WHERE pair_key = $1 AND source = 'AMM' AND pool_id IS NOT NULL
-       )
-       ORDER BY ps.pool_id, ps.timestamp DESC
-       LIMIT 1`
-
-  const params = network ? [pairKey, network] : [pairKey]
-  const result = await pgPool.query(query, params)
+       LIMIT 1`,
+    [pairKey, network]
+  )
   if (!result.rows[0]) return null
 
   const { reserve_a, reserve_b, fee_bp } = result.rows[0]
