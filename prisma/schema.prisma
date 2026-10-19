@@ -271,3 +271,71 @@ model ApiKey {
 
   @@map("api_keys")
 }
+
+/// One value Lens put on chain through its SEP-40 feed (#222).
+///
+/// Rows exist for WRITES, not for decisions: a blocked tick is a log line, and
+/// a table that recorded every "below_deviation" would hold ~2,880 rows per
+/// pair per day and say nothing an operator could not read from the trigger
+/// code in the logs. What this table proves is the opposite direction — every
+/// number a contract was told, with the venues that produced it, which is the
+/// evidence that "a price you cannot source is worse than no price" was
+/// actually enforced.
+model OraclePublication {
+  id      String @id @default(uuid())
+  network String @default("testnet")
+
+  /// The Lens pair this came from. Kept alongside the feed asset because one
+  /// pair can only ever feed one quoted asset, but the reverse is not true:
+  /// without pairKey you cannot trace a published number back to a trade.
+  pairKey String @map("pair_key")
+
+  /// SEP-40 identifier of the asset whose price in `base` this is: a C...
+  /// Stellar Asset Contract id, or the code for native XLM. Never a bare code
+  /// for an anchored asset — a code is not an issuer, and two tokens share one
+  /// code in the wild.
+  quotedAsset String @map("quoted_asset")
+  baseAsset   String @map("base_asset")
+
+  /// "published" | "failed". "published" is written only after the transaction
+  /// finalized, so a row here is a claim about the ledger, not about intent.
+  state String
+
+  /// Why the write happened: "first_report" | "deviation" | "max_interval".
+  trigger String?
+
+  /// Human-readable price, the same number /api/price would return for the
+  /// pair at that moment, oriented against the feed's base.
+  price Decimal? @db.Decimal(36, 18)
+
+  /// The exact i128 written on chain, as text. Prisma's Decimal cannot hold an
+  /// i128 range, and re-deriving it from `price` would defeat the point of
+  /// keeping it.
+  scaledPrice String? @map("scaled_price")
+  decimals    Int?
+  /// Feed tick the value was written at (`floor(unix_now()/resolution)*resolution`).
+  feedTimestamp BigInt? @map("feed_timestamp")
+  resolution    Int?
+
+  /// Every venue behind the number, joined with ','. This is the provenance
+  /// guarantee: a row without venues should not exist, and `sourceCount` is
+  /// `venues.length` because the contract derives it from the same list.
+  venues      String?
+  sourceCount Int?    @map("source_count")
+
+  /// Percent moved against the value that was on chain, when there was one.
+  deviationPct Float? @map("deviation_pct")
+
+  /// The publisher's own sentence for the decision — the same string that went
+  /// to the log, so a log grep and a table query agree.
+  reason String?
+
+  txHash       String? @map("tx_hash")
+  errorMessage String? @map("error_message")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([network, pairKey, createdAt(sort: Desc)])
+  @@index([network, quotedAsset, feedTimestamp(sort: Desc)])
+  @@map("oracle_publications")
+}

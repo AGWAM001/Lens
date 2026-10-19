@@ -42,6 +42,23 @@ export interface NetworkConfig {
     /** Reflector oracle contract ID for this network. */
     reflectorContractId: string
   }
+  /**
+   * The SEP-40 publisher — the one direction that writes. `oracle` above is
+   * Lens reading somebody else's feed; this is Lens pushing its own aggregate
+   * on chain for contracts to read.
+   */
+  publisher: {
+    /** Whether Lens publishes to a SEP-40 feed on this network. */
+    enabled: boolean
+    /** Deployed SEP-40 oracle contract the aggregate is pushed into. */
+    contractId: string
+    /**
+     * Secret key of the account authorized on the contract as publisher. Never
+     * committed; see docs/sep40-oracle-publisher.md for how it is funded and
+     * rotated. Unset means the publisher cannot sign, so publication stays off.
+     */
+    secretKey?: string
+  }
   /** Watched asset pairs for this network. */
   pairs: WatchedPair[]
   facilitator: {
@@ -67,6 +84,21 @@ function makePairKey(a: AssetId, b: AssetId): string {
   const bStr = b.issuer ? `${b.code}:${b.issuer}` : b.code
   // Alphabetical sort so XLM/USDC and USDC/XLM resolve to the same key
   return [aStr, bStr].sort().join('/')
+}
+
+/**
+ * Read a positive numeric env var, falling back when it is unset, blank, not a
+ * number, or not positive.
+ *
+ * The publisher thresholds below are used as divisors, comparison bases and
+ * `setInterval` delays. A typo'd `SEP40_MAX_INTERVAL_MS=abc` would otherwise
+ * arrive there as `NaN`, and `NaN` comparisons are false — which reads as
+ * "never trigger", silently turning the feed off. Refusing the value and using
+ * the documented default keeps a bad env var loud instead of inert.
+ */
+function positiveNumber(raw: string | undefined, fallback: number): number {
+  const parsed = Number(raw)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
 }
 
 /**
@@ -204,6 +236,39 @@ function buildNetworkConfig(network: NetworkName): NetworkConfig {
     (process.env[`REFLECTOR_ENABLED_${suffix}`] ?? 'true').toLowerCase() !== 'false' &&
     isUsableContractId(reflectorContractId, `REFLECTOR_CONTRACT_ID_${suffix}`)
 
+  // ── SEP-40 publisher ──────────────────────────────────────────────────────
+  // Off unless a contract is deployed AND a key is provided. There is no
+  // default contract id: the feed is deployed by the operator (see
+  // oracle/contract/), and a guessed id would push Lens's aggregate into
+  // somebody else's contract — or nowhere. `isUsableContractId` rejects a
+  // malformed id the same way every other contract address in this file does.
+  const sep40ContractId =
+    process.env[`SEP40_CONTRACT_ID_${suffix}`] ||
+    process.env.SEP40_CONTRACT_ID ||
+    ''
+
+  const sep40SecretKey =
+    process.env[`SEP40_PUBLISHER_SECRET_KEY_${suffix}`] ||
+    (network === 'testnet' ? process.env.SEP40_PUBLISHER_SECRET_KEY : undefined)
+
+  // A key with no contract, or a contract with no key, is an incomplete
+  // deployment rather than a mistake worth crashing on — publication stays off
+  // and says so.
+  const publisherEnabled =
+    (process.env[`SEP40_ENABLED_${suffix}`] ?? 'false').toLowerCase() !== 'false' &&
+    isUsableContractId(sep40ContractId, `SEP40_CONTRACT_ID_${suffix}`) &&
+    Boolean(sep40SecretKey)
+
+  if (
+    (process.env[`SEP40_ENABLED_${suffix}`] ?? '').toLowerCase() === 'true' &&
+    !publisherEnabled
+  ) {
+    log.warn(
+      { network, envVar: `SEP40_ENABLED_${suffix}`, contractId: sep40ContractId || undefined },
+      `SEP40_ENABLED_${suffix}=true but publication is disabled on ${network}: it needs a valid SEP40_CONTRACT_ID_${suffix} and a SEP40_PUBLISHER_SECRET_KEY_${suffix}`
+    )
+  }
+
   // ── Watched pairs ─────────────────────────────────────────────────────────
   // Mainnet gets a default for the same reason every field above does: turning
   // it on should not require knowing an issuer address by heart. USDC/XLM is
@@ -244,6 +309,11 @@ function buildNetworkConfig(network: NetworkName): NetworkConfig {
       apiUrl: aquariusApiUrl,
     },
     oracle: { enabled: oracleEnabled, reflectorContractId },
+    publisher: {
+      enabled: publisherEnabled,
+      contractId: sep40ContractId,
+      secretKey: sep40SecretKey,
+    },
     pairs: parseWatchedPairs(rawPairs),
     facilitator: { secretKey: facilitatorSecretKey, feeStroops: facilitatorFeeStroops },
   }
@@ -266,6 +336,35 @@ const globalConfig = {
     pollIntervalMs: parseInt(process.env.POLL_INTERVAL_MS ?? '5000', 10),
     sdexPageSize: parseInt(process.env.SDEX_PAGE_SIZE ?? '200', 10),
     ammPageSize: parseInt(process.env.AMM_PAGE_SIZE ?? '200', 10),
+  },
+  /**
+   * When the publisher writes to the SEP-40 feed.
+   *
+   * Cost is the reason an oracle batches: a write per tick would put one
+   * transaction per pair per poll interval on chain, which is why every feed
+   * that charges for gas publishes on CHANGE. These are the three knobs that
+   * make that true, and the ceiling that keeps a bad change off chain:
+   *
+   * - `deviationPct`     — publish when the aggregate has moved at least this
+   *                        much from the value already on chain.
+   * - `maxIntervalMs`    — and publish even without movement once this long has
+   *                        passed, so a quiet market does not leave consumers
+   *                        reading a feed with no recent timestamp.
+   * - `minWriteIntervalMs` — the floor between two writes for the same asset,
+   *                        whatever triggered them. This is the rate limit:
+   *                        it bounds the transaction count during a fast market
+   *                        to one per floor, not one per sample.
+   * - `maxAgeSeconds`    — the aggregate itself must be younger than this.
+   *                        Stricter than the API's own stale flag on purpose:
+   *                        the HTTP price can afford to be "as good as we have
+   *                        it", a price a contract settles against cannot.
+   */
+  publisher: {
+    deviationPct: positiveNumber(process.env.SEP40_DEVIATION_PCT, 0.5),
+    maxIntervalMs: positiveNumber(process.env.SEP40_MAX_INTERVAL_MS, 15 * 60 * 1000),
+    minWriteIntervalMs: positiveNumber(process.env.SEP40_MIN_WRITE_INTERVAL_MS, 60 * 1000),
+    maxAgeSeconds: positiveNumber(process.env.SEP40_MAX_AGE_SECONDS, 120),
+    pollIntervalMs: positiveNumber(process.env.SEP40_POLL_INTERVAL_MS, 30 * 1000),
   },
   cache: {
     priceTtl: parseInt(process.env.PRICE_CACHE_TTL ?? '10', 10),
@@ -364,6 +463,11 @@ export const config = {
   redis:   globalConfig.redis,
   api:     globalConfig.api,
   indexer: globalConfig.indexer,
+  // WHEN to publish, shared by both networks. WHICH contract to publish to is
+  // per-network and lives at `getNetworkConfig(network).publisher` — there is
+  // deliberately no active-network `publisher` shortcut, because the two blocks
+  // are different things and one name for both would be read wrongly.
+  publisher: globalConfig.publisher,
   cache:   globalConfig.cache,
   http:    globalConfig.http,
   outbound: globalConfig.outbound,
