@@ -81,127 +81,92 @@ function transportFailure() {
   });
 }
 
+/**
+ * The exact chain fetchWithPayment runs when the wallet cannot build the
+ * payment: ExactStellarScheme.createPaymentPayload simulates the transfer and
+ * handleSimulationResult throws
+ * "Stellar simulation failed with error message: <simulation.error>"
+ * (node_modules/@x402/stellar/dist/esm/chunk-JRF5X5WU.mjs:26), and @x402/fetch
+ * rethrows any payload error as "Failed to create payment payload: <message>"
+ * (node_modules/@x402/fetch/dist/esm/index.mjs:47). Chain the two frames so the
+ * classifier sees what it really sees; simulation.error itself is network
+ * text, carried here verbatim from the fixtures this file already used.
+ */
+function paymentPayloadFailure(simulationError: string) {
+  const simulation = new Error(`Stellar simulation failed with error message: ${simulationError}`);
+  return new Error(`Failed to create payment payload: ${simulation.message}`, { cause: simulation });
+}
+
 function parseFailure(result: { success: boolean; error?: unknown }) {
   return result.success ? '' : String(result.error);
 }
 
 describe('BazaarMcpServer', () => {
+  const PAID_URL = 'https://bazaar.example/api/v1/price';
+
   it('should map signature expiration ledger error to ERR_EXPIRED_AUTHORISATION', async () => {
-    const mockFetch = vi.fn().mockRejectedValue(new Error('Transaction signature expired. Signature expiration ledger 123 is less than current ledger 125'));
-    const server = new BazaarMcpServer({ fetchWithPayment: mockFetch });
+    const { callTool } = createHarness(
+      vi.fn().mockRejectedValue(
+        paymentPayloadFailure(
+          'Transaction signature expired. Signature expiration ledger 123 is less than current ledger 125'
+        )
+      )
+    );
 
-    // The SDK server doesn't expose the router directly without a client, but we can test the handlePaidCallError method directly,
-    // or by overriding setRequestHandler to capture our handler.
-    let handler: any = null;
-    (server as any).server.setRequestHandler = (schema: any, fn: any) => {
-      if (schema === CallToolRequestSchema) {
-        handler = fn;
-      }
-    };
-    
-    // Re-setup handlers to capture the handler
-    (server as any).setupHandlers();
-
-    const response = await handler({
-      params: {
-        name: 'paid_call',
-        arguments: {
-          url: 'http://example.com/paid'
-        }
-      }
-    });
+    const response = await callTool('paid_call', { url: PAID_URL });
 
     expect(response.isError).toBe(true);
-    const content = JSON.parse(response.content[0].text);
-    expect(content.code).toBe('ERR_EXPIRED_AUTHORISATION');
+    expect(JSON.parse(response.content[0].text)).toEqual({
+      isError: true,
+      code: MCP_ERROR_CODES.ERR_EXPIRED_AUTHORISATION,
+      reason: 'The transaction signature expired before it could be submitted.',
+    });
   });
 
   it('should map missing trustline error to ERR_MISSING_TRUSTLINE', async () => {
-    const mockFetch = vi.fn().mockRejectedValue(new Error('op_no_trust: The account does not have a trustline for this asset'));
-    const server = new BazaarMcpServer({ fetchWithPayment: mockFetch });
+    const { callTool } = createHarness(
+      vi.fn().mockRejectedValue(
+        paymentPayloadFailure('op_no_trust: The account does not have a trustline for this asset')
+      )
+    );
 
-    let handler: any = null;
-    (server as any).server.setRequestHandler = (schema: any, fn: any) => {
-      if (schema === CallToolRequestSchema) {
-        handler = fn;
-      }
-    };
-    (server as any).setupHandlers();
-
-    const response = await handler({
-      params: {
-        name: 'paid_call',
-        arguments: {
-          url: 'http://example.com/paid'
-        }
-      }
-    });
+    const response = await callTool('paid_call', { url: PAID_URL });
 
     expect(response.isError).toBe(true);
-    const content = JSON.parse(response.content[0].text);
-    expect(content.code).toBe('ERR_MISSING_TRUSTLINE');
+    expect(JSON.parse(response.content[0].text)).toEqual({
+      isError: true,
+      code: MCP_ERROR_CODES.ERR_MISSING_TRUSTLINE,
+      reason: 'Missing trustline for the required asset.',
+    });
   });
 
   it('should map 402 rejected error to ERR_PAYMENT_REJECTED', async () => {
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: false,
-      status: 402,
-      text: async () => 'Payment Required'
-    });
-    
-    const server = new BazaarMcpServer({ fetchWithPayment: mockFetch });
+    // A rejected payment is not an exception: wrapFetchWithPayment resolves
+    // with the seller's second 402 response after the payment loop fails
+    // (node_modules/@x402/fetch/dist/esm/index.mjs:87), so this is a real
+    // Response, exactly as the transport hands it over.
+    const { callTool } = createHarness(
+      vi.fn().mockResolvedValue(new Response('Payment Required', { status: 402 }))
+    );
 
-    let handler: any = null;
-    (server as any).server.setRequestHandler = (schema: any, fn: any) => {
-      if (schema === CallToolRequestSchema) {
-        handler = fn;
-      }
-    };
-    (server as any).setupHandlers();
-
-    const response = await handler({
-      params: {
-        name: 'paid_call',
-        arguments: {
-          url: 'http://example.com/paid'
-        }
-      }
-    });
+    const response = await callTool('paid_call', { url: PAID_URL });
 
     expect(response.isError).toBe(true);
-    const content = JSON.parse(response.content[0].text);
-    expect(content.code).toBe('ERR_PAYMENT_REJECTED');
+    expect(JSON.parse(response.content[0].text)).toEqual({
+      isError: true,
+      code: MCP_ERROR_CODES.ERR_PAYMENT_REJECTED,
+      reason: 'Payment required but was rejected or failed.',
+    });
   });
-  
+
   it('should return successfully on a successful call', async () => {
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      text: async () => JSON.stringify({ success: true, data: "hello" })
-    });
-    
-    const server = new BazaarMcpServer({ fetchWithPayment: mockFetch });
+    const body = { success: true, data: 'hello' };
+    const { callTool } = createHarness(vi.fn().mockResolvedValue(jsonResponse(body)));
 
-    let handler: any = null;
-    (server as any).server.setRequestHandler = (schema: any, fn: any) => {
-      if (schema === CallToolRequestSchema) {
-        handler = fn;
-      }
-    };
-    (server as any).setupHandlers();
-
-    const response = await handler({
-      params: {
-        name: 'paid_call',
-        arguments: {
-          url: 'http://example.com/paid'
-        }
-      }
-    });
+    const response = await callTool('paid_call', { url: PAID_URL });
 
     expect(response.isError).toBeFalsy();
-    const parsedText = JSON.parse(response.content[0].text);
-    expect(parsedText.success).toBe(true);
+    expect(JSON.parse(response.content[0].text)).toEqual(body);
   });
 });
 
