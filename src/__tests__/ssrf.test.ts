@@ -170,3 +170,100 @@ describe('ssrfSafeFetch — transport and redirects', () => {
     expect(capturedInit?.redirect).toBe('manual')
   })
 })
+
+describe('DNS rebinding prevention & connect-time pinning (Issue #515)', () => {
+  it('pins the validated address on assertUrlSafe result', async () => {
+    const lookup = async () => ['93.184.216.34', '93.184.216.35']
+    const url = (await assertUrlSafe('https://safe.example/path', { lookup })) as any
+    expect(url.pinnedAddress).toBe('93.184.216.34')
+    expect(url.validatedAddresses).toEqual(['93.184.216.34', '93.184.216.35'])
+  })
+
+  it('proves a hostname resolving differently on the second lookup does not reach the second address', async () => {
+    let lookupCount = 0
+    const initialSafeIp = '93.184.216.34'
+    const rebindingMetadataIp = '169.254.169.254'
+
+    // Simulate an attacker's DNS server:
+    // First lookup (during assertUrlSafe validation): returns public address.
+    // Second lookup (if transport performed a subsequent lookup): returns AWS/cloud metadata address.
+    const rebindLookup = async (_hostname: string) => {
+      lookupCount++
+      if (lookupCount === 1) {
+        return [initialSafeIp]
+      }
+      return [rebindingMetadataIp]
+    }
+
+    let connectedAddress: string | null = null
+    const fetchImpl = async (_input: string | URL, init?: any) => {
+      // Inspect the pinned dispatcher passed to the transport
+      const dispatcher = init?.dispatcher
+      expect(dispatcher).toBeDefined()
+      expect(dispatcher?.pinnedAddress).toBe(initialSafeIp)
+
+      // The dispatcher's custom lookup hook must return the pinned address, never the rebound IP
+      const customLookup = dispatcher?.connectLookup
+      expect(typeof customLookup).toBe('function')
+
+      await new Promise<void>((resolve) => {
+        customLookup('attacker-rebind.example', {}, (_err: any, addrs: any[]) => {
+          connectedAddress = addrs[0]?.address
+          resolve()
+        })
+      })
+
+      return new Response('ok', { status: 200 })
+    }
+
+    const res = await ssrfSafeFetch(
+      'https://attacker-rebind.example/data',
+      {},
+      { lookup: rebindLookup, fetchImpl },
+    )
+
+    expect(res.status).toBe(200)
+    // The connection was pinned to the first validated address
+    expect(connectedAddress).toBe(initialSafeIp)
+    // And never contacted or resolved to the rebound metadata address
+    expect(connectedAddress).not.toBe(rebindingMetadataIp)
+  })
+
+  it('re-pins validated address on every redirect hop', async () => {
+    const addressesUsed: string[] = []
+    const lookups: Record<string, string[]> = {
+      'first.example': ['93.184.216.34'],
+      'second.example': ['1.1.1.1'],
+    }
+
+    const lookup = async (hostname: string) => lookups[hostname] ?? ['8.8.8.8']
+
+    let hop = 0
+    const fetchImpl = async (_input: string | URL, init?: any) => {
+      hop++
+      const dispatcher = init?.dispatcher
+      const customLookup = dispatcher?.connectLookup
+      customLookup('dummy', {}, (_err: any, addrs: any[]) => {
+        addressesUsed.push(addrs[0]?.address)
+      })
+
+      if (hop === 1) {
+        return new Response(null, {
+          status: 302,
+          headers: { location: 'https://second.example/final' },
+        })
+      }
+      return new Response('final-destination', { status: 200 })
+    }
+
+    const res = await ssrfSafeFetch(
+      'https://first.example/start',
+      {},
+      { lookup, fetchImpl },
+    )
+
+    expect(res.status).toBe(200)
+    expect(addressesUsed).toEqual(['93.184.216.34', '1.1.1.1'])
+  })
+})
+
