@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
-import { createHash } from 'crypto'
+import { createHash, timingSafeEqual } from 'crypto'
 import fp from 'fastify-plugin'
 import { prisma } from '../db'
 
@@ -19,7 +19,7 @@ declare module 'fastify' {
     apiKey?: ApiKeyContext
   }
   interface FastifyContextConfig {
-    /** When true, the API-key auth hook skips this route (e.g. health, admin). */
+    /** When true, the API-hey auth hook skips this route (e.g. health, admin). */
     public?: boolean
   }
 }
@@ -53,6 +53,28 @@ export async function lookupApiKey(plaintext: string): Promise<ApiKeyContext | n
 }
 
 /**
+ * Guards admin routes with a shared secret supplied via the `ADMIN_TOKEN`
+ * env var, sent as `X-Admin-Token` (or `Authorization: Bearer <token>`).
+ * Returns true if the caller is authorized.
+ *
+ * This is the single implementation used by every admin route (keys and
+ * usage), so the two surfaces cannot drift apart.
+ */
+export function isAdminAuthorized(req: FastifyRequest): boolean {
+  const adminToken = process.env.ADMIN_TOKEN
+  if (!adminToken) return false
+  const supplied =
+    (req.headers['x-admin-token'] as string | undefined) ??
+    req.headers['authorization']?.replace(/^Bearer\s+/i, '')
+  if (!supplied) return false
+  const a = Buffer.from(supplied)
+  const b = Buffer.from(adminToken)
+  // Constant-time comparison (timingSafeEqual requires equal-length buffers).
+  // The length guard is not itself a meaningful leak for a high-entropy token.
+  return a.length === b.length && timingSafeEqual(a, b)
+}
+
+/**
  * Fastify plugin that authenticates requests via `Authorization: Bearer <key>`.
  *
  * A request without a valid, non-revoked key gets 401. Valid requests have
@@ -61,7 +83,7 @@ export async function lookupApiKey(plaintext: string): Promise<ApiKeyContext | n
  *
  * Runs as an `onRequest` hook (and must be registered BEFORE @fastify/rate-limit)
  * so that `req.apiKey` is populated before the rate limiter — which also runs in
- * `onRequest` — evaluates its per-key `max`/`keyGenerator`.
+ * `onRequest` — evaluates its per-key `max`/keyGenerator.
  *
  * Routes can opt out of auth (e.g. health/metrics) by setting
  * `config.public = true` on the route definition.
