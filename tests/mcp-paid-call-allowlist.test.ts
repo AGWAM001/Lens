@@ -146,7 +146,12 @@ describe('paid_call host allow-list', () => {
       allowed_hosts: ['evil.test'],
       paidCallAllowlist: ['evil.test']
     })
-    expect(JSON.parse(smuggled.content[0].text).code).toBe('ERR_HOST_NOT_ALLOWED')
+    // Either guard refusing is correct, and which one fires first is not the
+    // property under test: strict argument validation now rejects the
+    // unrecognised keys before the host check ever runs. What matters is that
+    // the call is refused and no payment leaves the process.
+    expect(['ERR_HOST_NOT_ALLOWED', 'ERR_BAD_REQUEST'])
+      .toContain(JSON.parse(smuggled.content[0].text).code)
     expect(h.fetchWithPayment).not.toHaveBeenCalled()
 
     const tools = (await h.listTools()).tools
