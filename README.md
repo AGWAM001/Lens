@@ -138,6 +138,11 @@ histogram_quantile(0.95,
 See [`docs/http-metrics.md`](docs/http-metrics.md) for the full label reference,
 the bucket rationale and suggested alerting rules.
 
+The websocket stream carries its own signals — `ws_clients_total`,
+`ws_messages_sent_total`, `ws_messages_dropped_total`, `ws_clients_dropped_total`
+and `ws_buffered_bytes` — which exist to make slow subscribers visible instead
+of silent. See [`docs/websocket-backpressure.md`](docs/websocket-backpressure.md).
+
 The ingestion metrics are labelled by `network` as well, so a dual-network
 deployment reports each network separately:
 
@@ -227,6 +232,15 @@ and `stellar:pubnet`.
 spending warning, and worked example before running.
 
 Full documentation: [examples/mcp-server/README.md](examples/mcp-server/README.md)
+
+### WebSocket backpressure
+
+`/ws` counts a message as sent only once the socket reports the write completed,
+and bounds what a client that stops reading can cost: past 256 KiB of queued
+bytes updates are coalesced to the newest one, past 1 MiB — or congested for 30s
+— the client is closed with `1013` and counted. A truncated feed is visible in
+`ws_messages_dropped_total` rather than silent, and one slow client cannot affect
+any other. See [`docs/websocket-backpressure.md`](docs/websocket-backpressure.md).
 
 ## Usage Examples
 
@@ -350,6 +364,8 @@ Or interactively at [http://localhost:3002/graphiql](http://localhost:3002/graph
 ## Documentation
 Detailed system design and data flow diagrams can be found in the [Architecture Overview](docs/architecture.md).
 The API specification is available in [OpenAPI 3.0 format](openapi.yaml) and is auto-published to GitHub Pages at https://miracle656.github.io/lens/openapi.json.
+
+Operational docs: [HTTP metrics](docs/http-metrics.md), [ingest metrics](docs/ingest-metrics.md), [websocket backpressure](docs/websocket-backpressure.md), [GraphQL](docs/graphql.md).
 
 ## Examples
 

@@ -58,10 +58,14 @@ So:
   need for an exact code appears, add it then — it is easy to add a label and
   painful to remove one dashboards depend on.
 - **Websocket pairs use fixed buckets.** `ws_clients_total`,
-  `ws_messages_sent_total` and `ws_messages_dropped_total` retain their `pair`
-  label, but pair-specific subscriptions are recorded as `other`; `*` remains
-  the aggregate across all subscriptions. Arbitrary pair names and issuer
-  addresses stay in fanout state only and cannot create Prometheus series.
+  `ws_messages_sent_total`, `ws_messages_dropped_total` and
+  `ws_clients_dropped_total` retain their `pair` label, but pair-specific
+  subscriptions are recorded as `other`; `*` remains the aggregate across all
+  subscriptions. Arbitrary pair names and issuer addresses stay in fanout state
+  only and cannot create Prometheus series. `ws_buffered_bytes` is aggregate-only
+  (`*`): one series per connected client would be unbounded cardinality driven by
+  caller-supplied subscription strings. See
+  [`websocket-backpressure.md`](websocket-backpressure.md).
 
 ## Bucket choice
 
