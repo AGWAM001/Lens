@@ -549,6 +549,33 @@ curl -s http://localhost:3002/price/XLM/USDC | jq '{price, ammPrice, lastUpdated
 *(Note: timestamp values above reflect the dynamic hourly anchor at seed execution time and request time).*
 
 
+## Rate Limiting & 429 Handling
+
+Lens enforces rate limits per client IP or authenticated API key to protect system throughput:
+
+| Tier / Endpoint | Window | Limit |
+| :--- | :--- | :--- |
+| **Public Unauthenticated (by IP)** | 1 minute | `100 requests` (`RATE_LIMITS.ipDefault`) |
+| **Authenticated API Keys** | 1 minute | `1,000 requests` (`RATE_LIMITS.authenticatedDefault`) |
+| **Public Health/Monitoring (`/status`)** | 1 minute | `1,000 requests` (`RATE_LIMITS.monitoring`) |
+
+### Handling 429 (Too Many Requests)
+When a client exceeds their allowance, Lens replies with HTTP status `429 Too Many Requests`.
+
+1. **`Retry-After` Header:** Specifies the number of seconds to wait before retrying (e.g., `Retry-After: 42`).
+2. **Standardized Error Body:**
+   ```json
+   {
+     "statusCode": 429,
+     "error": "Too Many Requests",
+     "code": "rate_limited",
+     "message": "Rate limit exceeded, retry in 42 seconds",
+     "retryAfter": 42
+   }
+   ```
+Callers should parse the `Retry-After` header or `retryAfter` field and apply exponential backoff.
+
+
 ## Environment Variables
 
 | Variable | Description | Default | Required |
