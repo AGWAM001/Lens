@@ -52,6 +52,27 @@ export async function lookupApiKey(plaintext: string): Promise<ApiKeyContext | n
   }
 }
 
+// In-memory daily request tracker (keyed by apiKeyId)
+const dailyUsage = new Map<string, { count: number; date: string }>()
+
+export function checkAndIncrementDailyUsage(apiKeyId: string, ratePerDay: number): { allowed: boolean; remaining: number } {
+  const today = new Date().toISOString().slice(0, 10)
+  const entry = dailyUsage.get(apiKeyId)
+  if (!entry || entry.date !== today) {
+    dailyUsage.set(apiKeyId, { count: 1, date: today })
+    return { allowed: true, remaining: Math.max(0, ratePerDay - 1) }
+  }
+  if (entry.count >= ratePerDay) {
+    return { allowed: false, remaining: 0 }
+  }
+  entry.count++
+  return { allowed: true, remaining: Math.max(0, ratePerDay - entry.count) }
+}
+
+export function resetDailyUsage(): void {
+  dailyUsage.clear()
+}
+
 /**
  * Fastify plugin that authenticates requests via `Authorization: Bearer <key>`.
  *
@@ -91,6 +112,21 @@ async function apiKeyAuthPlugin(app: FastifyInstance) {
     }
 
     req.apiKey = keyContext
+
+    // Enforce ratePerDay daily quota (#175)
+    if (keyContext.ratePerDay && keyContext.ratePerDay > 0) {
+      const { allowed, remaining } = checkAndIncrementDailyUsage(keyContext.id, keyContext.ratePerDay)
+      reply.header('X-RateLimit-Limit-Day', keyContext.ratePerDay)
+      reply.header('X-RateLimit-Remaining-Day', remaining)
+      if (!allowed) {
+        return reply.status(429).send({
+          statusCode: 429,
+          error: 'Too Many Requests',
+          message: `Daily rate limit of ${keyContext.ratePerDay} requests exceeded for this API key. Quota resets at UTC midnight.`,
+          retryAfter: 'midnight UTC',
+        })
+      }
+    }
   })
 }
 
