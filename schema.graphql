@@ -1,0 +1,132 @@
+type AggregatedPrice {
+  assetA: String!
+  assetB: String!
+  pairKey: String!
+  price: Float!
+  sdexPrice: Float!
+  ammPrice: Float!
+  bestRoute: String!
+  volume24h: Float!
+  sdexVolume24h: Float!
+  ammVolume24h: Float!
+  vwap1m: Float!
+  vwap5m: Float!
+  vwap1h: Float!
+  vwap24h: Float!
+  priceChange24h: Float!
+  lastUpdated: String!
+  sources: Int!
+  confidence: String!
+  lastTradeAgeSeconds: Int
+}
+
+type RouteInfo {
+  route: String!
+  sdexPrice: Float!
+  ammPrice: Float!
+  estimatedOutput: Float!
+  slippagePct: Float!
+  recommendation: String!
+}
+
+type PriceBucket {
+  bucket: String!
+  window: String!
+  vwap: Float!
+  sdexVwap: Float
+  ammVwap: Float
+  volume: Float!
+  tradeCount: Int!
+  open: Float
+  close: Float
+  high: Float
+  low: Float
+}
+
+type PriceUpdate {
+  pair: String!
+  price: Float!
+  ts: String!
+
+  """Which chain the price came from — testnet or mainnet."""
+  network: String!
+}
+
+enum OracleSourceStatus {
+  NOT_CONFIGURED
+  AVAILABLE
+  UNREACHABLE
+  EMPTY
+}
+
+type OracleSource {
+  name: String!
+  price: Float
+  timestamp: String
+  deviationPct: Float
+
+  """
+  UNREACHABLE means the adapter failed; EMPTY means it is configured but
+  returned no quote.
+  """
+  status: OracleSourceStatus!
+  ageSeconds: Int
+}
+
+type OracleComparison {
+  asset: String!
+  network: String!
+  lens: Float
+  reflector: Float
+  deviationPct: Float
+  status: String!
+  fetchedAt: String!
+  oracles: [OracleSource!]!
+}
+
+type Query {
+  """
+  Aggregated price for a pair. Three outcomes are kept distinct:
+  
+  - Malformed asset input (an asset that is not CODE or CODE:ISSUER) fails
+    with a GraphQL error whose extensions.code is INVALID_INPUT.
+  - A well-formed pair that is not tracked on the active network fails with
+    a GraphQL error whose extensions.code is PAIR_NOT_FOUND.
+  - A tracked pair with no trade data yet is not an error: it resolves to an
+    AggregatedPrice with zeroed figures rather than null or an error.
+  
+  The result is only null if the resolver itself cannot produce a payload;
+  clients should branch on extensions.code, not on null.
+  """
+  getPrice(assetA: String!, assetB: String!): AggregatedPrice
+  getBestRoute(assetA: String!, assetB: String!, amount: Float!): RouteInfo
+
+  """
+  Returns historical price aggregate buckets for a pair over an optional [from, to] time range.
+  
+  The time range is inclusive at both ends: a bucket is included if bucket >= from and bucket <= to.
+  Because both endpoints are inclusive, querying adjacent windows (e.g. [t0, t1] and [t1, t2]) will
+  return the boundary bucket at t1 in both results.
+  """
+  getPriceHistory(assetA: String!, assetB: String!, window: String!, limit: Int, from: String, to: String): [PriceBucket]
+  listPairs: [String]!
+
+  """
+  Compares the Lens price for an asset against every configured oracle.
+  The network argument defaults to the active network.
+  """
+  oracle(asset: String!, network: String): OracleComparison
+}
+
+type Subscription {
+  """
+  Streams a PriceUpdate every time an ingester records a new price for the
+  given pair.
+  
+  The network argument narrows the stream to one chain. It is optional, and
+  omitting it delivers every enabled network — the right default only if you
+  read the network field on each message, since a dual-network deployment
+  otherwise interleaves two chains prices on one stream.
+  """
+  priceUpdated(pair: String!, network: String): PriceUpdate!
+}
