@@ -9,6 +9,7 @@ import { getEnabledNetworks } from './network/enabledNetworks'
 import { createLogger } from './logger'
 import { redis } from './redis'
 import { pgPool } from './db'
+import { assertSchemaValid } from './db/schemaVerify'
 import { buildApp } from './app'
 import { fanOutManager } from './ws/fanout'
 
@@ -51,6 +52,10 @@ async function main() {
 
   await pgPool.connect()
   log.info('postgresql connected')
+
+  // Verify database schema matches expected tables and columns (#352)
+  await assertSchemaValid()
+  log.info('database schema verified')
 
   // ── Load persisted runtime pairs ──────────────────────────────────────────
   await loadPersistedPairs()
