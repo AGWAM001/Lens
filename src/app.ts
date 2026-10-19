@@ -122,10 +122,11 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     })
   })
 
-  // Specific limit for the probe routes (higher for monitoring). These are
-  // allow-listed above, so this is a floor rather than the operative limit —
-  // it documents that polling them frequently is expected, and leaves room for
-  // a deployment that removes the allow-list.
+  // Per-route ceiling for the probe routes. Inert while they stay allow-listed
+  // above — @fastify/rate-limit consults `allowList` before it ever reads
+  // `max` — but kept so removing the allow-list does not silently drop these to
+  // the shared per-IP default, which is far too low for an infrastructure
+  // poller.
   app.addHook('onRoute', (routeOptions) => {
     if (routeOptions.url && PROBE_PATHS.has(routeOptions.url)) {
       routeOptions.config = {
