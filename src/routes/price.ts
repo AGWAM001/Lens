@@ -4,18 +4,23 @@ import { z } from 'zod'
 import { formatValidationError } from '../validation'
 import '../middleware/network'
 import { activeNetwork, type NetworkName } from '../config'
+import { resolveDecimalFormat } from '../utils/decimals'
 
 const TwapQuerySchema = z.object({
   window: z.coerce.number().int().min(1).max(1440).default(60),
   sampleInterval: z.coerce.number().int().min(1).max(3600).default(60),
   method: z.enum(['iqr', 'modified_zscore']).default('iqr'),
   network: z.enum(['testnet', 'mainnet']).optional(),
+  decimals: z.string().optional(),
+  decimalFormat: z.string().optional(),
 })
 
 const VwapQuerySchema = z.object({
   window: z.coerce.number().int().min(1).max(1440).default(60),
   source: z.enum(['SDEX', 'AMM']).optional(),
   method: z.enum(['iqr', 'modified_zscore']).default('iqr'),
+  decimals: z.string().optional(),
+  decimalFormat: z.string().optional(),
 })
 
 /**
@@ -33,6 +38,8 @@ export async function registerPriceRoutes(app: FastifyInstance) {
       sampleInterval?: string
       method?: 'iqr' | 'modified_zscore'
       network?: string
+      decimals?: string
+      decimalFormat?: string
     }
   }>(
     '/price/twap/:assetA/:assetB',
@@ -45,6 +52,10 @@ export async function registerPriceRoutes(app: FastifyInstance) {
       }
       const { window: windowMinutes, sampleInterval, method } = parsed.data
       const network: NetworkName = req.network ?? parsed.data.network ?? activeNetwork
+      const decimalFormat = resolveDecimalFormat(req)
+      if (decimalFormat === 'string') {
+        reply.header('x-decimal-format', 'string')
+      }
 
       const pairKey = [assetA, assetB].sort().join('/')
 
@@ -53,6 +64,7 @@ export async function registerPriceRoutes(app: FastifyInstance) {
           sampleIntervalSeconds: sampleInterval,
           outlierMethod: method,
           network,
+          decimalFormat,
         })
 
         return {
@@ -85,6 +97,8 @@ export async function registerPriceRoutes(app: FastifyInstance) {
       window?: string
       source?: 'SDEX' | 'AMM'
       method?: 'iqr' | 'modified_zscore'
+      decimals?: string
+      decimalFormat?: string
     }
   }>(
     '/price/vwap/:assetA/:assetB',
@@ -96,6 +110,10 @@ export async function registerPriceRoutes(app: FastifyInstance) {
         return reply.status(400).send(formatValidationError(parsed.error))
       }
       const { window: windowMinutes, source, method } = parsed.data
+      const decimalFormat = resolveDecimalFormat(req)
+      if (decimalFormat === 'string') {
+        reply.header('x-decimal-format', 'string')
+      }
 
       const pairKey = [assetA, assetB].sort().join('/')
 
@@ -103,6 +121,7 @@ export async function registerPriceRoutes(app: FastifyInstance) {
         const result = await computeVWAP(pairKey, windowMinutes, {
           source,
           outlierMethod: method,
+          decimalFormat,
         })
 
         return {

@@ -67,6 +67,28 @@ Still reading across both networks, and ignoring the parameter:
 curl "https://api.example.com/price/XLM/USDC?network=mainnet"
 ```
 
+### Decimal Precision & Exact String Negotiation
+
+Financial calculations on Stellar often involve up to 18 decimal places (`Decimal(36,18)`). Standard JSON numbers parsed by JavaScript clients are IEEE-754 double-precision floats, which lose precision beyond 15–17 significant digits.
+
+To guarantee that 18-decimal values survive round-trips intact without precision loss, Lens supports serialising decimal quantities (prices, volumes, reserves) as strings. To avoid breaking existing consumers expecting JSON numbers, this change is strictly negotiated via any of:
+
+1. **Request Header**:
+   ```http
+   X-Decimal-Format: string
+   ```
+2. **Content Negotiation (`Accept` header)**:
+   ```http
+   Accept: application/json; decimals=strings
+   ```
+3. **Query Parameter**:
+   ```bash
+   curl "https://api.example.com/price/XLM/USDC?decimals=strings"
+   ```
+
+When string formatting is negotiated, the response includes the `x-decimal-format: string` header and all decimal quantities are emitted as exact strings (e.g. `"price": "0.123456789012345678"`). Default/unnegotiated requests continue to return JSON numbers.
+
+
 ### GraphQL
 Available at `/graphql` with GraphiQL IDE at `/graphiql`. Real-time price
 streaming is available via the `priceUpdated` [subscription](#graphql-subscriptions-live-prices).

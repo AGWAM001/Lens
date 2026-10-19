@@ -1,5 +1,6 @@
 import { pgPool } from '../db'
 import type { NetworkName } from '../config'
+import type { DecimalFormat } from '../utils/decimals'
 
 /**
  * Every query in this module filters on `network`.
@@ -14,12 +15,12 @@ import type { NetworkName } from '../config'
  * refinement: there is no default that is correct by accident, and a caller
  * that doesn't know which chain it is quoting should refuse rather than guess.
  */
-export async function calculateVWAP(
+export async function calculateVWAPDetailed(
   pairKey: string,
   windowMinutes: number,
   network: NetworkName,
   source?: 'SDEX' | 'AMM'
-): Promise<number> {
+): Promise<{ num: number; raw: string }> {
   const sourceFilter = source ? `AND source = $4` : ''
   const params: (string | number)[] = [pairKey, network, windowMinutes]
   if (source) params.push(source)
@@ -37,7 +38,18 @@ export async function calculateVWAP(
        ${sourceFilter}`,
     params
   )
-  return parseFloat(result.rows[0]?.vwap ?? '0')
+  const raw = String(result.rows[0]?.vwap ?? '0')
+  return { num: parseFloat(raw), raw }
+}
+
+export async function calculateVWAP(
+  pairKey: string,
+  windowMinutes: number,
+  network: NetworkName,
+  source?: 'SDEX' | 'AMM'
+): Promise<number> {
+  const detailed = await calculateVWAPDetailed(pairKey, windowMinutes, network, source)
+  return detailed.num
 }
 
 export async function calculateOHLCV(
@@ -99,21 +111,33 @@ export async function getPriceChange24h(pairKey: string, network: NetworkName): 
   return ((now - ago) / ago) * 100
 }
 
-export async function getAggregatedPrice(pairKey: string, network: NetworkName): Promise<{
-  price: number; sdexPrice: number; ammPrice: number
-  volume24h: number; sdexVolume24h: number; ammVolume24h: number
-  vwap1m: number; vwap5m: number; vwap1h: number; vwap24h: number
-  priceChange24h: number; sources: number
+export async function getAggregatedPrice(
+  pairKey: string,
+  network: NetworkName,
+  options?: { decimalFormat?: DecimalFormat }
+): Promise<{
+  price: number | string
+  sdexPrice: number | string
+  ammPrice: number | string
+  volume24h: number | string
+  sdexVolume24h: number | string
+  ammVolume24h: number | string
+  vwap1m: number | string
+  vwap5m: number | string
+  vwap1h: number | string
+  vwap24h: number | string
+  priceChange24h: number | string
+  sources: number
   confidence: 'high' | 'medium' | 'low' | 'unknown'
   lastTradeAgeSeconds: number | null
   stale: boolean
 }> {
   const [vwap1m, vwap5m, vwap1h, vwap24h, sdexVwap24h, priceChange24h, ammSpotResult, lastTradeResult] = await Promise.all([
-    calculateVWAP(pairKey, 1, network),
-    calculateVWAP(pairKey, 5, network),
-    calculateVWAP(pairKey, 60, network),
-    calculateVWAP(pairKey, 1440, network),
-    calculateVWAP(pairKey, 1440, network, 'SDEX'),
+    calculateVWAPDetailed(pairKey, 1, network),
+    calculateVWAPDetailed(pairKey, 5, network),
+    calculateVWAPDetailed(pairKey, 60, network),
+    calculateVWAPDetailed(pairKey, 1440, network),
+    calculateVWAPDetailed(pairKey, 1440, network, 'SDEX'),
     getPriceChange24h(pairKey, network),
     // AMM price: latest spot_price averaged across pools for this pair, on this
     // network only. Both halves of the lookup are network-filtered: the outer
@@ -154,11 +178,18 @@ export async function getAggregatedPrice(pairKey: string, network: NetworkName):
     [pairKey, network]
   )
 
+  let sdexVolume24hRaw = '0'
+  let ammVolume24hRaw = '0'
   let sdexVolume24h = 0
   let ammVolume24h = 0
   for (const row of volResult.rows) {
-    if (row.source === 'SDEX') sdexVolume24h = parseFloat(row.vol)
-    else if (row.source === 'AMM') ammVolume24h = parseFloat(row.vol)
+    if (row.source === 'SDEX') {
+      sdexVolume24hRaw = String(row.vol ?? '0')
+      sdexVolume24h = parseFloat(sdexVolume24hRaw)
+    } else if (row.source === 'AMM') {
+      ammVolume24hRaw = String(row.vol ?? '0')
+      ammVolume24h = parseFloat(ammVolume24hRaw)
+    }
   }
 
   const sourcesResult = await pgPool.query(
@@ -170,12 +201,12 @@ export async function getAggregatedPrice(pairKey: string, network: NetworkName):
     [pairKey, network]
   )
 
-  const ammPrice = parseFloat(ammSpotResult.rows[0]?.amm_price ?? '0')
+  const ammPriceRaw = String(ammSpotResult.rows[0]?.amm_price ?? '0')
+  const ammPrice = parseFloat(ammPriceRaw)
   const lastTrade = lastTradeResult.rows[0]?.last_trade
   const lastTradeAgeSeconds = lastTrade ? Math.floor((Date.now() - new Date(lastTrade).getTime()) / 1000) : null
   const sources = parseInt(sourcesResult.rows[0]?.sources ?? '0', 10)
   const volume24h = sdexVolume24h + ammVolume24h
-
 
   let confidence: 'high' | 'medium' | 'low' | 'unknown' = 'unknown'
   if (lastTradeAgeSeconds === null) {
@@ -190,17 +221,44 @@ export async function getAggregatedPrice(pairKey: string, network: NetworkName):
 
   const stale = lastTradeAgeSeconds !== null && lastTradeAgeSeconds >= 300
 
+  const isString = options?.decimalFormat === 'string'
+
+  if (isString) {
+    const stringPrice = (vwap1h.num > 0 ? vwap1h.raw : null)
+      ?? (vwap24h.num > 0 ? vwap24h.raw : null)
+      ?? (ammPrice > 0 ? ammPriceRaw : null)
+      ?? '0'
+
+    return {
+      price: stringPrice,
+      sdexPrice: sdexVwap24h.raw,
+      ammPrice: ammPriceRaw,
+      volume24h: String(volume24h),
+      sdexVolume24h: sdexVolume24hRaw,
+      ammVolume24h: ammVolume24hRaw,
+      vwap1m: vwap1m.raw,
+      vwap5m: vwap5m.raw,
+      vwap1h: vwap1h.raw,
+      vwap24h: vwap24h.raw,
+      priceChange24h: String(priceChange24h),
+      sources,
+      confidence,
+      lastTradeAgeSeconds,
+      stale,
+    }
+  }
+
   return {
-    price: vwap1h || vwap24h || ammPrice || 0,
-    sdexPrice: sdexVwap24h,
+    price: vwap1h.num || vwap24h.num || ammPrice || 0,
+    sdexPrice: sdexVwap24h.num,
     ammPrice,
     volume24h,
     sdexVolume24h,
     ammVolume24h,
-    vwap1m,
-    vwap5m,
-    vwap1h,
-    vwap24h,
+    vwap1m: vwap1m.num,
+    vwap5m: vwap5m.num,
+    vwap1h: vwap1h.num,
+    vwap24h: vwap24h.num,
     priceChange24h,
     sources,
     confidence,
