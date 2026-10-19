@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { BazaarMcpServer } from '../../src/mcp/server';
+import { PaymentLedger, defaultPaymentLedgerFile, metricHostsFromPaidCallAllowlist } from '../../src/mcp/ledger';
 import { wrapFetchWithPaymentFromConfig } from '@x402/fetch';
 import { ExactStellarScheme } from '@x402/stellar/exact/client';
 import { createEd25519Signer } from '@x402/stellar';
@@ -19,7 +20,25 @@ async function main() {
   const testnetClient = new ExactStellarScheme(testnetSigner);
   const pubnetClient = new ExactStellarScheme(pubnetSigner);
   
-  const fetchWithPayment = wrapFetchWithPaymentFromConfig(globalThis.fetch, {
+  // paid_call spends from the keys above, so the hosts it may pay for are the
+  // operator's decision. Unset means no host is payable at all (#404).
+  const paidCallAllowlist = (process.env.MCP_PAID_CALL_ALLOWED_HOSTS || '')
+    .split(',')
+    .map(entry => entry.trim())
+    .filter(Boolean);
+
+  // The audit trail is built before the transport so it can observe the payment
+  // the transport makes: a wrapped x402 fetch hands back a plain Response and the
+  // price only appears on the request, so the offer has to be read at the boundary.
+  // Its `host` metric label takes the same allow-list that gates spending, so an
+  // agent cannot mint time series with the URLs it tries.
+  const ledgerFile = process.env.MCP_PAYMENT_LEDGER_FILE || defaultPaymentLedgerFile();
+  const paymentLedger = new PaymentLedger({
+    filePath: ledgerFile,
+    metricHosts: metricHostsFromPaidCallAllowlist(paidCallAllowlist),
+  });
+
+  const fetchWithPayment = wrapFetchWithPaymentFromConfig(paymentLedger.instrumentFetch(globalThis.fetch), {
     maxPrice: process.env.MCP_MAX_PAYMENT_PRICE || '$1.00',
     schemes: [
       {
@@ -33,20 +52,16 @@ async function main() {
     ]
   });
 
-  // paid_call spends from the keys above, so the hosts it may pay for are the
-  // operator's decision. Unset means no host is payable at all (#404).
-  const paidCallAllowlist = (process.env.MCP_PAID_CALL_ALLOWED_HOSTS || '')
-    .split(',')
-    .map(entry => entry.trim())
-    .filter(Boolean);
-
   const server = new BazaarMcpServer({
     fetchWithPayment,
-    paidCallAllowlist
+    paidCallAllowlist,
+    paymentLedger
   });
 
   console.error('[mcp-server] Starting Bazaar MCP server on stdio...');
   console.error('[mcp-server] Agent configured for stellar:testnet and stellar:pubnet');
+  // The audit file records where money went, never the key that signed it.
+  console.error(`[mcp-server] Payment audit trail: ${ledgerFile}`);
   console.error(
     paidCallAllowlist.length > 0
       ? `[mcp-server] paid_call may pay these allow-listed origins: ${paidCallAllowlist.join(', ')}`

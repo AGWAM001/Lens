@@ -222,6 +222,12 @@ data through two tools: `bazaar_search` and `paid_call`. The server signs
 x402 payment challenges with Stellar secret keys on both `stellar:testnet`
 and `stellar:pubnet`.
 
+Every paid call — failed ones included — is appended to a durable audit trail and
+counted in spend metrics whose labels are bounded to the operator's allow-list, so
+an operator can always answer what the agent spent and where. The trail never
+holds the signing key or a signed payment, and a spend that cannot be recorded is
+refused rather than made silently.
+
 **⚠️ Warning:** the mainnet key signs with real XLM. Read the configuration,
 spending warning, and worked example before running.
 

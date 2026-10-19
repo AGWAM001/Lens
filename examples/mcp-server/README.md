@@ -29,6 +29,7 @@ paid call from the mainnet account.
 | `MCP_AGENT_SECRET_KEY_TESTNET` | Yes | Stellar secret key used to sign payments on `stellar:testnet` |
 | `MCP_AGENT_SECRET_KEY_MAINNET` | Yes | Stellar secret key used to sign payments on `stellar:pubnet` (mainnet) — **real money** |
 | `MCP_MAX_PAYMENT_PRICE` | No | Maximum price the server will pay per request (default: `$1.00`) |
+| `MCP_PAYMENT_LEDGER_FILE` | No | Where the audit trail of every paid call is appended (default: `~/.lens-mcp/payments.jsonl`) |
 
 Both keys are required: `run.ts` exits with an error if either is unset.
 
@@ -69,6 +70,7 @@ The server starts on stdio and logs:
 ```
 [mcp-server] Starting Bazaar MCP server on stdio...
 [mcp-server] Agent configured for stellar:testnet and stellar:pubnet
+[mcp-server] Payment audit trail: /home/you/.lens-mcp/payments.jsonl
 ```
 
 In another terminal, run the agent example, which connects an MCP client,
@@ -184,9 +186,68 @@ An agent is the least able caller to notice a wrong answer: the server
 prefers returning a structured error over guessing a best-effort result, so
 always check `isError` before acting on a tool response.
 
+## Payment audit trail
+
+`paid_call` moves money from a live key, so every attempt through it is
+recorded — including the ones that failed, because a payment can settle on a
+call that errored. One JSON object per line is appended to
+`MCP_PAYMENT_LEDGER_FILE` (default `~/.lens-mcp/payments.jsonl`):
+
+| Field | What it holds |
+|---|---|
+| `timestamp` | ISO-8601 time the call finished |
+| `url` | The full URL as called — never shortened or masked |
+| `host`, `method` | The URL's host, and the HTTP method used |
+| `amount`, `asset`, `network` | The price exactly as the seller offered it, with its asset and network, or `null` |
+| `transactionHash` | The settlement hash the seller echoed back, or `null` |
+| `outcome` | `success` or `failure` for the HTTP call |
+| `spend` | `settled` (confirmed by the seller), `possible` (a payment was offered and nothing proves it failed) or `none` |
+| `errorCode` | The MCP error code the agent was shown, or `null` |
+
+Two things are never recorded: the signing secret key, and the signed payment
+envelope. The ledger reads a price, an asset and a network off the payment
+header and nothing else from it, so the trail can be backed up or shared without
+turning it into a key store.
+
+`transactionHash` is `null` more often than you would hope — it appears only when
+the resource server echoes its settlement back in a `payment-response` header. A
+record with `spend: "possible"` and no hash means "we cannot rule out that this
+paid": read the trail as an upper bound, not as a statement of what certainly
+happened. `PaymentLedger.totalSpend()` returns the same accounting as integer
+nanodollars in decimal strings, plus a count of payments it could not price in
+USD, so you know when the sums understate spend.
+
+**The trail is mandatory.** If the file cannot be created, or a record cannot be
+appended to it, `paid_call` refuses further calls with `ERR_INTERNAL_FAILURE`
+rather than spending unrecorded money. Put it somewhere durable and writable.
+
+### Spend metrics
+
+The same records feed three counters on the shared registry ([`src/metrics.ts`](../../src/metrics.ts)):
+
+| Series | Labels | Counts |
+|---|---|---|
+| `mcp_payment_attempts_total` | `host`, `network`, `outcome` | every paid call attempted |
+| `mcp_payment_amount_usd_total` | `host`, `network` | USD value of payments confirmed settled |
+| `mcp_payment_unquantified_total` | `host`, `network` | payments that could not be priced in USD |
+
+Both label sets are bounded on purpose: Prometheus series are permanent, so a
+`host` label taken from whatever URL an agent names would let one caller mint
+unbounded time series. `host` may only take a value from
+`MCP_PAID_CALL_ALLOWED_HOSTS` — the same list that decides what can be paid at
+all, so it already bounds every host that can appear in a record — and `network`
+only `stellar:testnet` or `stellar:pubnet`, the two networks this server's signer
+can use. Anything outside those domains is labelled `unknown`; the audit file
+keeps the real host regardless.
+
+`npm run mcp:server` is a stdio process with no HTTP listener, so these series
+are registered but not scrapeable from it. Read `register` from an embedder that
+does serve metrics, or wait for an HTTP transport for the MCP server.
+
 ## Related
 
 - MCP server implementation: [`src/mcp/server.ts`](../../src/mcp/server.ts)
+- Payment audit ledger: [`src/mcp/ledger.ts`](../../src/mcp/ledger.ts)
 - Error codes: [`src/mcp/codes.ts`](../../src/mcp/codes.ts)
 - Tests: [`tests/mcp.test.ts`](../../tests/mcp.test.ts)
 - Repo README MCP section: [`README.md`](../../README.md#mcp-model-context-protocol)
