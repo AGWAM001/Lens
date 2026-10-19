@@ -1,6 +1,20 @@
 import { describe, it, expect, vi } from 'vitest';
-import { BazaarMcpServer } from '../src/mcp/server';
+import { BazaarMcpServer, SERVER_VERSION, SERVER_NAME } from '../src/mcp/server';
 import { CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { readFileSync } from 'fs';
+import { join } from 'path';
+
+const pkg = JSON.parse(readFileSync(join(__dirname, '../package.json'), 'utf8')) as { version: string };
+
+describe('BazaarMcpServer — server identity', () => {
+  it('advertises the version from package.json (never a hard-coded string)', () => {
+    expect(SERVER_VERSION).toBe(pkg.version);
+  });
+
+  it('uses the canonical server name lens-mcp-server (client-affecting rename from bazaar-mcp-server)', () => {
+    expect(SERVER_NAME).toBe('lens-mcp-server');
+  });
+});
 
 describe('BazaarMcpServer', () => {
   it('should map signature expiration ledger error to ERR_EXPIRED_AUTHORISATION', async () => {

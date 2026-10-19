@@ -6,6 +6,19 @@ import { checkPaidCallTarget, parsePaidCallAllowlist, type PaidCallAllowRule } f
 import { fetchWithTimeout } from '../fetch.js';
 import { config } from '../config.js';
 import { ssrfSafeFetch, SsrfError, type SsrfFetchOptions } from '../net/ssrf.js';
+import { readFileSync } from 'fs';
+import { fileURLToPath } from 'url';
+import { join, dirname } from 'path';
+
+// Read the version from package.json at startup so it is never out of step
+// with the published package. Renamed from 'bazaar-mcp-server' to
+// 'lens-mcp-server' to reflect the containing project (client-affecting change).
+const _pkgPath = join(dirname(fileURLToPath(import.meta.url)), '../../package.json');
+const _pkg = JSON.parse(readFileSync(_pkgPath, 'utf8')) as { version: string };
+/** The version string advertised to MCP clients — sourced from package.json. */
+export const SERVER_VERSION: string = _pkg.version;
+/** The canonical MCP server name advertised to clients. */
+export const SERVER_NAME = 'lens-mcp-server';
 
 export interface McpServerConfig {
   fetchWithPayment: typeof fetch;
@@ -49,8 +62,8 @@ export class BazaarMcpServer {
     };
     this.server = new Server(
       {
-        name: 'bazaar-mcp-server',
-        version: '1.0.0',
+        name: SERVER_NAME,
+        version: SERVER_VERSION,
       },
       {
         capabilities: {
