@@ -4,6 +4,8 @@ import { rpc } from '@stellar/stellar-sdk'
 import { prisma } from '../db'
 import { getNetworkConfig, type NetworkName } from '../config'
 import { CAIP2_BY_NETWORK, getFacilitator, type SettleResponseShape } from '../x402/facilitator'
+import { submitCatalogListing } from '../bazaar/catalog'
+import { toExtensionResponses } from '../bazaar/validation'
 
 /**
  * `POST /settle` — the facilitator endpoint that actually submits a payment.
@@ -233,6 +235,26 @@ export async function registerSettleRoute(app: FastifyInstance) {
         transaction: response.transaction || txHash,
         network: response.network || caip2,
         ...(response.success ? {} : { errorReason: response.errorReason ?? SETTLE_ERROR_REASONS.unexpected }),
+      }
+
+      // Automatic cataloging from discovery extension (#130)
+      if (normalised.success && body.paymentPayload) {
+        try {
+          const rawPayload = body.paymentPayload as Record<string, unknown>
+          const extensions = (rawPayload.extensions as Record<string, unknown>) ?? {}
+          const bazaarExtension = extensions.bazaar ?? rawPayload.discovery
+          if (bazaarExtension && body.paymentRequirements?.payTo) {
+            const authority = {
+              payTo: String(body.paymentRequirements.payTo),
+              network,
+            }
+            const writeResult = await submitCatalogListing(bazaarExtension as any, authority)
+            const extHeader = toExtensionResponses(writeResult.drops)
+            reply.header('EXTENSION-RESPONSES', JSON.stringify(extHeader))
+          }
+        } catch {
+          // Failure in cataloging must never fail or delay settlement (#130)
+        }
       }
 
       await finalise(attemptId, normalised.success ? 'settled' : 'failed', normalised)
