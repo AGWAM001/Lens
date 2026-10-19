@@ -13,6 +13,38 @@ import {
 import { fetchWithTimeout } from '../fetch.js';
 import { config } from '../config.js';
 import { ssrfSafeFetch, SsrfError, type SsrfFetchOptions } from '../net/ssrf.js';
+import { readFileSync } from 'fs';
+import { join } from 'path';
+
+/**
+ * The version advertised to MCP clients, read from `package.json` so it cannot
+ * drift from the published package the way the hard-coded `'1.0.0'` had.
+ *
+ * `__dirname`, not `import.meta.url`: this project compiles with
+ * `module: commonjs`, under which `import.meta` is a TypeScript error. The
+ * existing `__dirname` uses in `src/__tests__` confirm it resolves under vitest
+ * too. `../../package.json` reaches the repo root from both `src/mcp/` and
+ * `dist/mcp/`, since `rootDir` is `src` and `outDir` is `dist`.
+ *
+ * Falls back instead of throwing: this runs at module load, so an unreadable
+ * `package.json` would otherwise stop the server booting over a version string.
+ * `0.0.0-unknown` is a better failure than no server, and says what happened in
+ * a client's logs.
+ */
+function readPackageVersion(): string {
+  try {
+    const pkg = JSON.parse(
+      readFileSync(join(__dirname, '../../package.json'), 'utf8'),
+    ) as { version?: unknown };
+    return typeof pkg.version === 'string' && pkg.version.length > 0 ? pkg.version : '0.0.0-unknown';
+  } catch {
+    return '0.0.0-unknown';
+  }
+}
+
+export const SERVER_VERSION: string = readPackageVersion();
+/** The canonical MCP server name advertised to clients. */
+export const SERVER_NAME = 'lens-mcp-server';
 
 export interface McpServerConfig {
   fetchWithPayment: typeof fetch;
@@ -64,8 +96,8 @@ export class BazaarMcpServer {
     };
     this.server = new Server(
       {
-        name: 'bazaar-mcp-server',
-        version: '1.0.0',
+        name: SERVER_NAME,
+        version: SERVER_VERSION,
       },
       {
         capabilities: {
