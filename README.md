@@ -322,6 +322,111 @@ Or interactively at [http://localhost:3002/graphiql](http://localhost:3002/graph
 
 > **Note:** the current `GATED_ROUTES` map in [`src/middleware/x402.ts`](src/middleware/x402.ts) gates `/price`, `/pools`, and `/candles` only — `/graphql` is not gated. If you intend price data from GraphQL to require the same payment as REST, extend `GATED_ROUTES` (or add a per-resolver guard).
 
+## MCP server
+
+`npm run mcp:server` starts the Bazaar MCP server ([src/mcp/server.ts](src/mcp/server.ts), wired up in [examples/mcp-server/run.ts](examples/mcp-server/run.ts)). It advertises:
+
+| Tool | What it does | Spends? |
+| --- | --- | --- |
+| `bazaar_search` | Reads a Bazaar base URL's `/discovery/resources` or `/discovery/search?q=` and lists what is available. | No |
+| `paid_call` | Fetches an x402-gated URL and handles the `402 → sign → retry` loop. | **Yes — it signs with a real Stellar key** |
+
+Every tool is served over **either** transport, and the tool list, schemas and error codes are identical whichever you pick. Which transport runs is selected by configuration; **stdio is the default**, so an existing setup needs no changes.
+
+The server signs with a real Stellar key, so it needs `MCP_AGENT_SECRET_KEY_TESTNET`
+and `MCP_AGENT_SECRET_KEY_MAINNET` in the environment — keep them in `.env`
+(`run.ts` loads it with `dotenv`) rather than in a shell history line or a
+client config file that gets shared. Never commit them. `MCP_MAX_PAYMENT_PRICE`
+caps what a single `paid_call` may cost (default `$1.00`).
+
+### stdio (default)
+
+For a client that spawns the server itself as a child process — Claude
+Desktop, Cursor, or the runnable [agent example](examples/mcp-server/agent.ts)
+(`npm run mcp:agent`, which prints discovery and a paid call end to end).
+
+```bash
+npm run mcp:server   # reads MCP_TRANSPORT=stdio, talks JSON-RPC on stdin/stdout
+```
+
+Point a client at the command — the keys come from `.env`, so nothing secret
+has to be written into client config. This is the same invocation
+[agent.ts](examples/mcp-server/agent.ts) uses:
+
+```json
+{
+  "mcpServers": {
+    "lens-bazaar": {
+      "command": "npx",
+      "args": ["tsx", "examples/mcp-server/run.ts"]
+    }
+  }
+}
+```
+
+Because the process is spawned by the client, there is no port, no token and
+no remote attack surface: whoever can spawn it can spend, so keep it to
+your own machine.
+
+### Streamable HTTP
+
+For a client that connects over the network instead of spawning a process —
+a hosted agent, a shared dev box, a container. Set `MCP_TRANSPORT=http`:
+
+```bash
+# MCP_AGENT_SECRET_KEY_TESTNET / MCP_AGENT_SECRET_KEY_MAINNET live in .env
+export MCP_TRANSPORT=http
+export MCP_HTTP_AUTH_TOKEN="$(openssl rand -hex 32)"   # required, see below
+export MCP_HTTP_HOST=127.0.0.1                   # default
+export MCP_HTTP_PORT=3003                        # default
+export MCP_HTTP_PATH=/mcp                        # default
+npm run mcp:server
+# [mcp-server] Listening at http://127.0.0.1:3003/mcp
+```
+
+**Authentication is mandatory and fails closed.** Without a non-empty
+`MCP_HTTP_AUTH_TOKEN` the process exits before it builds a signer, so an
+unauthenticated remote server with `paid_call` on its tool list can never come
+up. Every request must then carry it as a bearer token; anything else gets a
+JSON-RPC error with `ERR_UNAUTHORIZED` and is rejected before the payment path
+is reached:
+
+```bash
+curl -sS -X POST http://127.0.0.1:3003/mcp \
+  -H "Authorization: Bearer $MCP_HTTP_AUTH_TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+A client connects the same way:
+
+```ts
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+
+const transport = new StreamableHTTPClientTransport(new URL('http://127.0.0.1:3003/mcp'), {
+  requestInit: { headers: { authorization: `Bearer ${process.env.MCP_HTTP_AUTH_TOKEN}` } },
+});
+
+const client = new Client({ name: 'lens-agent', version: '1.0.0' }, { capabilities: {} });
+await client.connect(transport);
+```
+
+Notes for this transport:
+
+- It binds `127.0.0.1` unless you set `MCP_HTTP_HOST` deliberately. Do not
+  expose it on a routable address over plain HTTP: the bearer token and every
+  paid result cross the wire, so terminate TLS in a reverse proxy and forward
+  to loopback.
+- The token is a credential — the bearer who holds it can spend. Keep it out
+  of URLs, logs, and shell history; rotate it if it leaks.
+- Requests are stateless: no `Mcp-Session-Id` is issued and each `POST` is
+  served by a fresh transport, so a client cannot hold a session open across
+  requests. Every MCP message must be a `POST` (`GET` returns `405`, which
+  spec-compliant clients treat as "no server-initiated stream"). Bodies are
+  capped at 1 MiB.
+
 ## Documentation
 Detailed system design and data flow diagrams can be found in the [Architecture Overview](docs/architecture.md).
 The API specification is available in [OpenAPI 3.0 format](openapi.yaml) and is auto-published to GitHub Pages at https://miracle656.github.io/lens/openapi.json.
