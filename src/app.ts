@@ -30,7 +30,8 @@ import { registerVenueRoutes } from './routes/venues'
 import { registerSettleRoute } from './routes/facilitator'
 import { registerHealthRoutes } from './routes/health'
 import { registerCachePolicy } from './middleware/cachePolicy'
-import { getMetrics } from './metrics'
+import { registerGlobalRateLimit, parseGlobalRateLimit } from './middleware/globalRateLimit'
+import { getMetrics, rate_limit_rejections_total } from './metrics'
 import { loggerOptions, createDestination } from './logger'
 
 /**
@@ -114,14 +115,24 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     max: (req) => req.apiKey?.ratePerMin ?? ipRateLimitMax,
     timeWindow: '1 minute',
     keyGenerator: (req) => req.apiKey?.id ?? req.ip,
+    // PROBE_PATHS, not just /status: /live and /ready are polled by the
+    // platform on a fixed interval and must never be rate limited.
     allowList: (req) => PROBE_PATHS.has(req.url),
-    errorResponseBuilder: (req, context) => ({
-      statusCode: 429,
-      error: 'Too Many Requests',
-      message: `Rate limit exceeded, retry in ${context.after}`,
-      retryAfter: context.after
-    })
+    errorResponseBuilder: (req, context) => {
+      rate_limit_rejections_total.inc({ scope: req.apiKey ? 'key' : 'ip' })
+      return {
+        statusCode: 429,
+        error: 'Too Many Requests',
+        code: req.apiKey ? 'PER_KEY_RATE_LIMITED' : 'IP_RATE_LIMITED',
+        message: `Rate limit exceeded, retry in ${context.after}`,
+        retryAfter: context.after
+      }
+    }
   })
+
+  // The per-instance ceiling runs after the per-key/IP limiter. Health checks
+  // bypass it, and expensive route templates are shed before other routes.
+  registerGlobalRateLimit(app, parseGlobalRateLimit(process.env.GLOBAL_RATE_LIMIT_MAX))
 
   // Per-route ceiling for the probe routes. Inert while they stay allow-listed
   // above — @fastify/rate-limit consults `allowList` before it ever reads

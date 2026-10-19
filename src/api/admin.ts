@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { randomBytes } from 'crypto'
 import { prisma } from '../db'
+import { admin_auth_failures_total } from '../metrics'
 import { hashApiKey, isAdminAuthorized } from './auth'
 
 /** Generates a new opaque API key with a recognizable `lens_` prefix. */
@@ -10,6 +11,7 @@ export function generateApiKey(): string {
 
 interface CreateKeyBody {
   label?: string
+  expiresAt?: string
   ratePerMin?: number
   ratePerDay?: number
   monthlyQuotaCents?: number
@@ -32,15 +34,24 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     { config: { public: true } },
     async (req: FastifyRequest<{ Body: CreateKeyBody }>, reply: FastifyReply) => {
       if (!isAdminAuthorized(req)) {
+        admin_auth_failures_total.inc()
         return reply.status(401).send({
           error: 'Unauthorized',
+          code: 'admin_unauthorized',
           message: 'Provide a valid X-Admin-Token header.',
         })
       }
 
-      const { label, ratePerMin, ratePerDay, monthlyQuotaCents, dailyQuotaCents, overagePolicy } = req.body ?? {}
+      const { label, expiresAt, ratePerMin, ratePerDay, monthlyQuotaCents, dailyQuotaCents, overagePolicy } = req.body ?? {}
       if (!label || typeof label !== 'string' || label.trim().length === 0) {
         return reply.status(400).send({ error: 'label is required' })
+      }
+      if (expiresAt !== undefined && typeof expiresAt !== 'string') {
+        return reply.status(400).send({ error: 'expiresAt must be a valid future date' })
+      }
+      const expiration = expiresAt === undefined ? undefined : new Date(expiresAt)
+      if (expiration && (!Number.isFinite(expiration.getTime()) || expiration <= new Date())) {
+        return reply.status(400).send({ error: 'expiresAt must be a valid future date' })
       }
 
       // Generate the key, store only its hash, and return the plaintext once.
@@ -49,6 +60,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
         data: {
           hash: hashApiKey(plaintext),
           label: label.trim(),
+          ...(expiration ? { expiresAt: expiration } : {}),
           ...(ratePerMin !== undefined ? { ratePerMin } : {}),
           ...(ratePerDay !== undefined ? { ratePerDay } : {}),
           ...(monthlyQuotaCents !== undefined ? { monthlyQuotaCents } : {}),
@@ -60,6 +72,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       return reply.status(201).send({
         id: record.id,
         label: record.label,
+        expiresAt: record.expiresAt,
         ratePerMin: record.ratePerMin,
         ratePerDay: record.ratePerDay,
         monthlyQuotaCents: record.monthlyQuotaCents,
@@ -76,8 +89,10 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     { config: { public: true } },
     async (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
       if (!isAdminAuthorized(req)) {
+        admin_auth_failures_total.inc()
         return reply.status(401).send({
           error: 'Unauthorized',
+          code: 'admin_unauthorized',
           message: 'Provide a valid X-Admin-Token header.',
         })
       }

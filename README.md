@@ -66,6 +66,24 @@ disagree, the spec is the thing to fix.
 Still reading across both networks, and ignoring the parameter:
 `/candles/:assetA/:assetB`, `/price/twap/*`, and `/price/vwap/*`.
 
+### API key authentication errors
+
+API-key authentication failures return HTTP 401 with a machine-readable `code`:
+
+| Code | Meaning |
+|---|---|
+| `missing` | No Authorization header was supplied. |
+| `malformed` | The Authorization header is not a valid Bearer header. |
+| `unknown` | The key was not recognized; never-issued and unknown keys have the same response. |
+| `revoked` | The recognized key has been revoked. |
+| `expired` | The recognized key has passed its expiry time. |
+
+Unknown keys always receive the same response, regardless of whether the key
+ever existed. Admin-token failures use `admin_unauthorized`.
+
+Admin key creation accepts an optional future ISO date-time in `expiresAt`.
+Omitting it creates a key without an expiry.
+
 ```bash
 curl "https://api.example.com/price/XLM/USDC?network=mainnet"
 ```
@@ -111,13 +129,17 @@ The GraphQL schema is exported as a canonical Schema Definition Language (SDL) a
 
 Prometheus metrics are exposed on `GET /metrics` (public, no API key required).
 
-Alongside the ingestion and database metrics, Lens exports the three HTTP
-signals needed to answer "is the API healthy":
+Alongside the ingestion and database metrics, Lens exports HTTP request,
+latency, authentication and rate-limit signals:
 
 | Metric | Type | Labels |
 |---|---|---|
 | `http_requests_total` | Counter | `method`, `route`, `status_class` |
 | `http_request_duration_seconds` | Histogram | `method`, `route` |
+| `api_key_auth_failures_total` | Counter | `reason` |
+| `admin_auth_failures_total` | Counter | — |
+| `rate_limit_rejections_total` | Counter | `scope` |
+| `global_shed_requests_total` | Counter | — |
 
 `route` is the matched route **template** (`/price/:assetA/:assetB`), never the
 resolved URL, so the number of time series stays bounded no matter how many
@@ -534,6 +556,7 @@ curl -s http://localhost:3002/price/XLM/USDC | jq '{price, ammPrice, lastUpdated
 | `NODE_ENV` | Environment mode (`development`, `test`, `production`) | `development` | No |
 | `PORT` | API server port | `3002` | No |
 | `HOST` | API server host | `0.0.0.0` | No |
+| `GLOBAL_RATE_LIMIT_MAX` | Maximum accepted non-health requests per rolling minute per instance | `1000` | No |
 | `DATABASE_URL` | PostgreSQL connection string | - | **Yes** |
 | `REDIS_URL` | Redis connection string | - | **Yes** |
 | `PRICE_CACHE_TTL` | Cache duration for price data (seconds) | `10` | No |
