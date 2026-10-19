@@ -117,6 +117,8 @@ interface InternalClient {
 class FanOutManager {
   private clients = new Map<string, InternalClient>() // clientId -> client
   private pairClients = new Map<string, Set<string>>() // pairKey -> Set<clientId>
+  private isDestroying = false
+  private isDestroyed = false
 
   // Redis pub/sub for cross-instance broadcasting
   private subscriber: typeof redis | null = null
@@ -178,6 +180,7 @@ class FanOutManager {
       congestedSince: null,
     }
 
+    this.isDestroyed = false
     this.clients.set(id, client)
     let clients = this.pairClients.get(pairKey)
     if (!clients) {
@@ -445,9 +448,14 @@ class FanOutManager {
   }
 
   /**
-   * Dispose all clients and clean up.
+   * Graceful Shutdown & Cleanup (#347)
+   * Sends close frames with code 1001 ('Server shutting down') and allows a flush window.
+   * Completely idempotent and safe against mid-fanout calls.
    */
-  async destroy(): Promise<void> {
+  async destroy(closeCode = 1001, reason = 'Server shutting down', flushWindowMs = 0): Promise<void> {
+    if (this.isDestroyed || this.isDestroying) return
+    this.isDestroying = true
+
     if (this.bufferSweep) {
       clearInterval(this.bufferSweep)
       this.bufferSweep = null
@@ -459,10 +467,40 @@ class FanOutManager {
         // subscriber may not have connected — ignore
       }
       this.subscriber.disconnect()
+      this.subscriber = null
     }
-    for (const [id] of this.clients) {
-      this.unregister(id)
+
+    // Allow in-flight sends / queued coalesced messages a brief window to flush (#347)
+    if (flushWindowMs > 0 && this.clients.size > 0) {
+      await new Promise(resolve => setTimeout(resolve, flushWindowMs))
     }
+
+    const clientList = Array.from(this.clients.values())
+    for (const client of clientList) {
+      try {
+        if (client.timer) {
+          clearTimeout(client.timer)
+          client.timer = null
+        }
+        client.destroyed = true
+        client.socket.close(closeCode, reason)
+      } catch {
+        // do not throw
+      }
+      this.unregister(client.id)
+    }
+
+    this.clients.clear()
+    this.pairClients.clear()
+    this.isDestroying = false
+    this.isDestroyed = true
+  }
+
+  resetForTesting(): void {
+    this.clients.clear()
+    this.pairClients.clear()
+    this.isDestroyed = false
+    this.isDestroying = false
   }
 }
 
