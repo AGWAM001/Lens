@@ -255,8 +255,7 @@ export async function registerRESTRoutes(app: FastifyInstance) {
       if (!pair) return reply.status(404).send({ error: `Pair ${assetA}/${assetB} not watched on ${network}` })
       if (isNaN(amount) || amount <= 0) return reply.status(400).send({ error: 'amount must be a positive number' })
 
-      // NOTE: getDepth reads order-book data with no network column yet — see L048.
-      const depthResult = await getDepth(pair.pairKey, amount)
+      const depthResult = await getDepth(pair.pairKey, amount, network)
       
       return {
         assetA: pair.assetA.code,
