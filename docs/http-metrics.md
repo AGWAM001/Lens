@@ -58,10 +58,24 @@ So:
   need for an exact code appears, add it then — it is easy to add a label and
   painful to remove one dashboards depend on.
 - **Websocket pairs use fixed buckets.** `ws_clients_total`,
-  `ws_messages_sent_total` and `ws_messages_dropped_total` retain their `pair`
-  label, but pair-specific subscriptions are recorded as `other`; `*` remains
-  the aggregate across all subscriptions. Arbitrary pair names and issuer
-  addresses stay in fanout state only and cannot create Prometheus series.
+  `ws_messages_sent_total`, `ws_messages_dropped_total` and
+  `ws_clients_dropped_total` retain their `pair` label, but pair-specific
+  subscriptions are recorded as `other`; `*` remains the aggregate across all
+  subscriptions. Arbitrary pair names and issuer addresses stay in fanout state
+  only and cannot create Prometheus series. `ws_buffered_bytes` is aggregate-only
+  (`*`): one series per connected client would be unbounded cardinality driven by
+  caller-supplied subscription strings. See
+  [`websocket-backpressure.md`](websocket-backpressure.md).
+
+## Excluded routes
+
+`/metrics`, `/live` and `/ready` are not counted at all (`EXCLUDED_ROUTES` in
+[`src/middleware/httpMetrics.ts`](../src/middleware/httpMetrics.ts)). Each is
+polled on a fixed interval — by the scraper for the first, by the platform for
+the other two — so counting any of them would have the poller continuously
+inflate the very numbers it is reading. Request rate could never fall to zero on
+an idle service, and a real outage could not move it, which is the opposite of
+what these two metrics are for. See [`health.md`](health.md).
 
 ## Bucket choice
 
@@ -93,7 +107,8 @@ see.
 
 `/metrics` itself is excluded from counting. It is scraped on a fixed interval,
 so counting it would have the scraper continuously inflate the numbers it is
-reading — request rate would never fall to zero on an idle service.
+reading — request rate would never fall to zero on an idle service. `/live` and
+`/ready` are excluded for the same reason, polled by a different timer.
 
 ## Queries
 

@@ -60,6 +60,7 @@ export async function registerPairsRoutes(app: FastifyInstance) {
   app.post<{
     Body: { assetA?: string; assetB?: string }
   }>('/pairs', async (req, reply) => {
+    const log = req.log.child({ component: 'route:pairs' })
     // Auth check — read at request time so env can be set after module load
     const ADMIN_API_KEY = process.env.ADMIN_API_KEY
     const key = req.headers['x-admin-key'] ?? req.headers['authorization']?.replace(/^Bearer /, '')
@@ -97,7 +98,7 @@ export async function registerPairsRoutes(app: FastifyInstance) {
     registerPair(pair)
     await persistPair(pair)
 
-    console.log(`[pairs] Added runtime pair: ${pairKey}`)
+    log.info({ pair: pairKey }, 'added runtime pair')
     return reply.status(201).send({ pairKey, assetA, assetB })
   })
 }
