@@ -25,9 +25,18 @@ whether the seller confirmed it.
 
 `mcp_payment_attempts_total` (labels `host`, `network`, `outcome`) and
 `mcp_payment_amount_usd_total` (labels `host`, `network`) export the same spend to
-Prometheus, on the shared registry. Labels come from `MCP_METRIC_HOSTS`: series are
+Prometheus on the shared registry, which `MCP_TRANSPORT=http` now serves from the
+MCP process itself at `GET /metrics` — a counter nobody can scrape is not an
+export. That route answers only to the same bearer token as the tools: what an
+agent bought, on which host and for how much describes a key that moves money.
+`MCP_HTTP_PATH=/metrics` is refused at boot rather than resolved by precedence, so
+one path never has two meanings. Under stdio there is no listener, so the running
+total there is what `payment_budget` reports and what the audit file holds.
+
+Labels come from `MCP_METRIC_HOSTS` and `MCP_METRIC_NETWORKS` (default
+`stellar:testnet,stellar:pubnet`, the networks this agent signs for): series are
 permanent, so labelling by whatever URL an agent asks for would let one caller mint
-unbounded time series, and anything outside the allow-list is reported as `unknown`.
+unbounded time series, and anything outside an allow-list is reported as `unknown`.
 The audit file always keeps the real host. Amounts that are not a USD money string
 are recorded verbatim but cannot join the USD sum, so `mcp_payment_unquantified_total`
 and `totalSpend().unquantifiedPayments` make that understatement visible instead of

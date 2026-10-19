@@ -1,6 +1,12 @@
 import 'dotenv/config';
 import { BazaarMcpServer } from '../../src/mcp/server';
-import { resolveMcpTransportConfig, McpTransportConfig } from '../../src/mcp/config';
+import {
+  DEFAULT_MCP_METRICS_PATH,
+  DEFAULT_MCP_METRIC_NETWORKS,
+  McpTransportConfig,
+  parseMetricLabelAllowList,
+  resolveMcpTransportConfig,
+} from '../../src/mcp/config';
 import { SpendBudget, defaultSpendStateFile } from '../../src/mcp/budget';
 import { PaymentLedger, defaultPaymentLedgerFile } from '../../src/mcp/ledger';
 import { wrapFetchWithPaymentFromConfig } from '@x402/fetch';
@@ -18,11 +24,17 @@ function formatHttpUrl(host: string, port: number, path: string): string {
  * mint unbounded time series; anything outside this list is reported as
  * `unknown`. The audit file always keeps the real host regardless.
  */
-function parseMetricHosts(raw: string | undefined): string[] {
-  return (raw ?? '')
-    .split(',')
-    .map((value) => value.trim())
-    .filter(Boolean);
+function metricHosts(): string[] {
+  return parseMetricLabelAllowList(process.env.MCP_METRIC_HOSTS, []);
+}
+
+/** Networks allowed to carry the `network` label; see DEFAULT_MCP_METRIC_NETWORKS. */
+function metricNetworks(): string[] {
+  return parseMetricLabelAllowList(process.env.MCP_METRIC_NETWORKS, DEFAULT_MCP_METRIC_NETWORKS);
+}
+
+function formatLabelDomain(labels: readonly string[]): string {
+  return labels.length ? labels.join(', ') : 'every value is reported as unknown';
 }
 
 async function main() {
@@ -61,9 +73,12 @@ async function main() {
   // the transport makes: a wrapped x402 fetch hands back a plain Response and the
   // price only appears on the request, so the offer has to be read at the boundary.
   const ledgerFile = process.env.MCP_PAYMENT_LEDGER_FILE || defaultPaymentLedgerFile();
+  const labelHosts = metricHosts();
+  const labelNetworks = metricNetworks();
   const paymentLedger = new PaymentLedger({
     filePath: ledgerFile,
-    metricHosts: parseMetricHosts(process.env.MCP_METRIC_HOSTS),
+    metricHosts: labelHosts,
+    metricNetworks: labelNetworks,
   });
 
   const fetchWithPayment = wrapFetchWithPaymentFromConfig(paymentLedger.instrumentFetch(globalThis.fetch), {
@@ -102,10 +117,13 @@ async function main() {
   // The audit file records where money went, never the key that signed it.
   console.error(`[mcp-server] Payment audit trail: ${ledgerFile}`);
   console.error(
-    `[mcp-server] Spend metrics are labelled by host: ${
-      parseMetricHosts(process.env.MCP_METRIC_HOSTS).join(', ') || 'every host is reported as unknown'
-    }`
+    `[mcp-server] Spend metric labels — host: ${formatLabelDomain(labelHosts)}; network: ${formatLabelDomain(labelNetworks)}`
   );
+  if (!labelHosts.length) {
+    console.error(
+      '[mcp-server] MCP_METRIC_HOSTS is empty, so every spend series is labelled host="unknown". Set it to the nodes this agent pays to get per-host spend.'
+    );
+  }
 
   if (transportConfig.transport === 'http') {
     console.error('[mcp-server] Starting Bazaar MCP server on streamable HTTP...');
@@ -115,10 +133,16 @@ async function main() {
     const port = address && typeof address === 'object' ? address.port : transportConfig.port;
     console.error(`[mcp-server] Listening at ${formatHttpUrl(host, port, transportConfig.path)}`);
     console.error('[mcp-server] Bearer token authentication is required for every request');
+    console.error(
+      `[mcp-server] Payment spend metrics: GET ${formatHttpUrl(host, port, DEFAULT_MCP_METRICS_PATH)} with the same bearer token`
+    );
     return;
   }
 
   console.error('[mcp-server] Starting Bazaar MCP server on stdio...');
+  console.error(
+    '[mcp-server] stdio serves no HTTP listener, so the spend metrics of this process cannot be scraped; read the running total with the payment_budget tool or from the audit file above.'
+  );
   await server.run();
 }
 

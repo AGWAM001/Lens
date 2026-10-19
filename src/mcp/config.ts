@@ -1,6 +1,17 @@
 export const DEFAULT_MCP_HTTP_HOST = '127.0.0.1';
 export const DEFAULT_MCP_HTTP_PORT = 3003;
 export const DEFAULT_MCP_HTTP_PATH = '/mcp';
+/** Where the MCP HTTP transport exposes its Prometheus registry. */
+export const DEFAULT_MCP_METRICS_PATH = '/metrics';
+
+/**
+ * The only network ids a payment made by this server can carry, so they are the
+ * whole `network` label domain. Bazaar resources are paid on Stellar, and
+ * examples/mcp-server/run.ts builds a signer per entry in that list; a label
+ * taken from whatever a seller echoes in a header would mint a permanent time
+ * series per distinct string.
+ */
+export const DEFAULT_MCP_METRIC_NETWORKS: readonly string[] = ['stellar:testnet', 'stellar:pubnet'];
 
 export interface McpStdioTransportConfig {
   transport: 'stdio';
@@ -37,6 +48,24 @@ export function normalizeMcpHttpPath(raw: string): string {
   return withLeadingSlash.length > 1 && withLeadingSlash.endsWith('/')
     ? withLeadingSlash.slice(0, -1)
     : withLeadingSlash;
+}
+
+/**
+ * Comma-separated allow-list of the values that may carry a Prometheus label,
+ * such as the hosts a `host` label may name. Series are permanent, so a label
+ * domain must come from configuration, never from a caller's input.
+ *
+ * An unset variable takes `fallback`; setting one to empty means "allow-list
+ * nothing", so every series is labelled `unknown`.
+ */
+export function parseMetricLabelAllowList(raw: string | undefined, fallback: readonly string[]): string[] {
+  if (raw === undefined) {
+    return [...fallback];
+  }
+  return raw
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
 }
 
 export function resolveMcpTransportConfig(env: NodeJS.ProcessEnv = process.env): McpTransportConfig {
