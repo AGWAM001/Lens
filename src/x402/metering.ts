@@ -137,3 +137,41 @@ export function parseCents(price: string): number {
   if (!match) return 0
   return Math.round(parseFloat(match[1]) * 100)
 }
+
+export async function copyUsageHistory(sourceKeyId: string, targetKeyId: string): Promise<void> {
+  const db = redis as unknown as Redis
+  if (!db || typeof db.get !== 'function') return
+  try {
+    const [
+      dailyCalls,
+      dailyCents,
+      monthlyCalls,
+      monthlyCents,
+    ] = await Promise.all([
+      db.get(getDailyBase(sourceKeyId) + ':calls'),
+      db.get(getDailyBase(sourceKeyId) + ':cents'),
+      db.get(getMonthlyBase(sourceKeyId) + ':calls'),
+      db.get(getMonthlyBase(sourceKeyId) + ':cents'),
+    ])
+
+    if (typeof db.multi !== 'function') return
+    const multi = db.multi()
+    if (dailyCalls) {
+      multi.set(getDailyBase(targetKeyId) + ':calls', dailyCalls, 'EX', secondsUntilEndOfDay())
+    }
+    if (dailyCents) {
+      multi.set(getDailyBase(targetKeyId) + ':cents', dailyCents, 'EX', secondsUntilEndOfDay())
+    }
+    if (monthlyCalls) {
+      multi.set(getMonthlyBase(targetKeyId) + ':calls', monthlyCalls, 'EX', secondsUntilEndOfMonth())
+    }
+    if (monthlyCents) {
+      multi.set(getMonthlyBase(targetKeyId) + ':cents', monthlyCents, 'EX', secondsUntilEndOfMonth())
+    }
+    if (typeof multi.exec === 'function') {
+      await multi.exec()
+    }
+  } catch {
+    // Graceful fallback if Redis mock or server fails
+  }
+}
