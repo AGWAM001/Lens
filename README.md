@@ -33,6 +33,8 @@ Aggregates price data from Stellar's Classic Order Book (SDEX) and AMM Liquidity
 | GET | `/basket?asset=XLM&asset=USDC&weight=0.6&weight=0.4` | Weighted price of a basket of assets |
 | GET | `/status` | Indexer health |
 | GET | `/snapshot?network=testnet\|mainnet` | Whole-network snapshot: venues, TVL, 24h volume, top pairs, peg readings and data freshness in one cached, timestamped object |
+| GET | `/live` | Liveness probe — no dependency checks (see [`docs/health.md`](docs/health.md)) |
+| GET | `/ready` | Readiness probe — boot complete + dependencies reachable |
 | GET | `/discovery/resources?type=&payTo=&network=&extensions=&limit=&offset=` | Bazaar catalog of x402-discoverable resources (spec: [`bazaar`](https://github.com/x402-foundation/x402/blob/main/specs/extensions/bazaar.md)) |
 | GET | `/usage/me` | Usage and quota for the calling API key (requires `Authorization: Bearer <key>`) |
 | GET | `/supported` | Payment kinds and extensions this facilitator supports |
@@ -365,7 +367,7 @@ Or interactively at [http://localhost:3002/graphiql](http://localhost:3002/graph
 Detailed system design and data flow diagrams can be found in the [Architecture Overview](docs/architecture.md).
 The API specification is available in [OpenAPI 3.0 format](openapi.yaml) and is auto-published to GitHub Pages at https://miracle656.github.io/lens/openapi.json.
 
-Operational docs: [HTTP metrics](docs/http-metrics.md), [ingest metrics](docs/ingest-metrics.md), [websocket backpressure](docs/websocket-backpressure.md), [GraphQL](docs/graphql.md).
+Operational docs: [HTTP metrics](docs/http-metrics.md), [ingest metrics](docs/ingest-metrics.md), [websocket backpressure](docs/websocket-backpressure.md), [health probes](docs/health.md), [GraphQL](docs/graphql.md).
 
 ## Examples
 
@@ -569,8 +571,11 @@ SMOKE_MAX_AGE_SECONDS=120 SMOKE_TIMEOUT_MS=8000 npm run smoke -- http://localhos
 
 Validate the smoke checker itself with `npm run test:smoke`.
 
-The check requires public `/status` and `/price/XLM/USDC` and checks `/ready` when available. It uses a
-`graphql-transport-ws` live price subscription at `/graphql`. An HTTP 404 on `/ready` is skipped until issue #334 provides the endpoint; any other readiness failure is fatal. It checks
+The check requires public `/status`, `/live` and `/ready`, plus `/price/XLM/USDC`. It uses a
+`graphql-transport-ws` live price subscription at `/graphql`. Both probes must be
+present and healthy — a missing `/ready` fails the run rather than being skipped,
+since a smoke check that silently tolerates an absent probe is how a deployment
+ends up unmonitored while still green. It checks
 indexer and trade freshness, validates price shape, and waits for a real
 subscription event. It fails non-zero, naming the failing check, on timeout,
 stale data, a missing message, or HTTP errors. No synthetic price events are

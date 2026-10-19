@@ -77,6 +77,72 @@ paths:
                           format: date-time
                           nullable: true
 
+  /live:
+    get:
+      operationId: getLive
+      summary: Liveness probe
+      description: >-
+        Reports whether this process is wedged and needs to be restarted. It
+        checks no dependencies by design: a process that cannot reach Postgres
+        is still healthy and should keep running, so failing liveness during a
+        database outage would restart every instance at once. Use `/ready` to
+        decide whether to send traffic.
+      security: []
+      responses:
+        '200':
+          description: Process is alive.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, uptimeSeconds]
+                properties:
+                  ok:
+                    type: boolean
+                    example: true
+                  uptimeSeconds:
+                    type: integer
+                    description: Seconds since the process started.
+                    example: 3600
+
+  /ready:
+    get:
+      operationId: getReady
+      summary: Readiness probe
+      description: >-
+        Reports whether this process should receive traffic yet. Unhealthy
+        until the boot sequence finishes — the server starts listening before
+        the ingesters and background workers are running — and while Postgres
+        is unreachable or unmigrated, or Redis is unreachable when Redis is
+        part of readiness (`READINESS_REDIS_CHECK`, default true).
+
+        A probe timeout is reported as `down`, and answers are cached briefly,
+        so this is cheap to poll every few seconds. `/live` stays healthy
+        throughout: a starting instance should be held out of rotation, not
+        killed.
+      security: []
+      responses:
+        '200':
+          description: Ready to receive traffic.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessReport'
+        '503':
+          description: >-
+            Not ready. `ok` is false and `checks` says which dependency (or the
+            boot sequence) is responsible. `/live` remains healthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessReport'
+
   /status:
     get:
       operationId: getStatus
@@ -1460,6 +1526,51 @@ components:
         example: 'public, max-age=300'
 
   schemas:
+    DependencyCheck:
+      type: object
+      description: >-
+        Result of one dependency probe. `reason` is a fixed phrase, never the
+        raw error: connection errors carry the host and port and this is a
+        public endpoint.
+      required: [status, latencyMs, reason]
+      properties:
+        status:
+          type: string
+          enum: [up, down, skipped]
+        latencyMs:
+          type: integer
+          description: Round-trip time of the probe.
+        reason:
+          type: string
+          nullable: true
+          example: unreachable or not migrated
+
+    ReadinessReport:
+      type: object
+      description: >-
+        Readiness of one instance. Identical on 200 and 503; `ok` and the HTTP
+        status together say whether traffic should be routed here.
+      required: [ok, booted, checks, checkedAt]
+      properties:
+        ok:
+          type: boolean
+          description: True only when boot finished and every checked dependency is up.
+        booted:
+          type: boolean
+          description: False while the boot sequence is still running.
+        checks:
+          type: object
+          required: [postgres, redis]
+          properties:
+            postgres:
+              $ref: '#/components/schemas/DependencyCheck'
+            redis:
+              $ref: '#/components/schemas/DependencyCheck'
+        checkedAt:
+          type: string
+          format: date-time
+          description: When the underlying probes ran (answers may be briefly cached).
+
     Asset:
       type: object
       properties:
