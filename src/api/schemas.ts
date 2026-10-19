@@ -16,6 +16,55 @@
 import Ajv from 'ajv'
 import type { FastifyInstance, FastifySchema } from 'fastify'
 
+/**
+ * One dependency probe result, shared by `/ready`.
+ *
+ * `reason` is a fixed phrase rather than the raw error: connection errors carry
+ * the host and port, and this is a public endpoint (see src/health.ts).
+ */
+const dependencyCheckSchema = {
+  type: 'object',
+  required: ['status', 'latencyMs', 'reason'],
+  additionalProperties: false,
+  properties: {
+    status: { type: 'string', enum: ['up', 'down', 'skipped'] },
+    latencyMs: { type: 'integer' },
+    reason: { type: ['string', 'null'] },
+  },
+} as const
+
+/** GET /live */
+export const liveResponseSchema = {
+  type: 'object',
+  required: ['ok', 'uptimeSeconds'],
+  additionalProperties: false,
+  properties: {
+    ok: { type: 'boolean' },
+    uptimeSeconds: { type: 'integer' },
+  },
+} as const
+
+/** GET /ready — same body on 200 and 503, so `ok` is what distinguishes them. */
+export const readyResponseSchema = {
+  type: 'object',
+  required: ['ok', 'booted', 'checks', 'checkedAt'],
+  additionalProperties: false,
+  properties: {
+    ok: { type: 'boolean' },
+    booted: { type: 'boolean' },
+    checks: {
+      type: 'object',
+      required: ['postgres', 'redis'],
+      additionalProperties: false,
+      properties: {
+        postgres: dependencyCheckSchema,
+        redis: dependencyCheckSchema,
+      },
+    },
+    checkedAt: { type: 'string' },
+  },
+} as const
+
 /** GET /status */
 export const statusResponseSchema = {
   type: 'object',

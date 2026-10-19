@@ -27,9 +27,20 @@ import { registerBasketRoutes } from './routes/basket'
 import { registerDiscoveryRoutes } from './routes/discovery'
 import { registerVenueRoutes } from './routes/venues'
 import { registerSettleRoute } from './routes/facilitator'
+import { registerHealthRoutes } from './routes/health'
 import { registerCachePolicy } from './middleware/cachePolicy'
 import { getMetrics } from './metrics'
 import { loggerOptions, createDestination } from './logger'
+
+/**
+ * Routes the rate limiter skips.
+ *
+ * All three are infrastructure polled on a fixed interval, often from several
+ * addresses at once. A 429 during an incident would take an instance out of
+ * rotation exactly when its health matters most, and would be reported as
+ * "unhealthy" by the very probe that got throttled.
+ */
+const PROBE_PATHS = new Set(['/status', '/live', '/ready'])
 
 export interface BuildAppOptions {
   /**
@@ -102,7 +113,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     max: (req) => req.apiKey?.ratePerMin ?? ipRateLimitMax,
     timeWindow: '1 minute',
     keyGenerator: (req) => req.apiKey?.id ?? req.ip,
-    allowList: (req) => req.url === '/status',
+    allowList: (req) => PROBE_PATHS.has(req.url),
     errorResponseBuilder: (req, context) => ({
       statusCode: 429,
       error: 'Too Many Requests',
@@ -111,9 +122,12 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     })
   })
 
-  // Specific limit for /status (higher for monitoring)
+  // Specific limit for the probe routes (higher for monitoring). These are
+  // allow-listed above, so this is a floor rather than the operative limit —
+  // it documents that polling them frequently is expected, and leaves room for
+  // a deployment that removes the allow-list.
   app.addHook('onRoute', (routeOptions) => {
-    if (routeOptions.url === '/status') {
+    if (routeOptions.url && PROBE_PATHS.has(routeOptions.url)) {
       routeOptions.config = {
         ...routeOptions.config,
         rateLimit: {
@@ -153,6 +167,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   await registerDiscoveryRoutes(app)
   await registerVenueRoutes(app)
   await registerSettleRoute(app)
+  await registerHealthRoutes(app)
   await registerGraphQL(app)
   await registerWebSocket(app)
 
