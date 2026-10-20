@@ -48,7 +48,7 @@ Venue adapters report network liveness on `/venues/registry`. A venue is marked 
 ## Completeness Guarantees
 
 ### Multi-Venue Liquidity Aggregation
-High confidence requires price observations from at least [`2`](../src/aggregator/vwap.ts#L181) distinct liquidity sources (e.g. SDEX and AMM pools). When only [`1`](../src/aggregator/vwap.ts#L182) source is active, confidence is limited to `'medium'`.
+High confidence requires price observations from at least [`2`](../src/aggregator/vwap.ts#L187) distinct liquidity sources (e.g. SDEX and AMM pools). When only [`1`](../src/aggregator/vwap.ts#L187) source is active, confidence is limited to `'medium'`.
 
 ### Statistical Outlier Rejection Thresholds
 TWAP and VWAP computations apply statistical filtering to reject manipulation spikes:
