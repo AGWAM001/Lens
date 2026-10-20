@@ -17,12 +17,14 @@ interface CreateKeyBody {
   monthlyQuotaCents?: number
   dailyQuotaCents?: number
   overagePolicy?: 'block' | 'charge_402' | 'allow_overage'
+  scopes?: string[]
 }
 
 /**
- * Registers admin-only endpoints for minting and revoking API keys.
+ * Registers admin-only endpoints for minting, listing, and revoking API keys.
  *
  * - `POST /admin/keys`   — mint a new key (returns the plaintext key ONCE).
+ * - `GET /admin/keys`    — list all existing keys with metadata and scopes.
  * - `DELETE /admin/keys/:id` — revoke an existing key.
  *
  * All routes are marked `config.public = true` so the API-key auth hook skips
@@ -42,7 +44,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
         })
       }
 
-      const { label, expiresAt, ratePerMin, ratePerDay, monthlyQuotaCents, dailyQuotaCents, overagePolicy } = req.body ?? {}
+      const { label, expiresAt, ratePerMin, ratePerDay, monthlyQuotaCents, dailyQuotaCents, overagePolicy, scopes } = req.body ?? {}
       if (!label || typeof label !== 'string' || label.trim().length === 0) {
         return reply.status(400).send({ error: 'label is required' })
       }
@@ -53,6 +55,14 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       if (expiration && (!Number.isFinite(expiration.getTime()) || expiration <= new Date())) {
         return reply.status(400).send({ error: 'expiresAt must be a valid future date' })
       }
+      if (scopes !== undefined) {
+        if (!Array.isArray(scopes) || scopes.some(s => typeof s !== 'string')) {
+          return reply.status(400).send({ error: 'scopes must be an array of strings' })
+        }
+      }
+      const normalizedScopes = scopes !== undefined
+        ? Array.from(new Set(scopes.map(s => s.trim()).filter(Boolean)))
+        : undefined
 
       // Generate the key, store only its hash, and return the plaintext once.
       const plaintext = generateApiKey()
@@ -66,6 +76,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
           ...(monthlyQuotaCents !== undefined ? { monthlyQuotaCents } : {}),
           ...(dailyQuotaCents !== undefined ? { dailyQuotaCents } : {}),
           ...(overagePolicy !== undefined ? { overagePolicy } : {}),
+          ...(normalizedScopes !== undefined ? { scopes: normalizedScopes } : {}),
         },
       })
 
@@ -78,9 +89,44 @@ export async function registerAdminRoutes(app: FastifyInstance) {
         monthlyQuotaCents: record.monthlyQuotaCents,
         dailyQuotaCents: record.dailyQuotaCents,
         overagePolicy: record.overagePolicy,
+        scopes: record.scopes ?? [],
         key: plaintext,
         createdAt: record.createdAt,
       })
+    },
+  )
+
+  app.get(
+    '/admin/keys',
+    { config: { public: true } },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      if (!isAdminAuthorized(req)) {
+        admin_auth_failures_total.inc()
+        return reply.status(401).send({
+          error: 'Unauthorized',
+          code: 'admin_unauthorized',
+          message: 'Provide a valid X-Admin-Token header.',
+        })
+      }
+
+      const keys = await prisma.apiKey.findMany({
+        orderBy: { createdAt: 'desc' },
+        select: {
+          id: true,
+          label: true,
+          scopes: true,
+          ratePerMin: true,
+          ratePerDay: true,
+          revokedAt: true,
+          expiresAt: true,
+          createdAt: true,
+          monthlyQuotaCents: true,
+          dailyQuotaCents: true,
+          overagePolicy: true,
+        },
+      })
+
+      return reply.status(200).send({ keys })
     },
   )
 
