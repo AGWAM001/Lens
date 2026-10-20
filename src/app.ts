@@ -25,8 +25,24 @@ import { registerBenchmarkRoutes } from './routes/benchmark'
 import { registerOracleRoutes } from './routes/oracle'
 import { registerBasketRoutes } from './routes/basket'
 import { registerDiscoveryRoutes } from './routes/discovery'
+import { registerSnapshotRoutes } from './routes/snapshot'
+import { registerVenueRoutes } from './routes/venues'
 import { registerSettleRoute } from './routes/facilitator'
-import { getMetrics } from './metrics'
+import { registerHealthRoutes } from './routes/health'
+import { registerCachePolicy } from './middleware/cachePolicy'
+import { registerGlobalRateLimit, parseGlobalRateLimit } from './middleware/globalRateLimit'
+import { getMetrics, rate_limit_rejections_total } from './metrics'
+import { loggerOptions, createDestination } from './logger'
+
+/**
+ * Routes the rate limiter skips.
+ *
+ * All three are infrastructure polled on a fixed interval, often from several
+ * addresses at once. A 429 during an incident would take an instance out of
+ * rotation exactly when its health matters most, and would be reported as
+ * "unhealthy" by the very probe that got throttled.
+ */
+const PROBE_PATHS = new Set(['/status', '/live', '/ready'])
 
 export interface BuildAppOptions {
   /**
@@ -51,7 +67,11 @@ export interface BuildAppOptions {
  * The returned app is NOT listening; the caller calls `app.listen(...)`.
  */
 export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyInstance> {
-  const app = Fastify({ logger: { level: 'warn' } })
+  // Share the structured logger configuration (level, redaction, dev pretty
+  // printing) with Fastify so `req.log` is scrubbed the same way.
+  const app = Fastify({
+    logger: { ...loggerOptions(), stream: createDestination() },
+  })
 
   // Capture route registrations first, so it observes every route below
   // (including the ones registered by encapsulated plugins such as Mercurius).
@@ -95,18 +115,32 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     max: (req) => req.apiKey?.ratePerMin ?? ipRateLimitMax,
     timeWindow: '1 minute',
     keyGenerator: (req) => req.apiKey?.id ?? req.ip,
-    allowList: (req) => req.url === '/status',
-    errorResponseBuilder: (req, context) => ({
-      statusCode: 429,
-      error: 'Too Many Requests',
-      message: `Rate limit exceeded, retry in ${context.after}`,
-      retryAfter: context.after
-    })
+    // PROBE_PATHS, not just /status: /live and /ready are polled by the
+    // platform on a fixed interval and must never be rate limited.
+    allowList: (req) => PROBE_PATHS.has(req.url),
+    errorResponseBuilder: (req, context) => {
+      rate_limit_rejections_total.inc({ scope: req.apiKey ? 'key' : 'ip' })
+      return {
+        statusCode: 429,
+        error: 'Too Many Requests',
+        code: req.apiKey ? 'PER_KEY_RATE_LIMITED' : 'IP_RATE_LIMITED',
+        message: `Rate limit exceeded, retry in ${context.after}`,
+        retryAfter: context.after
+      }
+    }
   })
 
-  // Specific limit for /status (higher for monitoring)
+  // The per-instance ceiling runs after the per-key/IP limiter. Health checks
+  // bypass it, and expensive route templates are shed before other routes.
+  registerGlobalRateLimit(app, parseGlobalRateLimit(process.env.GLOBAL_RATE_LIMIT_MAX))
+
+  // Per-route ceiling for the probe routes. Inert while they stay allow-listed
+  // above — @fastify/rate-limit consults `allowList` before it ever reads
+  // `max` — but kept so removing the allow-list does not silently drop these to
+  // the shared per-IP default, which is far too low for an infrastructure
+  // poller.
   app.addHook('onRoute', (routeOptions) => {
-    if (routeOptions.url === '/status') {
+    if (routeOptions.url && PROBE_PATHS.has(routeOptions.url)) {
       routeOptions.config = {
         ...routeOptions.config,
         rateLimit: {
@@ -124,6 +158,12 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   await app.register(registerFacilitatorRoutes)
 
   await app.register(registerX402)
+
+  // Per-route Cache-Control policy (issue #266) — every response carries a
+  // deliberate Cache-Control header. Registered before the routes so the
+  // onSend hook observes all of them.
+  await app.register(registerCachePolicy)
+
   await registerRESTRoutes(app)
   await registerWebhookRoutes(app)
   await registerCandleRoutes(app)
@@ -138,7 +178,10 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   await registerOracleRoutes(app)
   await registerBasketRoutes(app)
   await registerDiscoveryRoutes(app)
+  await registerSnapshotRoutes(app)
+  await registerVenueRoutes(app)
   await registerSettleRoute(app)
+  await registerHealthRoutes(app)
   await registerGraphQL(app)
   await registerWebSocket(app)
 

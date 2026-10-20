@@ -17,6 +17,10 @@
  */
 import { beforeEach, afterEach } from 'vitest'
 
+// Keep the shared pino logger quiet during tests unless a run overrides it.
+// This is read when src/logger.ts first imports, before any test module runs.
+process.env.LOG_LEVEL = process.env.LOG_LEVEL ?? 'silent'
+
 let envSnapshot: Record<string, string | undefined>
 
 beforeEach(() => {

@@ -2,7 +2,7 @@
   "openapi": "3.0.0",
   "info": {
     "title": "Lens API",
-    "description": "Unified Stellar price API aggregating SDEX + AMM prices.",
+    "description": "Unified Stellar price API aggregating SDEX + AMM prices.\nCache policy: every route sends a deliberate `Cache-Control` response header. Live prices (`/price/*`) are `public, max-age=30`; aggregates (`/price/*/history`, `/price/twap/*`, `/price/vwap/*`, `/prices/history`, `/compare/*`, `/spreads/*`) are `public, max-age=60`; slower-moving views (`/volumes/*`, `/screener`, `/basket`) are `public, max-age=120`; reference data that changes rarely (`/pairs`, `/pools`, `/benchmark/*`) is `public, max-age=300`; the discovery document is `public, max-age=3600`. `/candles` for a closed historical window (its `to` at least one full interval in the past) is *probably* immutable — backfill can rewrite history — so it is `public, max-age=3600, stale-while-revalidate=86400`; the still-forming window is `public, max-age=60`. Every `public` response also sends `Vary: x-network`, because the Stellar network can come from the `x-network` header (not part of the URL cache key). Routes behind the x402 payment gate use `private` instead of `public` when x402 is configured, so a shared cache never serves paid content for free. Per-caller responses (`/usage/me`), operator routes (`/admin/*`), mutations and error responses are `no-store` and must never sit in a shared cache.\nData Quality Guarantees: see `docs/data-quality.md` for explicit SLAs and guarantees on freshness (e.g. 300s staleness bound), completeness, precision (PostgreSQL Decimal(36,18) and negotiated string serialization), and multi-venue coverage across SDEX, Stellar AMM, Soroswap, and Aquarius.",
     "version": "0.1.0",
     "license": {
       "name": "MIT",
@@ -16,6 +16,170 @@
     }
   ],
   "paths": {
+    "/venues/registry": {
+      "get": {
+        "operationId": "getVenueRegistry",
+        "summary": "List registered venues and their network liveness",
+        "description": "Returns each registered venue adapter for the selected network. Liveness is based on recent price writes where available; on-demand adapters without persisted price points report unknown.",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/NetworkQuery"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Registered venues and their current liveness",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "network",
+                    "venues"
+                  ],
+                  "properties": {
+                    "network": {
+                      "type": "string",
+                      "enum": [
+                        "testnet",
+                        "mainnet"
+                      ]
+                    },
+                    "venues": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "id",
+                          "kind",
+                          "network",
+                          "enabled",
+                          "liveness",
+                          "lastSeenAt"
+                        ],
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "orderbook",
+                              "amm",
+                              "oracle"
+                            ]
+                          },
+                          "network": {
+                            "type": "string",
+                            "enum": [
+                              "testnet",
+                              "mainnet"
+                            ]
+                          },
+                          "enabled": {
+                            "type": "boolean"
+                          },
+                          "liveness": {
+                            "type": "string",
+                            "enum": [
+                              "live",
+                              "stale",
+                              "disabled",
+                              "unknown"
+                            ]
+                          },
+                          "lastSeenAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "nullable": true
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/live": {
+      "get": {
+        "operationId": "getLive",
+        "summary": "Liveness probe",
+        "description": "Reports whether this process is wedged and needs to be restarted. It checks no dependencies by design: a process that cannot reach Postgres is still healthy and should keep running, so failing liveness during a database outage would restart every instance at once. Use `/ready` to decide whether to send traffic.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Process is alive.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "ok",
+                    "uptimeSeconds"
+                  ],
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "uptimeSeconds": {
+                      "type": "integer",
+                      "description": "Seconds since the process started.",
+                      "example": 3600
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ready": {
+      "get": {
+        "operationId": "getReady",
+        "summary": "Readiness probe",
+        "description": "Reports whether this process should receive traffic yet. Unhealthy until the boot sequence finishes — the server starts listening before the ingesters and background workers are running — and while Postgres is unreachable or unmigrated, or Redis is unreachable when Redis is part of readiness (`READINESS_REDIS_CHECK`, default true).\nA probe timeout is reported as `down`, and answers are cached briefly, so this is cheap to poll every few seconds. `/live` stays healthy throughout: a starting instance should be held out of rotation, not killed.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Ready to receive traffic.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadinessReport"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Not ready. `ok` is false and `checks` says which dependency (or the boot sequence) is responsible. `/live` remains healthy.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadinessReport"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/status": {
       "get": {
         "operationId": "getStatus",
@@ -29,6 +193,11 @@
         "responses": {
           "200": {
             "description": "API status",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -74,6 +243,52 @@
         }
       }
     },
+    "/snapshot": {
+      "get": {
+        "operationId": "getSnapshot",
+        "summary": "Whole-network snapshot (venues, TVL, 24h volume, top pairs, pegs, freshness)",
+        "description": "A single timestamped summary of one network: every venue's liveness, AMM pool reserves (TVL), 24h traded volume, the busiest pairs, stablecoin peg readings and how fresh the underlying data is. All figures are read in one consistent database statement, so `asOf` is a real instant and every age is measured from it. Missing data is reported as `null` with a reason (or an empty list), never invented — a cross-pair volume total is only returned when the pairs share one unit. Responses are cached briefly per network; `cache.ageSeconds` states the age of a served copy.",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/NetworkQuery"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Network snapshot",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Freshness/brief-caching policy for the snapshot."
+              },
+              "X-Cache": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "HIT",
+                    "MISS"
+                  ]
+                },
+                "description": "Whether this response came from the short-lived cache."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SnapshotResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
     "/price/{assetA}/{assetB}": {
       "get": {
         "operationId": "getPrice",
@@ -109,6 +324,11 @@
         "responses": {
           "200": {
             "description": "Aggregated price data",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -171,6 +391,11 @@
         "responses": {
           "200": {
             "description": "Best route information",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -242,6 +467,11 @@
         "responses": {
           "200": {
             "description": "Price history",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -297,6 +527,11 @@
         "responses": {
           "200": {
             "description": "List of pools",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -414,6 +649,11 @@
         "responses": {
           "200": {
             "description": "Candle data",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -548,6 +788,11 @@
         "responses": {
           "200": {
             "description": "Historical price snapshots",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
             "content": {
               "text/csv": {
                 "schema": {
@@ -631,6 +876,11 @@
         "responses": {
           "200": {
             "description": "List of pairs",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -764,6 +1014,11 @@
         "responses": {
           "200": {
             "description": "Depth ladder",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -941,6 +1196,11 @@
         "responses": {
           "200": {
             "description": "TWAP result",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1032,6 +1292,11 @@
         "responses": {
           "200": {
             "description": "VWAP result",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1092,6 +1357,11 @@
         "responses": {
           "200": {
             "description": "Aggregated volume",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1150,6 +1420,11 @@
         "responses": {
           "200": {
             "description": "Per-venue spreads",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1192,6 +1467,11 @@
         "responses": {
           "200": {
             "description": "Price comparison",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1318,6 +1598,11 @@
         "responses": {
           "200": {
             "description": "Screened pairs",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1366,6 +1651,11 @@
         "responses": {
           "200": {
             "description": "Benchmark statistics",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1432,6 +1722,11 @@
         "responses": {
           "200": {
             "description": "Basket price",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1521,6 +1816,11 @@
         "responses": {
           "200": {
             "description": "Paginated catalog page",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1640,6 +1940,11 @@
         "responses": {
           "200": {
             "description": "Usage summary for the authenticated key",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1665,6 +1970,11 @@
         "responses": {
           "200": {
             "description": "Supported payment kinds and extensions",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1800,6 +2110,11 @@
         "responses": {
           "200": {
             "description": "GraphQL result",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1976,7 +2291,84 @@
         }
       }
     },
+    "headers": {
+      "CacheControl": {
+        "description": "Per-route cache policy (see \"Cache policy\" in the API description). Every route sends a deliberate `Cache-Control`: live prices `public, max-age=30`; aggregates `public, max-age=60`; `/pairs` and `/pools` `public, max-age=300`; closed candle windows `public, max-age=86400`; per-caller, operator and error responses `no-store`.",
+        "schema": {
+          "type": "string",
+          "example": "public, max-age=300"
+        }
+      }
+    },
     "schemas": {
+      "DependencyCheck": {
+        "type": "object",
+        "description": "Result of one dependency probe. `reason` is a fixed phrase, never the raw error: connection errors carry the host and port and this is a public endpoint.",
+        "required": [
+          "status",
+          "latencyMs",
+          "reason"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "up",
+              "down",
+              "skipped"
+            ]
+          },
+          "latencyMs": {
+            "type": "integer",
+            "description": "Round-trip time of the probe."
+          },
+          "reason": {
+            "type": "string",
+            "nullable": true,
+            "example": "unreachable or not migrated"
+          }
+        }
+      },
+      "ReadinessReport": {
+        "type": "object",
+        "description": "Readiness of one instance. Identical on 200 and 503; `ok` and the HTTP status together say whether traffic should be routed here.",
+        "required": [
+          "ok",
+          "booted",
+          "checks",
+          "checkedAt"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "description": "True only when boot finished and every checked dependency is up."
+          },
+          "booted": {
+            "type": "boolean",
+            "description": "False while the boot sequence is still running."
+          },
+          "checks": {
+            "type": "object",
+            "required": [
+              "postgres",
+              "redis"
+            ],
+            "properties": {
+              "postgres": {
+                "$ref": "#/components/schemas/DependencyCheck"
+              },
+              "redis": {
+                "$ref": "#/components/schemas/DependencyCheck"
+              }
+            }
+          },
+          "checkedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the underlying probes ran (answers may be briefly cached)."
+          }
+        }
+      },
       "Asset": {
         "type": "object",
         "properties": {
@@ -1986,6 +2378,448 @@
           "issuer": {
             "type": "string",
             "nullable": true
+          }
+        }
+      },
+      "SnapshotAsset": {
+        "type": "object",
+        "description": "A Stellar asset. The issuer is kept because a code such as USDC names a different asset per issuer; `issuer` is null only for the native asset.",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "issuer": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "SnapshotVenue": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "orderbook",
+              "amm",
+              "unknown"
+            ]
+          },
+          "enabled": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "reporting",
+              "stale",
+              "silent",
+              "disabled"
+            ]
+          },
+          "samples": {
+            "type": "integer"
+          },
+          "samples24h": {
+            "type": "integer"
+          },
+          "pairs24h": {
+            "type": "integer"
+          },
+          "lastUpdated": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "ageSeconds": {
+            "type": "integer",
+            "nullable": true
+          }
+        }
+      },
+      "SnapshotPool": {
+        "type": "object",
+        "properties": {
+          "poolId": {
+            "type": "string"
+          },
+          "pairKey": {
+            "type": "string",
+            "nullable": true
+          },
+          "assetA": {
+            "$ref": "#/components/schemas/SnapshotAsset"
+          },
+          "assetB": {
+            "$ref": "#/components/schemas/SnapshotAsset"
+          },
+          "reserveA": {
+            "type": "number",
+            "nullable": true
+          },
+          "reserveB": {
+            "type": "number",
+            "nullable": true
+          },
+          "spotPrice": {
+            "type": "number",
+            "nullable": true
+          },
+          "feeBp": {
+            "type": "integer",
+            "nullable": true
+          },
+          "lastUpdated": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "ageSeconds": {
+            "type": "integer",
+            "nullable": true
+          }
+        }
+      },
+      "SnapshotVolume": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "number",
+            "nullable": true
+          },
+          "unit": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/SnapshotAsset"
+              }
+            ],
+            "nullable": true
+          },
+          "reason": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "SnapshotTopPair": {
+        "type": "object",
+        "properties": {
+          "pairKey": {
+            "type": "string"
+          },
+          "configured": {
+            "type": "boolean",
+            "description": "Whether the pair is in this network's watched-pair config. When false the asset order (and therefore the price direction) is taken from the alphabetically-sorted pair key."
+          },
+          "assetA": {
+            "nullable": true,
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/SnapshotAsset"
+              }
+            ]
+          },
+          "assetB": {
+            "nullable": true,
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/SnapshotAsset"
+              }
+            ]
+          },
+          "price": {
+            "type": "number",
+            "nullable": true,
+            "description": "Stored as assetB-per-assetA in the config's order."
+          },
+          "baseVolume24h": {
+            "type": "number"
+          },
+          "counterVolume24h": {
+            "type": "number"
+          },
+          "samples24h": {
+            "type": "integer"
+          },
+          "venues": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "lastUpdated": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "ageSeconds": {
+            "type": "integer",
+            "nullable": true
+          }
+        }
+      },
+      "SnapshotPeg": {
+        "type": "object",
+        "properties": {
+          "asset": {
+            "$ref": "#/components/schemas/SnapshotAsset"
+          },
+          "target": {
+            "type": "string"
+          },
+          "pairKey": {
+            "type": "string"
+          },
+          "quote": {
+            "nullable": true,
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/SnapshotAsset"
+              }
+            ]
+          },
+          "price": {
+            "type": "number",
+            "nullable": true,
+            "description": "The pegged asset's price in its quote asset."
+          },
+          "deviationBp": {
+            "type": "number",
+            "nullable": true
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "on_peg",
+              "off_peg",
+              "no_reference",
+              "no_data"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "nullable": true
+          },
+          "samples24h": {
+            "type": "integer"
+          },
+          "lastUpdated": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          }
+        }
+      },
+      "SnapshotResponse": {
+        "type": "object",
+        "properties": {
+          "network": {
+            "type": "string",
+            "enum": [
+              "testnet",
+              "mainnet"
+            ]
+          },
+          "asOf": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The single instant (from one database statement) every window and age is measured from."
+          },
+          "generatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "window": {
+            "type": "string",
+            "enum": [
+              "24h"
+            ]
+          },
+          "cache": {
+            "type": "object",
+            "properties": {
+              "ttlSeconds": {
+                "type": "integer"
+              },
+              "maxAgeSeconds": {
+                "type": "integer"
+              },
+              "hit": {
+                "type": "boolean"
+              },
+              "storedAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "ageSeconds": {
+                "type": "integer",
+                "nullable": true
+              }
+            }
+          },
+          "venues": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SnapshotVenue"
+            }
+          },
+          "tvl": {
+            "type": "object",
+            "properties": {
+              "note": {
+                "type": "string"
+              },
+              "poolCount": {
+                "type": "integer"
+              },
+              "sampleCount": {
+                "type": "integer"
+              },
+              "lastUpdated": {
+                "type": "string",
+                "format": "date-time",
+                "nullable": true
+              },
+              "ageSeconds": {
+                "type": "integer",
+                "nullable": true
+              },
+              "stale": {
+                "type": "boolean"
+              },
+              "byAsset": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "asset": {
+                      "$ref": "#/components/schemas/SnapshotAsset"
+                    },
+                    "amount": {
+                      "type": "number"
+                    },
+                    "pools": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              },
+              "pools": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/SnapshotPool"
+                }
+              }
+            }
+          },
+          "volume24h": {
+            "type": "object",
+            "properties": {
+              "window": {
+                "type": "string",
+                "enum": [
+                  "24h"
+                ]
+              },
+              "sampleCount": {
+                "type": "integer"
+              },
+              "byVenue": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "venue": {
+                      "type": "string"
+                    },
+                    "baseVolume": {
+                      "type": "number"
+                    },
+                    "counterVolume": {
+                      "type": "number"
+                    },
+                    "samples": {
+                      "type": "integer"
+                    },
+                    "pairs": {
+                      "type": "integer"
+                    },
+                    "lastUpdated": {
+                      "type": "string",
+                      "format": "date-time",
+                      "nullable": true
+                    },
+                    "ageSeconds": {
+                      "type": "integer",
+                      "nullable": true
+                    }
+                  }
+                }
+              },
+              "total": {
+                "$ref": "#/components/schemas/SnapshotVolume"
+              }
+            }
+          },
+          "topPairs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SnapshotTopPair"
+            }
+          },
+          "pegs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SnapshotPeg"
+            }
+          },
+          "freshness": {
+            "type": "object",
+            "properties": {
+              "asOf": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "windowStart": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "windowEnd": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "lastUpdated": {
+                "type": "string",
+                "format": "date-time",
+                "nullable": true
+              },
+              "ageSeconds": {
+                "type": "integer",
+                "nullable": true
+              },
+              "staleAfterSeconds": {
+                "type": "integer"
+              },
+              "stale": {
+                "type": "boolean"
+              },
+              "venuesReporting": {
+                "type": "integer"
+              },
+              "venuesExpected": {
+                "type": "integer"
+              },
+              "venuesSilent": {
+                "type": "integer"
+              }
+            }
           }
         }
       },
@@ -2733,7 +3567,8 @@
                 "price",
                 "timestamp",
                 "deviationPct",
-                "status"
+                "status",
+                "ageSeconds"
               ],
               "additionalProperties": false,
               "properties": {
@@ -2755,11 +3590,17 @@
                 },
                 "status": {
                   "type": "string",
+                  "description": "unreachable means the adapter failed; empty means it is configured but returned no quote.",
                   "enum": [
                     "available",
                     "unreachable",
+                    "empty",
                     "not_configured"
                   ]
+                },
+                "ageSeconds": {
+                  "type": "integer",
+                  "nullable": true
                 }
               }
             }
