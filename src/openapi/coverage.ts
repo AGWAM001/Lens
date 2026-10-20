@@ -58,6 +58,37 @@ export const INTERNAL_ROUTE_PREFIXES: readonly string[] = [
   '/graphiql/',
 ] as const
 
+/**
+ * Individual operations that cannot be expressed in this spec, as
+ * `METHOD /path` pairs.
+ *
+ * Kept separate from {@link INTERNAL_ROUTES} because the path here *is* public
+ * and *is* documented — it is one method on it that OpenAPI cannot describe.
+ * Excluding the whole path instead would stop the coverage test noticing if
+ * `GET /graphql` were ever dropped from the spec.
+ */
+export const UNDOCUMENTABLE_OPERATIONS: readonly string[] = [
+  // Mercurius registers the HTTP QUERY method on /graphql, from the
+  // GraphQL-over-HTTP spec. `query` only became a valid OpenAPI operation key
+  // in 3.2 and this document declares 3.0.0, so there is nowhere to put it.
+  // `GET /graphql` and `POST /graphql` are documented and carry the same
+  // semantics; QUERY differs in being a safe, cacheable method with a body.
+  // Remove this entry if the spec is ever raised to 3.2.
+  'QUERY /graphql',
+] as const
+
+const UNDOCUMENTABLE_OPERATION_SET = new Set<string>(UNDOCUMENTABLE_OPERATIONS)
+
+/**
+ * Whether a single operation is one OpenAPI 3.0 cannot express.
+ *
+ * `method` is matched case-insensitively, since Fastify reports it uppercase
+ * and OpenAPI keys it lowercase.
+ */
+export function isUndocumentableOperation(method: string, openApiPath: string): boolean {
+  return UNDOCUMENTABLE_OPERATION_SET.has(`${method.toUpperCase()} ${openApiPath}`)
+}
+
 const INTERNAL_ROUTE_SET = new Set<string>(INTERNAL_ROUTES)
 
 /**

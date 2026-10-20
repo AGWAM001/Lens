@@ -22,6 +22,7 @@ import {
   lookupApiKey,
 } from '../api/auth'
 import { registerAdminRoutes, generateApiKey } from '../api/admin'
+import { register, api_key_auth_failures_total, admin_auth_failures_total } from '../metrics'
 
 const mockFindUnique = prisma.apiKey.findUnique as unknown as ReturnType<typeof vi.fn>
 const mockCreate = prisma.apiKey.create as unknown as ReturnType<typeof vi.fn>
@@ -29,6 +30,11 @@ const mockUpdate = prisma.apiKey.update as unknown as ReturnType<typeof vi.fn>
 
 function sha256(s: string): string {
   return createHash('sha256').update(s, 'utf8').digest('hex')
+}
+
+async function apiKeyAuthFailureCount(reason: string): Promise<number> {
+  const metric = await api_key_auth_failures_total.get()
+  return metric.values.find((value) => value.labels.reason === reason)?.value ?? 0
 }
 
 /** Builds an app with auth enabled + one protected and one public route. */
@@ -90,18 +96,47 @@ describe('lookupApiKey', () => {
     })
     expect(await lookupApiKey('lens_plain')).toBeNull()
   })
+
+  it('returns null for an expired key', async () => {
+    mockFindUnique.mockResolvedValue({
+      id: 'key-1',
+      label: 'acme',
+      ratePerMin: 60,
+      ratePerDay: 1000,
+      revokedAt: null,
+      expiresAt: new Date(Date.now() - 1000),
+    })
+    expect(await lookupApiKey('lens_plain')).toBeNull()
+  })
 })
 
 describe('API key auth hook', () => {
   it('returns 401 when no key is provided', async () => {
+    const before = await apiKeyAuthFailureCount('missing')
     const app = await buildAuthedApp()
     const res = await app.inject({ method: 'GET', url: '/price/test' })
     expect(res.statusCode).toBe(401)
     expect(res.json()).toMatchObject({ error: 'Unauthorized' })
+    expect(res.json().code).toBe('missing')
+    expect(await apiKeyAuthFailureCount('missing')).toBe(before + 1)
     expect(mockFindUnique).not.toHaveBeenCalled()
   })
 
+  it('counts malformed authorization separately from missing credentials', async () => {
+    const before = await apiKeyAuthFailureCount('malformed')
+    const app = await buildAuthedApp()
+    const res = await app.inject({
+      method: 'GET',
+      url: '/price/test',
+      headers: { authorization: 'Basic value' },
+    })
+    expect(res.statusCode).toBe(401)
+    expect(res.json()).toMatchObject({ code: 'malformed' })
+    expect(await apiKeyAuthFailureCount('malformed')).toBe(before + 1)
+  })
+
   it('returns 401 for an invalid key', async () => {
+    const before = await apiKeyAuthFailureCount('unknown')
     mockFindUnique.mockResolvedValue(null)
     const app = await buildAuthedApp()
     const res = await app.inject({
@@ -110,9 +145,13 @@ describe('API key auth hook', () => {
       headers: { authorization: 'Bearer wrong' },
     })
     expect(res.statusCode).toBe(401)
+    expect(res.json().code).toBe('unknown')
+    expect(res.json().message).toBe('Unknown API key.')
+    expect(await apiKeyAuthFailureCount('unknown')).toBe(before + 1)
   })
 
   it('returns 401 for a revoked key', async () => {
+    const before = await apiKeyAuthFailureCount('revoked')
     mockFindUnique.mockResolvedValue({
       id: 'key-1', label: 'acme', ratePerMin: 60, ratePerDay: 1000, revokedAt: new Date(),
     })
@@ -123,6 +162,31 @@ describe('API key auth hook', () => {
       headers: { authorization: 'Bearer revoked' },
     })
     expect(res.statusCode).toBe(401)
+    expect(res.json().code).toBe('revoked')
+    expect(res.json().message).toBe('Revoked API key. Request a replacement key.')
+    expect(await apiKeyAuthFailureCount('revoked')).toBe(before + 1)
+  })
+
+  it('returns a distinct code and message for an expired key', async () => {
+    const before = await apiKeyAuthFailureCount('expired')
+    mockFindUnique.mockResolvedValue({
+      id: 'key-1',
+      label: 'acme',
+      ratePerMin: 60,
+      ratePerDay: 1000,
+      revokedAt: null,
+      expiresAt: new Date(Date.now() - 1000),
+    })
+    const app = await buildAuthedApp()
+    const res = await app.inject({
+      method: 'GET',
+      url: '/price/test',
+      headers: { authorization: 'Bearer test-expired-api-key' },
+    })
+    expect(res.statusCode).toBe(401)
+    expect(res.json().code).toBe('expired')
+    expect(res.json().message).toBe('Expired API key. Request a replacement key.')
+    expect(await apiKeyAuthFailureCount('expired')).toBe(before + 1)
   })
 
   it('allows a valid key through and attaches metadata', async () => {
@@ -207,12 +271,14 @@ describe('admin endpoints', () => {
   })
 
   it('rejects minting without the admin token', async () => {
+    const before = (await admin_auth_failures_total.get()).values[0]?.value ?? 0
     const app = await buildAdminApp()
     const res = await app.inject({
       method: 'POST', url: '/admin/keys', payload: { label: 'x' },
     })
     expect(res.statusCode).toBe(401)
     expect(mockCreate).not.toHaveBeenCalled()
+    expect((await admin_auth_failures_total.get()).values[0]?.value).toBe(before + 1)
   })
 
   it('mints a key and returns the plaintext once (stored as hash only)', async () => {
@@ -279,5 +345,11 @@ describe('admin endpoints', () => {
       headers: { 'x-admin-token': 'admin-secret' },
     })
     expect(res.statusCode).toBe(404)
+  })
+
+  it('registers authentication counters in the Prometheus registry', async () => {
+    const output = await register.metrics()
+    expect(output).toContain('api_key_auth_failures_total')
+    expect(output).toContain('admin_auth_failures_total')
   })
 })

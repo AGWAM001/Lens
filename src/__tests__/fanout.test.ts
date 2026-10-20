@@ -50,6 +50,15 @@ vi.mock('prom-client', () => {
   }
   return {
     register: { metrics: vi.fn().mockResolvedValue('') },
+    // src/metrics.ts builds its own Registry; src/ws/fanout.ts registers the
+    // websocket metrics on it so /metrics actually exports them.
+    Registry: class {
+      setDefaultLabels() {}
+      registerMetric() {}
+      metrics() { return Promise.resolve('') }
+      getSingleMetric() { return undefined }
+      resetMetrics() { return Promise.resolve('') }
+    },
     Gauge: MockMetric,
     Counter: MockMetric,
     Histogram: MockMetric,

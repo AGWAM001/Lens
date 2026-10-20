@@ -46,6 +46,32 @@ export const price_requests_total = new Counter({
   registers: [register]
 })
 
+export const api_key_auth_failures_total = new Counter({
+  name: 'api_key_auth_failures_total',
+  help: 'Total number of API key authentication failures, by bounded reason',
+  labelNames: ['reason'],
+  registers: [register]
+})
+
+export const admin_auth_failures_total = new Counter({
+  name: 'admin_auth_failures_total',
+  help: 'Total number of admin authentication failures',
+  registers: [register]
+})
+
+export const rate_limit_rejections_total = new Counter({
+  name: 'rate_limit_rejections_total',
+  help: 'Total number of requests rejected by the per-key or fallback IP rate limiter',
+  labelNames: ['scope'],
+  registers: [register]
+})
+
+export const global_shed_requests_total = new Counter({
+  name: 'global_shed_requests_total',
+  help: 'Total number of requests shed by the per-instance global request ceiling',
+  registers: [register]
+})
+
 export const x402_payments_received_total = new Counter({
   name: 'x402_payments_received_total',
   help: 'Total number of valid x402 payments received',
