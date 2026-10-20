@@ -21,6 +21,9 @@ function makePairKey(a: string, b: string): string {
   return [a, b].sort().join('/')
 }
 
+export const HISTORY_DEFAULT_LIMIT = 100
+export const HISTORY_MAX_LIMIT = 1000
+
 /**
  * Resolve a requested pair against the ones this network watches.
  *
@@ -165,7 +168,7 @@ export async function registerRESTRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const { assetA, assetB } = req.params
       const window = req.query.window ?? '1h'
-      const limit = Math.min(parseInt(req.query.limit ?? '100', 10), 1000)
+      const limit = Math.min(parseInt(req.query.limit ?? String(HISTORY_DEFAULT_LIMIT), 10), HISTORY_MAX_LIMIT)
       const pairKey = makePairKey(assetA, assetB)
       const network = req.network ?? activeNetwork
 
@@ -255,8 +258,7 @@ export async function registerRESTRoutes(app: FastifyInstance) {
       if (!pair) return reply.status(404).send({ error: `Pair ${assetA}/${assetB} not watched on ${network}` })
       if (isNaN(amount) || amount <= 0) return reply.status(400).send({ error: 'amount must be a positive number' })
 
-      // NOTE: getDepth reads order-book data with no network column yet — see L048.
-      const depthResult = await getDepth(pair.pairKey, amount)
+      const depthResult = await getDepth(pair.pairKey, amount, network)
       
       return {
         assetA: pair.assetA.code,

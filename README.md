@@ -32,6 +32,9 @@ Aggregates price data from Stellar's Classic Order Book (SDEX) and AMM Liquidity
 | GET | `/benchmark/:asset?target=USD` | Peg-deviation statistics versus a target |
 | GET | `/basket?asset=XLM&asset=USDC&weight=0.6&weight=0.4` | Weighted price of a basket of assets |
 | GET | `/status` | Indexer health |
+| GET | `/snapshot?network=testnet\|mainnet` | Whole-network snapshot: venues, TVL, 24h volume, top pairs, peg readings and data freshness in one cached, timestamped object |
+| GET | `/live` | Liveness probe — no dependency checks (see [`docs/health.md`](docs/health.md)) |
+| GET | `/ready` | Readiness probe — boot complete + dependencies reachable |
 | GET | `/discovery/resources?type=&payTo=&network=&extensions=&limit=&offset=` | Bazaar catalog of x402-discoverable resources (spec: [`bazaar`](https://github.com/x402-foundation/x402/blob/main/specs/extensions/bazaar.md)) |
 | GET | `/usage/me` | Usage and quota for the calling API key (requires `Authorization: Bearer <key>`) |
 | GET | `/supported` | Payment kinds and extensions this facilitator supports |
@@ -63,9 +66,30 @@ disagree, the spec is the thing to fix.
 Still reading across both networks, and ignoring the parameter:
 `/candles/:assetA/:assetB`, `/price/twap/*`, and `/price/vwap/*`.
 
+### API key authentication errors
+
+API-key authentication failures return HTTP 401 with a machine-readable `code`:
+
+| Code | Meaning |
+|---|---|
+| `missing` | No Authorization header was supplied. |
+| `malformed` | The Authorization header is not a valid Bearer header. |
+| `unknown` | The key was not recognized; never-issued and unknown keys have the same response. |
+| `revoked` | The recognized key has been revoked. |
+| `expired` | The recognized key has passed its expiry time. |
+
+Unknown keys always receive the same response, regardless of whether the key
+ever existed. Admin-token failures use `admin_unauthorized`.
+
+Admin key creation accepts an optional future ISO date-time in `expiresAt`.
+Omitting it creates a key without an expiry.
+
 ```bash
 curl "https://api.example.com/price/XLM/USDC?network=mainnet"
 ```
+
+### Data Quality Guarantees
+For formal guarantees on pricing freshness (including the 300s staleness threshold), completeness (venue diversity and outlier filtering), precision (PostgreSQL Decimal(36,18) and negotiated decimal strings), venue inclusion across SDEX and AMMs, and deterministic violation semantics, see [`docs/data-quality.md`](docs/data-quality.md).
 
 ### GraphQL
 Available at `/graphql` with GraphiQL IDE at `/graphiql`. Real-time price
@@ -108,13 +132,17 @@ The GraphQL schema is exported as a canonical Schema Definition Language (SDL) a
 
 Prometheus metrics are exposed on `GET /metrics` (public, no API key required).
 
-Alongside the ingestion and database metrics, Lens exports the three HTTP
-signals needed to answer "is the API healthy":
+Alongside the ingestion and database metrics, Lens exports HTTP request,
+latency, authentication and rate-limit signals:
 
 | Metric | Type | Labels |
 |---|---|---|
 | `http_requests_total` | Counter | `method`, `route`, `status_class` |
 | `http_request_duration_seconds` | Histogram | `method`, `route` |
+| `api_key_auth_failures_total` | Counter | `reason` |
+| `admin_auth_failures_total` | Counter | — |
+| `rate_limit_rejections_total` | Counter | `scope` |
+| `global_shed_requests_total` | Counter | — |
 
 `route` is the matched route **template** (`/price/:assetA/:assetB`), never the
 resolved URL, so the number of time series stays bounded no matter how many
@@ -136,6 +164,11 @@ histogram_quantile(0.95,
 
 See [`docs/http-metrics.md`](docs/http-metrics.md) for the full label reference,
 the bucket rationale and suggested alerting rules.
+
+The websocket stream carries its own signals — `ws_clients_total`,
+`ws_messages_sent_total`, `ws_messages_dropped_total`, `ws_clients_dropped_total`
+and `ws_buffered_bytes` — which exist to make slow subscribers visible instead
+of silent. See [`docs/websocket-backpressure.md`](docs/websocket-backpressure.md).
 
 The ingestion metrics are labelled by `network` as well, so a dual-network
 deployment reports each network separately:
@@ -226,6 +259,15 @@ and `stellar:pubnet`.
 spending warning, and worked example before running.
 
 Full documentation: [examples/mcp-server/README.md](examples/mcp-server/README.md)
+
+### WebSocket backpressure
+
+`/ws` counts a message as sent only once the socket reports the write completed,
+and bounds what a client that stops reading can cost: past 256 KiB of queued
+bytes updates are coalesced to the newest one, past 1 MiB — or congested for 30s
+— the client is closed with `1013` and counted. A truncated feed is visible in
+`ws_messages_dropped_total` rather than silent, and one slow client cannot affect
+any other. See [`docs/websocket-backpressure.md`](docs/websocket-backpressure.md).
 
 ## Usage Examples
 
@@ -349,6 +391,8 @@ Or interactively at [http://localhost:3002/graphiql](http://localhost:3002/graph
 ## Documentation
 Detailed system design and data flow diagrams can be found in the [Architecture Overview](docs/architecture.md).
 The API specification is available in [OpenAPI 3.0 format](openapi.yaml) and is auto-published to GitHub Pages at https://miracle656.github.io/lens/openapi.json.
+
+Operational docs: [HTTP metrics](docs/http-metrics.md), [ingest metrics](docs/ingest-metrics.md), [websocket backpressure](docs/websocket-backpressure.md), [health probes](docs/health.md), [GraphQL](docs/graphql.md).
 
 ## Examples
 
@@ -515,6 +559,7 @@ curl -s http://localhost:3002/price/XLM/USDC | jq '{price, ammPrice, lastUpdated
 | `NODE_ENV` | Environment mode (`development`, `test`, `production`) | `development` | No |
 | `PORT` | API server port | `3002` | No |
 | `HOST` | API server host | `0.0.0.0` | No |
+| `GLOBAL_RATE_LIMIT_MAX` | Maximum accepted non-health requests per rolling minute per instance | `1000` | No |
 | `DATABASE_URL` | PostgreSQL connection string | - | **Yes** |
 | `REDIS_URL` | Redis connection string | - | **Yes** |
 | `PRICE_CACHE_TTL` | Cache duration for price data (seconds) | `10` | No |
@@ -552,8 +597,11 @@ SMOKE_MAX_AGE_SECONDS=120 SMOKE_TIMEOUT_MS=8000 npm run smoke -- http://localhos
 
 Validate the smoke checker itself with `npm run test:smoke`.
 
-The check requires public `/status` and `/price/XLM/USDC` and checks `/ready` when available. It uses a
-`graphql-transport-ws` live price subscription at `/graphql`. An HTTP 404 on `/ready` is skipped until issue #334 provides the endpoint; any other readiness failure is fatal. It checks
+The check requires public `/status`, `/live` and `/ready`, plus `/price/XLM/USDC`. It uses a
+`graphql-transport-ws` live price subscription at `/graphql`. Both probes must be
+present and healthy — a missing `/ready` fails the run rather than being skipped,
+since a smoke check that silently tolerates an absent probe is how a deployment
+ends up unmonitored while still green. It checks
 indexer and trade freshness, validates price shape, and waits for a real
 subscription event. It fails non-zero, naming the failing check, on timeout,
 stale data, a missing message, or HTTP errors. No synthetic price events are
