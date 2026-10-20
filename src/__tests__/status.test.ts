@@ -87,14 +87,14 @@ describe('GET /status', () => {
     expect(testnet.json().network).toBe('testnet')
     expect(testnet.json().lastIndexedLedger).toBe(111111)
     expect(testnet.json().watchedPairs).toEqual(['XLM:native/USDC:GTEST'])
-    expect(mockQuery.mock.calls[0][1]).toEqual(['testnet'])
+    expect(mockQuery.mockCalls[0][1]).toEqual(['testnet'])
 
     const mainnet = await app.inject({ method: 'GET', url: '/status?network=mainnet' })
     expect(mainnet.statusCode).toBe(200)
     expect(mainnet.json().network).toBe('mainnet')
     expect(mainnet.json().lastIndexedLedger).toBe(222222)
     expect(mainnet.json().watchedPairs).toEqual(['XLM:native/USDC:GMAIN'])
-    expect(mockQuery.mock.calls[1][1]).toEqual(['mainnet'])
+    expect(mockQuery.mockCalls[1][1]).toEqual(['mainnet'])
   })
 
   it("does not let one network's indexer rows bleed into the other", async () => {

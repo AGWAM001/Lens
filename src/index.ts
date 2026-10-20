@@ -24,7 +24,7 @@ import {
   PRICE_POINTS_RETENTION_DAYS,
 } from './jobs/pricePointsPartitionJob'
 import { loadPersistedPairs, getActivePairs } from './pairsRegistry'
-import { registry, ingesterRestarts } from './metrics'
+import { ingesterRestarts } from './metrics'
 import { markBootComplete } from './health'
 
 const log = createLogger('startup')
@@ -217,10 +217,6 @@ async function main() {
     return state
   }
 
-  // Exposed so /status (src/api/rest.ts) can surface the last crash per
-  // (ingester, network) without reaching into the private state map.
-  ;(globalThis as { __lensIngesterState?: Map<IngesterKey, IngesterState> }).__lensIngesterState = ingesterState
-
   const restartIngester = (name: string, network: NetworkName, fn: () => Promise<void>) => {
     const state = getIngesterState(name, network)
     let healthyTimer: NodeJS.Timeout | undefined
@@ -244,9 +240,9 @@ async function main() {
           INGESTER_RESTART_BASE_MS * 2 ** (state.failures - 1),
           INGESTER_RESTART_MAX_MS,
         )
-        console.error(
-          `[lens] ${name}/${network} ingester crashed (failure #${state.failures}), restarting in ${Math.round(delay / 1000)}s:`,
-          (err as Error).message,
+        log.error(
+          { err, ingester: name, network, failures: state.failures, delayMs: delay },
+          'ingester crashed, restarting after backoff',
         )
         setTimeout(run, delay)
       })
