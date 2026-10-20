@@ -19,6 +19,7 @@ Lens exposes a high-performance GraphQL API alongside its REST interface, powere
    - [Runnable Client Example (Raw WebSocket & Handshake)](#runnable-client-example-raw-websocket--handshake)
    - [Runnable Client Example (`graphql-ws` Library)](#runnable-client-example-graphql-ws-library)
 5. [Capabilities & Gaps Against REST](#capabilities--gaps-against-rest)
+6. [Query depth limit](#query-depth-limit)
 
 ---
 
@@ -33,9 +34,32 @@ Lens exposes a high-performance GraphQL API alongside its REST interface, powere
 > [!IMPORTANT]
 > **WebSocket Subprotocol Requirement**: The subscription server requires the modern **`graphql-transport-ws`** subprotocol (the standard implemented by [`graphql-ws`](https://github.com/enisdenjo/graphql-ws)). Legacy Apollo `subscriptions-transport-ws` is **not** supported and will be rejected during connection initialization.
 
+## Query depth limit
+
+Lens validates every HTTP GraphQL operation before execution. The default
+maximum is **3**, configurable with `GRAPHQL_MAX_QUERY_DEPTH` as a positive
+integer at server startup. An invalid value prevents startup rather than
+disabling the protection.
+
+Depth is the greatest number of field selections on a path from an operation
+root to a leaf; aliases and fragment syntax do not add depth, but fields reached
+through inline fragments and named fragment spreads do. For example,
+`oracle { oracles { name } }` has depth 3. An operation over the configured
+ceiling is rejected before any resolver runs with a normal GraphQL error such
+as `Query depth 4 exceeds the maximum allowed depth of 3.`
+
+Pure `__schema` and `__type` operations are exempt to preserve GraphiQL's
+standard introspection query. This exemption is deliberately root-scoped: a
+mixed operation still has every application-field path measured, so adding an
+introspection field cannot bypass the limit. Revisit the default when adding a
+legitimate application relationship deeper than three fields.
+
 ---
 
 ## Schema & Types
+
+The complete, canonical Schema Definition Language (SDL) artifact is committed at [`schema.graphql`](../schema.graphql).
+It can be regenerated from code definitions using `npm run graphql:schema:gen`, and is continuously validated against drift in CI.
 
 ### Root Operation Types
 

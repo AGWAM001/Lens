@@ -1,18 +1,30 @@
 import type { FastifyInstance } from 'fastify'
 import { computeTWAP, computeVWAP } from '../pricing/twap'
 import { z } from 'zod'
+import { formatValidationError } from '../validation'
 import '../middleware/network'
 import { activeNetwork, type NetworkName } from '../config'
 
+export const TWAP_WINDOW_MIN_MINUTES = 1
+export const TWAP_WINDOW_MAX_MINUTES = 1440
+export const TWAP_WINDOW_DEFAULT_MINUTES = 60
+export const TWAP_SAMPLE_INTERVAL_MIN_SECONDS = 1
+export const TWAP_SAMPLE_INTERVAL_MAX_SECONDS = 3600
+export const TWAP_SAMPLE_INTERVAL_DEFAULT_SECONDS = 60
+
+export const VWAP_WINDOW_MIN_MINUTES = 1
+export const VWAP_WINDOW_MAX_MINUTES = 1440
+export const VWAP_WINDOW_DEFAULT_MINUTES = 60
+
 const TwapQuerySchema = z.object({
-  window: z.coerce.number().int().min(1).max(1440).default(60),
-  sampleInterval: z.coerce.number().int().min(1).max(3600).default(60),
+  window: z.coerce.number().int().min(TWAP_WINDOW_MIN_MINUTES).max(TWAP_WINDOW_MAX_MINUTES).default(TWAP_WINDOW_DEFAULT_MINUTES),
+  sampleInterval: z.coerce.number().int().min(TWAP_SAMPLE_INTERVAL_MIN_SECONDS).max(TWAP_SAMPLE_INTERVAL_MAX_SECONDS).default(TWAP_SAMPLE_INTERVAL_DEFAULT_SECONDS),
   method: z.enum(['iqr', 'modified_zscore']).default('iqr'),
   network: z.enum(['testnet', 'mainnet']).optional(),
 })
 
 const VwapQuerySchema = z.object({
-  window: z.coerce.number().int().min(1).max(1440).default(60),
+  window: z.coerce.number().int().min(VWAP_WINDOW_MIN_MINUTES).max(VWAP_WINDOW_MAX_MINUTES).default(VWAP_WINDOW_DEFAULT_MINUTES),
   source: z.enum(['SDEX', 'AMM']).optional(),
   method: z.enum(['iqr', 'modified_zscore']).default('iqr'),
 })
@@ -36,10 +48,11 @@ export async function registerPriceRoutes(app: FastifyInstance) {
   }>(
     '/price/twap/:assetA/:assetB',
     async (req, reply) => {
+      const log = req.log.child({ component: 'route:price' })
       const { assetA, assetB } = req.params
       const parsed = TwapQuerySchema.safeParse(req.query)
       if (!parsed.success) {
-        return reply.status(400).send({ error: parsed.error.issues[0].message || 'Invalid parameters' })
+        return reply.status(400).send(formatValidationError(parsed.error))
       }
       const { window: windowMinutes, sampleInterval, method } = parsed.data
       const network: NetworkName = req.network ?? parsed.data.network ?? activeNetwork
@@ -70,7 +83,7 @@ export async function registerPriceRoutes(app: FastifyInstance) {
       } catch (err) {
         // A driver error message can carry the connection string, and so the
         // Postgres credentials. Log it; never put it in the response body.
-        console.error('[price] TWAP computation failed:', (err as Error).message)
+        log.error({ err }, 'TWAP computation failed')
         return reply.status(500).send({ error: 'TWAP computation failed' })
       }
     }
@@ -87,10 +100,11 @@ export async function registerPriceRoutes(app: FastifyInstance) {
   }>(
     '/price/vwap/:assetA/:assetB',
     async (req, reply) => {
+      const log = req.log.child({ component: 'route:price' })
       const { assetA, assetB } = req.params
       const parsed = VwapQuerySchema.safeParse(req.query)
       if (!parsed.success) {
-        return reply.status(400).send({ error: parsed.error.issues[0].message || 'Invalid parameters' })
+        return reply.status(400).send(formatValidationError(parsed.error))
       }
       const { window: windowMinutes, source, method } = parsed.data
 
@@ -118,7 +132,7 @@ export async function registerPriceRoutes(app: FastifyInstance) {
         }
       } catch (err) {
         // Same as TWAP above: the driver message can contain credentials.
-        console.error('[price] VWAP computation failed:', (err as Error).message)
+        log.error({ err }, 'VWAP computation failed')
         return reply.status(500).send({ error: 'VWAP computation failed' })
       }
     }

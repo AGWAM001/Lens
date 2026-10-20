@@ -24,9 +24,13 @@ export interface VenuePricePoint {
  * - derive: compute spot price from invariant or calculate trade execution price
  * - write: persist price points, update indexer cursors, and dispatch events/webhooks
  */
+export type VenueKind = 'orderbook' | 'amm' | 'oracle' | 'unknown'
+
 export interface VenueAdapter<TTarget = any, TRaw = any> {
   readonly name: string
   readonly source: string
+  /** Kind is descriptive metadata used by API projections, not the runner. */
+  readonly kind?: VenueKind
 
   /**
    * Whether this venue adapter is enabled on the given network.

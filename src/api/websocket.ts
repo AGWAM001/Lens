@@ -89,14 +89,25 @@ export async function registerWebSocket(app: FastifyInstance) {
     const clientId = uuid()
     const unsubscribe = fanOutManager.register('*', {
       id: clientId,
-      send: (data: string) => {
-        if (socket.readyState === 1) { // OPEN
-          socket.send(data)
+      send: (data: string, cb?: (err?: Error | null) => void) => {
+        if (socket.readyState !== 1) { // OPEN
+          // Tell the fan-out rather than silently swallowing it: a socket that
+          // cannot be written to is a client that must be unregistered, not one
+          // whose messages quietly stop being counted.
+          cb?.(new Error(`socket not open (readyState ${socket.readyState})`))
+          return
         }
+        // The callback fires once the frame has actually been written, which is
+        // what FanOutManager counts as "sent" — see src/ws/fanout.ts.
+        socket.send(data, (err?: Error) => cb?.(err))
       },
-      close: () => {
-        socket.close()
+      close: (code?: number, reason?: string) => {
+        socket.close(code, reason)
       },
+      // Bytes queued for this socket and not yet written to the peer. This is
+      // the only backpressure signal available, and every threshold in
+      // FanOutManager is measured against it.
+      bufferedAmount: () => socket.bufferedAmount,
     })
 
     socket.on('close', () => {

@@ -1,6 +1,9 @@
 import 'dotenv/config'
 import { Networks, StrKey } from '@stellar/stellar-sdk'
+import { createLogger } from './logger'
 import type { WatchedPair, AssetId } from './types'
+
+const log = createLogger('config')
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -66,6 +69,21 @@ function makePairKey(a: AssetId, b: AssetId): string {
   return [aStr, bStr].sort().join('/')
 }
 
+/**
+ * Parse a comma-separated hostname allowlist into a normalized, de-duplicated
+ * list. Empty entries and surrounding whitespace are dropped; hostnames are
+ * lowercased and any IPv6 brackets / trailing dot are stripped so the stored
+ * form matches what net/ssrf.ts compares against.
+ */
+function parseAllowedHosts(raw: string): string[] {
+  const seen = new Set<string>()
+  for (const part of raw.split(',')) {
+    const host = part.trim().toLowerCase().replace(/^\[(.*)\]$/, '$1').replace(/\.$/, '')
+    if (host.length > 0) seen.add(host)
+  }
+  return Array.from(seen)
+}
+
 const MAINNET_DEFAULT_PAIRS =
   'USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN/XLM'
 
@@ -103,8 +121,9 @@ function parseWatchedPairs(raw: string): WatchedPair[] {
 function isUsableContractId(id: string, envVar: string): boolean {
   if (id === '') return false
   if (StrKey.isValidContract(id)) return true
-  console.warn(
-    `[config] ${envVar}="${id}" is not a valid Soroban contract id (expected a 56-character C... address); the feature that needs it is disabled`
+  log.warn(
+    { envVar, value: id },
+    'invalid Soroban contract id; the feature that needs it is disabled'
   )
   return false
 }
@@ -250,9 +269,22 @@ const globalConfig = {
   },
   cache: {
     priceTtl: parseInt(process.env.PRICE_CACHE_TTL ?? '10', 10),
+    // How long a network's GET /snapshot response is served from Redis before
+    // it is recomputed from Postgres. Deliberately short: the endpoint is a
+    // cheap, pollable summary, so a slightly stale copy is preferable to a
+    // per-request scan, but callers must never be shown a minutes-old market.
+    snapshotTtl: parseInt(process.env.SNAPSHOT_CACHE_TTL ?? '15', 10),
   },
   http: {
     timeoutMs: parseInt(process.env.HTTP_TIMEOUT_MS ?? '10000', 10),
+  },
+  outbound: {
+    // One operator-maintained list for every outbound fetch the app makes to a
+    // caller-supplied target (Bazaar MCP discovery now, payment endpoints later).
+    // Empty = "any public host"; a non-empty list narrows reach to these
+    // hostnames. It never re-opens a private/link-local/metadata address — that
+    // block is unconditional (see net/ssrf.ts).
+    allowedHosts: parseAllowedHosts(process.env.OUTBOUND_ALLOWED_HOSTS ?? ''),
   },
 } as const
 
@@ -334,4 +366,5 @@ export const config = {
   indexer: globalConfig.indexer,
   cache:   globalConfig.cache,
   http:    globalConfig.http,
+  outbound: globalConfig.outbound,
 }
