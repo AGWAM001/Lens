@@ -6,6 +6,7 @@ import { X402_NETWORK_LABEL, paymentAddressFor, getX402ResourceServer } from '..
 import { resolveNetworkName } from '../middleware/network'
 import { fanOutManager } from '../ws/fanout'
 import { v4 as uuid } from 'uuid'
+import { createInternalErrorBody, getCorrelationId } from '../errors'
 
 const FACILITATOR_URL = process.env.X402_FACILITATOR_URL ?? 'https://x402.org/facilitator'
 
@@ -72,7 +73,15 @@ export async function registerWebSocket(app: FastifyInstance) {
           }
         })
         .catch(err => {
-          socket.send(JSON.stringify({ type: 'error', message: err.message }))
+          const correlationId = getCorrelationId(req)
+          const log = req?.log ?? app?.log
+          if (log && typeof log.error === 'function') {
+            log.error({ err, correlationId }, 'WebSocket internal error')
+          }
+          socket.send(JSON.stringify({
+            type: 'error',
+            ...createInternalErrorBody(correlationId),
+          }))
           socket.close()
         })
       return

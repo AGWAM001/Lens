@@ -1,6 +1,8 @@
 import Fastify, { type FastifyInstance, type RouteOptions } from 'fastify'
+import { randomUUID } from 'node:crypto'
 import cors from '@fastify/cors'
 import compress from '@fastify/compress'
+import { sendInternalError } from './errors'
 import rateLimit from '@fastify/rate-limit'
 import { registerRESTRoutes } from './api/rest'
 import { registerGraphQL } from './api/graphql'
@@ -71,6 +73,15 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   // printing) with Fastify so `req.log` is scrubbed the same way.
   const app = Fastify({
     logger: { ...loggerOptions(), stream: createDestination() },
+    genReqId: () => randomUUID(),
+  })
+
+  app.setErrorHandler((error, req, reply) => {
+    const statusCode = typeof error.statusCode === 'number' ? error.statusCode : 500
+    if (statusCode < 500) {
+      return reply.status(statusCode).send(error)
+    }
+    return sendInternalError(reply, req, error, 'Unhandled server error')
   })
 
   // Capture route registrations first, so it observes every route below
