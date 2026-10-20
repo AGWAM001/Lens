@@ -169,6 +169,18 @@ describe('GET /prices/history', () => {
     expect(new Date(params[3]).toISOString()).toBe(to)
   })
 
+  it('uses half-open interval [from, to) in SQL query', async () => {
+    const app = await buildApp()
+    mockQuery.mockResolvedValue({ rows: [] })
+
+    await app.inject({ method: 'GET', url: '/prices/history?pair=XLM/USDC&from=2025-01-01T00:00:00Z&to=2025-01-01T01:00:00Z' })
+
+    // The SQL query should use < (exclusive) for the upper bound, not <=
+    const sql = mockQuery.mock.calls[0][0]
+    expect(sql).toMatch(/AND ts < \$4/)
+    expect(sql).not.toMatch(/AND ts <= \$4/)
+  })
+
   it('MAX_HISTORY_POINTS guard math is interval-aware', () => {
     // Sanity: the cap is points, not seconds — coarser intervals allow longer spans.
     expect(MAX_HISTORY_POINTS).toBeGreaterThan(0)

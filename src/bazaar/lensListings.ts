@@ -101,11 +101,11 @@ export function lensListings(options: {
         'Candle bucket size. Defaults to "1h" when omitted.',
         { required: false, default: '1h' },
       ),
-      from: param.string('Window start, as an ISO 8601 timestamp or a Unix epoch in seconds. Defaults to the earliest candle available.', {
+      from: param.string('Window start, as an ISO 8601 timestamp or a Unix epoch in seconds. Inclusive. Defaults to the earliest candle available.', {
         required: false,
         example: '2026-08-01T00:00:00Z',
       }),
-      to: param.string('Window end, as an ISO 8601 timestamp or a Unix epoch in seconds. Defaults to now.', {
+      to: param.string('Window end, as an ISO 8601 timestamp or a Unix epoch in seconds. Exclusive — the window is the half-open interval [from, to), so a candle exactly at `to` is not returned. Defaults to now.', {
         required: false,
         example: '2026-08-31T00:00:00Z',
       }),
@@ -150,8 +150,8 @@ export function lensListings(options: {
 /** Declared once so the same objects can be handed to `assertDeclaration`. */
 const candlesQueryParams: Record<string, DeclaredParam> = {
   interval: param.enumOf(['1m', '5m', '15m', '1h', '4h', '1d'], 'Candle bucket size. Defaults to "1h" when omitted.', { required: false, default: '1h' }),
-  from: param.string('Window start, as an ISO 8601 timestamp or a Unix epoch in seconds. Defaults to the earliest candle available.', { required: false }),
-  to: param.string('Window end, as an ISO 8601 timestamp or a Unix epoch in seconds. Defaults to now.', { required: false }),
+  from: param.string('Window start, as an ISO 8601 timestamp or a Unix epoch in seconds. Inclusive. Defaults to the earliest candle available.', { required: false }),
+  to: param.string('Window end, as an ISO 8601 timestamp or a Unix epoch in seconds. Exclusive — the window is the half-open interval [from, to), so a candle exactly at `to` is not returned. Defaults to now.', { required: false }),
 }
 
 const twapQueryParams: Record<string, DeclaredParam> = {

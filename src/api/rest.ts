@@ -273,8 +273,11 @@ export async function registerRESTRoutes(app: FastifyInstance) {
       if (!pair) return reply.status(404).send({ error: `Pair ${assetA}/${assetB} not watched on ${network}` })
       if (isNaN(amount) || amount <= 0) return reply.status(400).send({ error: 'amount must be a positive number' })
 
+      // Depth reads are network-scoped on both legs (pool_snapshots and the
+      // price_points subquery that names this pair's pools), so a mainnet pair
+      // is never priced off a testnet pool's reserves.
       const depthResult = await getDepth(pair.pairKey, amount, network)
-      
+
       return {
         assetA: pair.assetA.code,
         assetB: pair.assetB.code,

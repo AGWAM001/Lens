@@ -467,12 +467,26 @@ paths:
         - name: from
           in: query
           required: false
+          description: >-
+            Start of the time window (inclusive). Together with `to` this defines
+            a half-open interval [from, to): samples whose timestamp is exactly
+            `from` are included, samples whose timestamp is exactly `to` are
+            excluded. This means two adjacent windows [T0, T1) and [T1, T2)
+            share no boundary — a sample landing exactly on T1 appears in
+            exactly one of the two windows.
           schema:
             type: string
             format: date-time
         - name: to
           in: query
           required: false
+          description: >-
+            End of the time window (exclusive). Together with `from` this
+            defines a half-open interval [from, to): samples whose timestamp is
+            exactly `to` are excluded, samples whose timestamp is exactly
+            `from` are included. This means two adjacent windows [T0, T1) and
+            [T1, T2) share no boundary — a sample landing exactly on T1 appears
+            in exactly one of the two windows.
           schema:
             type: string
             format: date-time
@@ -547,12 +561,26 @@ paths:
         - name: from
           in: query
           required: false
+          description: >-
+            Start of the time window (inclusive). Together with `to` this defines
+            a half-open interval [from, to): samples whose timestamp is exactly
+            `from` are included, samples whose timestamp is exactly `to` are
+            excluded. This means two adjacent windows [T0, T1) and [T1, T2)
+            share no boundary — a sample landing exactly on T1 appears in
+            exactly one of the two windows.
           schema:
             type: string
             format: date-time
         - name: to
           in: query
           required: false
+          description: >-
+            End of the time window (exclusive). Together with `from` this
+            defines a half-open interval [from, to): samples whose timestamp is
+            exactly `to` are excluded, samples whose timestamp is exactly
+            `from` are included. This means two adjacent windows [T0, T1) and
+            [T1, T2) share no boundary — a sample landing exactly on T1 appears
+            in exactly one of the two windows.
           schema:
             type: string
             format: date-time
