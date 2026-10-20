@@ -1931,12 +1931,97 @@ components:
           type: integer
           nullable: true
 
+    RouteHop:
+      type: object
+      required: [assetIn, assetOut, venue, inputAmount, outputAmount, price, spotPrice, slippagePct]
+      properties:
+        assetIn:
+          $ref: '#/components/schemas/Asset'
+        assetOut:
+          $ref: '#/components/schemas/Asset'
+        venue:
+          type: string
+          enum: [SDEX, AMM]
+        poolId:
+          type: string
+        inputAmount:
+          type: number
+        outputAmount:
+          type: number
+        price:
+          type: number
+        spotPrice:
+          type: number
+        slippagePct:
+          type: number
+
+    RouteOption:
+      type: object
+      required: [hops, hopCount, estimatedOutput, effectivePrice, slippagePct]
+      properties:
+        hops:
+          type: array
+          items:
+            $ref: '#/components/schemas/RouteHop'
+        hopCount:
+          type: integer
+        estimatedOutput:
+          type: number
+        effectivePrice:
+          type: number
+        slippagePct:
+          type: number
+
+    RouteComparison:
+      type: object
+      required: [direct, multiHop]
+      properties:
+        direct:
+          type: object
+          required: [route, sdexPrice, ammPrice, estimatedOutput, slippagePct]
+          properties:
+            route:
+              type: string
+              enum: [SDEX, AMM, SPLIT, UNKNOWN]
+            sdexPrice:
+              type: number
+            ammPrice:
+              type: number
+            estimatedOutput:
+              type: number
+            slippagePct:
+              type: number
+        multiHop:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/RouteOption'
+
+    RouteProvenance:
+      type: object
+      required: [sampledAt, network, venuesQueried, sampleCount, freshnessSeconds]
+      properties:
+        sampledAt:
+          type: string
+          format: date-time
+        network:
+          type: string
+        venuesQueried:
+          type: array
+          items:
+            type: string
+        sampleCount:
+          type: integer
+        freshnessSeconds:
+          type: number
+          nullable: true
+
     RouteInfo:
       type: object
+      required: [route, sdexPrice, ammPrice, estimatedOutput, slippagePct, recommendation]
       properties:
         route:
           type: string
-          enum: [SDEX, AMM, SPLIT, UNKNOWN]
+          enum: [SDEX, AMM, SPLIT, MULTI_HOP, UNKNOWN]
         sdexPrice:
           type: number
         ammPrice:
@@ -1947,6 +2032,17 @@ components:
           type: number
         recommendation:
           type: string
+        network:
+          type: string
+          enum: [testnet, mainnet]
+        hops:
+          type: array
+          items:
+            $ref: '#/components/schemas/RouteHop'
+        comparison:
+          $ref: '#/components/schemas/RouteComparison'
+        provenance:
+          $ref: '#/components/schemas/RouteProvenance'
 
     PriceBucket:
       type: object
