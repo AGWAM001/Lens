@@ -72,15 +72,19 @@ try {
     if (data.ok !== true) throw new Error('not healthy')
     fresh(data.ingestLagSeconds)
   })
-  await check('/ready (if available)', async () => {
+  await check('/ready + /live', async () => {
     const response = await fetch(new URL('ready', url), { signal: AbortSignal.timeout(timeout) })
     if (response.status === 404) {
-      console.log('SKIP /ready: route not available yet (#334)')
-      return
+      throw new Error('GET /ready returned 404 — the readiness probe is missing (#334)')
     }
     if (!response.ok) throw new Error('HTTP ' + response.status)
     const data = await response.json()
-    if (data.ok !== true) throw new Error('not ready')
+    if (data.ok !== true) throw new Error('not ready: ' + JSON.stringify(data.checks))
+    // Liveness must stay independent of the dependencies. If it ever starts
+    // failing alongside them, a database blip would take every instance's
+    // restart button at once.
+    const live = await fetch(new URL('live', url), { signal: AbortSignal.timeout(timeout) })
+    if (!live.ok) throw new Error('GET /live returned HTTP ' + live.status)
   })
   await check('/price/XLM/USDC + freshness', async () => {
     const data = await getJson('price/XLM/USDC')

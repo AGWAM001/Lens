@@ -4,7 +4,7 @@ import { activeNetwork, type NetworkName } from '../config'
 import { venueAdapters } from '../ingest/venues'
 import '../middleware/network'
 
-const LIVE_WINDOW_MS = 5 * 60 * 1000
+export const LIVE_WINDOW_MS = 5 * 60 * 1000
 
 export interface RegisteredVenue {
   id: string

@@ -24,6 +24,7 @@ import {
   PRICE_POINTS_RETENTION_DAYS,
 } from './jobs/pricePointsPartitionJob'
 import { loadPersistedPairs, getActivePairs } from './pairsRegistry'
+import { markBootComplete } from './health'
 
 const log = createLogger('startup')
 
@@ -206,6 +207,15 @@ async function main() {
     { count: getActivePairs().length, pairs: getActivePairs().map(p => p.pairKey) },
     'watching pairs'
   )
+
+  // ── Ready ──────────────────────────────────────────────────────────────────
+  // Last, and only once every ingester above is running. `app.listen()` happens
+  // part-way through this function, so between listening and here the process
+  // accepts requests it cannot yet answer correctly. `/ready` stays unhealthy
+  // until this line, which is what keeps a starting instance out of the load
+  // balancer without making `/live` fail (a starting process should be held out
+  // of rotation, not killed).
+  markBootComplete()
 }
 
 main().catch(err => {
