@@ -76,8 +76,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     genReqId: () => randomUUID(),
   })
 
-  app.setErrorHandler((error, req, reply) => {
-    const statusCode = typeof error.statusCode === 'number' ? error.statusCode : 500
+  app.setErrorHandler((error: any, req, reply) => {
+    const statusCode = typeof error?.statusCode === 'number' ? error.statusCode : 500
     if (statusCode < 500) {
       return reply.status(statusCode).send(error)
     }
