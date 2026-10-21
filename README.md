@@ -38,7 +38,7 @@ curl -X POST http://localhost:3002/graphql \
 #       "price": 0.1245,
 #       "assetA": "XLM",
 #       "assetB": "USDC",
-#       "pairKey": "XLM:native/USDC:GA5...",
+#       "pairKey": "XLM:native/USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
 #       "bestRoute": "amm",
 #       "lastUpdated": "2026-05-07T18:46:02.114Z"
 #     }
@@ -49,9 +49,13 @@ curl -X POST http://localhost:3002/graphql \
 ### MCP
 
 ```bash
-# List available Bazaar MCP tools (requires running server)
-npx @modelcontextprotocol/inspector --address localhost:3002 \
-  call_tool bazaar_search '{"url": "https://bazaar.example.com"}'
+# The MCP server speaks MCP over stdin and stdout — it does not listen
+# on a port. Port 3002 is the HTTP API, which knows nothing about MCP.
+npm run mcp:server
+
+# To drive it interactively, point the inspector at that command:
+npx @modelcontextprotocol/inspector npm run mcp:server
+# Tools and the keys it needs: examples/mcp-server/README.md
 # [
 #   {
 #     "name": "bazaar_search",
@@ -382,7 +386,7 @@ curl -H "X-PAYMENT: $(cat payment.b64)" \
 # {
 #   "assetA": "XLM",
 #   "assetB": "USDC",
-#   "pairKey": "XLM:native/USDC:GA5...",
+#   "pairKey": "XLM:native/USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
 #   "vwap1m": "0.12450000",
 #   "vwap1h": "0.12410000",
 #   "volume24h": "1284390.5500",
