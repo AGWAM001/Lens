@@ -1,7 +1,7 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { MCP_ERROR_CODES, McpErrorCode } from './codes.js';
+import { MCP_ERROR_CODES, McpErrorCode, classifyPaidCallError } from './codes.js';
 import { checkPaidCallTarget, parsePaidCallAllowlist, type PaidCallAllowRule } from './paidCallAllowlist.js';
 import { LENS_PRICE_TOOL_NAME, lensPriceToolDefinition, readLensPrice, type LensPriceQueries } from './priceTool.js';
 import {
@@ -292,30 +292,29 @@ export class BazaarMcpServer {
     });
   }
 
-  private handlePaidCallError(e: any) {
+  /**
+   * Turn a thrown paid-call error into an MCP error response.
+   *
+   * Delegates to `classifyPaidCallError`, which reads structured signals —
+   * Horizon `result_codes`, explicit error codes — before falling back to
+   * matching the message text. Text matching alone is how a provider rewording
+   * an error silently reclassifies it, and how a payment failure whose message
+   * happens to contain "fetch" was reported as the service being unreachable.
+   *
+   * The timeout case stays here and stays first: an AbortError carries no
+   * structured signal and no useful message, so only the caller knows what it
+   * means.
+   */
+  private handlePaidCallError(e: unknown) {
     if (isTimeoutError(e)) {
-      return this.createErrorResponse('ERR_SERVICE_UNREACHABLE', `Upstream did not respond within ${UPSTREAM_TIMEOUT_MS}ms`);
+      return this.createErrorResponse(
+        'ERR_SERVICE_UNREACHABLE',
+        `Upstream did not respond within ${UPSTREAM_TIMEOUT_MS}ms`,
+      );
     }
 
-    const msg = String(e.message || e).toLowerCase();
-
-    if (msg.includes('signatureexpirationledger') || msg.includes('signature expired')) {
-      return this.createErrorResponse('ERR_EXPIRED_AUTHORISATION', 'The transaction signature expired before it could be submitted.');
-    }
-    
-    if (msg.includes('trustline') || msg.includes('op_no_trust')) {
-      return this.createErrorResponse('ERR_MISSING_TRUSTLINE', 'Missing trustline for the required asset.');
-    }
-    
-    if (msg.includes('insufficient') || msg.includes('underfunded')) {
-      return this.createErrorResponse('ERR_INSUFFICIENT_BALANCE', 'Insufficient balance to complete the payment.');
-    }
-
-    if (msg.includes('fetch') || msg.includes('network')) {
-      return this.createErrorResponse('ERR_SERVICE_UNREACHABLE', 'Failed to reach the service: ' + e.message);
-    }
-    
-    return this.createErrorResponse('ERR_INTERNAL_FAILURE', e.message || 'An unknown error occurred during the paid call.');
+    const { code, reason } = classifyPaidCallError(e);
+    return this.createErrorResponse(code, reason);
   }
 
   private createErrorResponse(code: McpErrorCode, reason: string) {

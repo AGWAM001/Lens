@@ -49,7 +49,18 @@ export type McpErrorClassification =
  */
 export function classifyPaidCallError(
   err: unknown
-): { code: McpErrorCode; reason: string; classification: McpErrorClassification } {
+): {
+  code: McpErrorCode
+  reason: string
+  classification: McpErrorClassification
+  /**
+   * True when the code came from matching the message text rather than from a
+   * structured signal. Callers that log or alert on a classification want to
+   * know how much to trust it: a structured match is a fact, a text match is a
+   * guess that a provider can invalidate by rewording an error.
+   */
+  isFallback: boolean
+} {
   const message =
     err instanceof Error
       ? err.message
@@ -64,7 +75,8 @@ export function classifyPaidCallError(
     return {
       code: structured.code,
       reason: structured.signal,
-      classification: { method: 'structured', signal: structured.signal }
+      classification: { method: 'structured', signal: structured.signal },
+      isFallback: false
     };
   }
 
@@ -73,14 +85,16 @@ export function classifyPaidCallError(
     return {
       code: text.code,
       reason: message,
-      classification: { method: 'text-fallback', signal: text.signal }
+      classification: { method: 'text-fallback', signal: text.signal },
+      isFallback: true
     };
   }
 
   return {
     code: MCP_ERROR_CODES.ERR_INTERNAL_FAILURE,
     reason: message,
-    classification: { method: 'unclassified' }
+    classification: { method: 'unclassified' },
+    isFallback: true
   };
 }
 
