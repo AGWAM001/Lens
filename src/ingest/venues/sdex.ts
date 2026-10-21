@@ -1,5 +1,5 @@
 import { Asset } from '@stellar/stellar-sdk'
-import { trades_ingested_total, last_trade_timestamp } from '../../metrics'
+import { trades_ingested_total, last_trade_timestamp, markIngestSuccess } from '../../metrics'
 import { config, activeNetwork, type NetworkName } from '../../config'
 import { getHorizonServer } from '../../network/clients'
 import { upsertPricePoints, getIndexerState, setIndexerCursor } from '../../db'
@@ -135,6 +135,7 @@ export async function writeSdexPricePoints(
   const { previousPrice, currentPrice } = setLastPrice('SDEX', network, trackerKey, points[points.length - 1].price)
 
   await upsertPricePoints(points, network)
+  markIngestSuccess('SDEX', network)
 
   trades_ingested_total.inc({ pair: pair.pairKey, network }, points.length)
   last_trade_timestamp.set(
