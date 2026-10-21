@@ -24,6 +24,8 @@ import {
   PRICE_POINTS_RETENTION_DAYS,
 } from './jobs/pricePointsPartitionJob'
 import { loadPersistedPairs, getActivePairs } from './pairsRegistry'
+import { markHealthy, recordCrash } from './ingester/restart'
+import { markBootComplete } from './health'
 
 const log = createLogger('startup')
 
@@ -151,13 +153,16 @@ async function main() {
     try {
       const result = await runPricePointsMaintenance()
       if (result.created.length > 0) {
-        log.info(`pre-created ${result.created.length} price_points partition(s)`)
+        log.info({ count: result.created.length }, 'pre-created price_points partitions')
       }
       if (result.dropped.length > 0) {
-        log.info(`dropped ${result.dropped.length} price_points partition(s) older than ${PRICE_POINTS_RETENTION_DAYS}d`)
+        log.info(
+          { count: result.dropped.length, retentionDays: PRICE_POINTS_RETENTION_DAYS },
+          'dropped expired price_points partitions',
+        )
       }
     } catch (err) {
-      log.error({ err }, `price points partition maintenance failed: ${(err as Error).message}`)
+      log.error({ err }, 'price_points partition maintenance failed')
     }
   }
 
@@ -170,10 +175,9 @@ async function main() {
       partitionQueue = createPricePointsPartitionQueue()
       partitionWorker = startPricePointsPartitionWorker()
       await schedulePricePointsPartitionMaintenance(partitionQueue)
-      log.info('price points partition worker started')
+      log.info('price_points partition worker started')
     } catch (err) {
-      log.warn({ err }, `price points partition worker skipped (Redis unavailable): ${(err as Error).message}`)
-      log.warn('falling back to an in-process hourly partition maintenance')
+      log.warn({ err }, 'price_points partition worker unavailable; falling back to hourly in-process maintenance')
       await Promise.allSettled([partitionQueue?.close(), partitionWorker?.close()])
       setInterval(() => { void safeMaintainPartitions() }, 60 * 60 * 1000).unref()
     }
@@ -184,11 +188,46 @@ async function main() {
   // the (venue, network) pair: a crash in, say, the Soroswap ingester on
   // mainnet only restarts that one instance and cannot affect SDEX/AMM or the
   // ingesters running on testnet.
+  //
+  // A crash-looping ingester must not be invisible: restarts are counted, the
+  // delay grows exponentially up to a ceiling, and the last crash is recorded
+  // so /status can surface it. A sustained healthy run resets the backoff so a
+  // one-off blip does not permanently slow restarts.
+  const INGESTER_RESTART_BASE_MS = 10_000
+  const INGESTER_RESTART_MAX_MS = 5 * 60_000
+  const INGESTER_HEALTHY_RESET_MS = 5 * 60_000
+
   const restartIngester = (name: string, network: NetworkName, fn: () => Promise<void>) => {
-    fn().catch(err => {
-      log.error({ ingester: name, network, err }, 'ingester crashed; restarting in 10s')
-      setTimeout(() => restartIngester(name, network, fn), 10_000)
-    })
+    let healthyTimer: NodeJS.Timeout | undefined
+
+    const run = () => {
+      fn().then(() => {
+        // fn() resolving means the ingester ran to completion rather than
+        // looping forever. Treat that as healthy and reset the backoff.
+        if (healthyTimer) clearTimeout(healthyTimer)
+        markHealthy(name, network)
+      }).catch(err => {
+        if (healthyTimer) clearTimeout(healthyTimer)
+        const state = recordCrash(name, network, err)
+
+        const delay = Math.min(
+          INGESTER_RESTART_BASE_MS * 2 ** (state.failures - 1),
+          INGESTER_RESTART_MAX_MS,
+        )
+        log.error(
+          { err, ingester: name, network, failures: state.failures, delayMs: delay },
+          'ingester crashed, restarting after backoff',
+        )
+        setTimeout(run, delay)
+      })
+
+      // If the ingester stays up past the healthy threshold, reset the
+      // backoff even though fn() has not resolved (infinite loops never do).
+      healthyTimer = setTimeout(() => markHealthy(name, network), INGESTER_HEALTHY_RESET_MS)
+      healthyTimer.unref()
+    }
+
+    run()
   }
 
   const enabledNetworks = getEnabledNetworks()
@@ -204,6 +243,15 @@ async function main() {
     { count: getActivePairs().length, pairs: getActivePairs().map(p => p.pairKey) },
     'watching pairs'
   )
+
+  // ── Ready ──────────────────────────────────────────────────────────────────
+  // Last, and only once every ingester above is running. `app.listen()` happens
+  // part-way through this function, so between listening and here the process
+  // accepts requests it cannot yet answer correctly. `/ready` stays unhealthy
+  // until this line, which is what keeps a starting instance out of the load
+  // balancer without making `/live` fail (a starting process should be held out
+  // of rotation, not killed).
+  markBootComplete()
 }
 
 main().catch(err => {

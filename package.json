@@ -11,6 +11,7 @@
     "smoke": "node scripts/deployed-smoke.mjs",
     "test:smoke": "node --test scripts/test-deployed-smoke.mjs",
     "openapi:gen": "tsx scripts/generate-openapi.ts",
+    "graphql:schema:gen": "tsx scripts/generate-graphql-schema.ts",
     "changeset": "changeset",
     "version-packages": "changeset version",
     "release": "changeset tag",

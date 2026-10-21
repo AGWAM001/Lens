@@ -7,3 +7,7 @@
 *.yml text eol=lf
 # tests/historical.golden.test.ts byte-compares these against the CSV export.
 *.csv text eol=lf
+# src/__tests__/graphqlSchemaDrift.test.ts byte-compares schema.graphql against
+# `printSchema()` output, which is always LF. Without this a Windows checkout
+# gets CRLF and the drift guard fails on a file that has not drifted at all.
+*.graphql text eol=lf

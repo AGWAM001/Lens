@@ -23,6 +23,7 @@ import { config, activeNetwork, getNetworkConfig, type NetworkName } from '../..
 import { price_rejected_total } from '../../metrics'
 import { getRpcServer } from '../../network/clients'
 import { upsertPricePoints } from '../../db'
+import { markIngestSuccess } from '../../metrics'
 import { dispatchPriceUpdate } from '../../webhookDispatcher'
 import { publishPriceUpdate } from '../../events'
 import { createLogger } from '../../logger'
@@ -360,6 +361,7 @@ export async function ingestPool(
       ],
       network
     )
+    markIngestSuccess('Soroswap', network)
 
     const trackerKey = pair.pairKey
     const { previousPrice } = setLastPrice('Soroswap', network, trackerKey, spotPrice)

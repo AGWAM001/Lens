@@ -131,9 +131,23 @@ describe('structured logger output', () => {
 })
 
 describe('logging hygiene', () => {
+  /**
+   * `src/mcp/` is exempt, and must stay exempt.
+   *
+   * The MCP server speaks its protocol over **stdout** (`StdioServerTransport`),
+   * so stderr is the only stream it may write diagnostics to — and pino's
+   * default destination is stdout. Routing these through the logger would
+   * interleave log lines with protocol frames and break every client parsing
+   * them. `console.error` is correct there, not an oversight.
+   */
+  // Both separators: `sourceFiles()` builds paths with the platform's, so a
+  // forward-slash-only pattern silently matches nothing on Windows.
+  const CONSOLE_ALLOWED = /[\\/]src[\\/]mcp[\\/]/
+
   it('leaves no console.* calls in non-test source', () => {
     const offenders: string[] = []
     for (const file of sourceFiles()) {
+      if (CONSOLE_ALLOWED.test(file)) continue
       const code = readFileSync(file, 'utf8')
       code.split('\n').forEach((line, i) => {
         if (/\bconsole\.\w+\s*\(/.test(line)) {

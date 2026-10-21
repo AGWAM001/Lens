@@ -5,15 +5,26 @@ import { formatValidationError } from '../validation'
 import '../middleware/network'
 import { activeNetwork, type NetworkName } from '../config'
 
+export const TWAP_WINDOW_MIN_MINUTES = 1
+export const TWAP_WINDOW_MAX_MINUTES = 1440
+export const TWAP_WINDOW_DEFAULT_MINUTES = 60
+export const TWAP_SAMPLE_INTERVAL_MIN_SECONDS = 1
+export const TWAP_SAMPLE_INTERVAL_MAX_SECONDS = 3600
+export const TWAP_SAMPLE_INTERVAL_DEFAULT_SECONDS = 60
+
+export const VWAP_WINDOW_MIN_MINUTES = 1
+export const VWAP_WINDOW_MAX_MINUTES = 1440
+export const VWAP_WINDOW_DEFAULT_MINUTES = 60
+
 const TwapQuerySchema = z.object({
-  window: z.coerce.number().int().min(1).max(1440).default(60),
-  sampleInterval: z.coerce.number().int().min(1).max(3600).default(60),
+  window: z.coerce.number().int().min(TWAP_WINDOW_MIN_MINUTES).max(TWAP_WINDOW_MAX_MINUTES).default(TWAP_WINDOW_DEFAULT_MINUTES),
+  sampleInterval: z.coerce.number().int().min(TWAP_SAMPLE_INTERVAL_MIN_SECONDS).max(TWAP_SAMPLE_INTERVAL_MAX_SECONDS).default(TWAP_SAMPLE_INTERVAL_DEFAULT_SECONDS),
   method: z.enum(['iqr', 'modified_zscore']).default('iqr'),
   network: z.enum(['testnet', 'mainnet']).optional(),
 })
 
 const VwapQuerySchema = z.object({
-  window: z.coerce.number().int().min(1).max(1440).default(60),
+  window: z.coerce.number().int().min(VWAP_WINDOW_MIN_MINUTES).max(VWAP_WINDOW_MAX_MINUTES).default(VWAP_WINDOW_DEFAULT_MINUTES),
   source: z.enum(['SDEX', 'AMM']).optional(),
   method: z.enum(['iqr', 'modified_zscore']).default('iqr'),
 })
