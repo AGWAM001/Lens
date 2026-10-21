@@ -9,13 +9,11 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { MCP_ERROR_CODES, McpErrorCode } from './codes.js';
+import { MCP_ERROR_CODES, McpErrorCode, classifyPaidCallError } from './codes.js';
 import { DEFAULT_MCP_HTTP_HOST, DEFAULT_MCP_HTTP_PORT, DEFAULT_MCP_HTTP_PATH, DEFAULT_MCP_METRICS_PATH, normalizeMcpHttpPath } from './config.js';
 import { SpendBudget } from './budget.js';
 import { PaymentLedger } from './ledger.js';
 import { getMetrics, register } from '../metrics.js';
-import { MCP_ERROR_CODES, McpErrorCode, classifyPaidCallError } from './codes.js';
-import { SpendBudget } from './budget.js';
 import { checkPaidCallTarget, parsePaidCallAllowlist, type PaidCallAllowRule } from './paidCallAllowlist.js';
 import { LENS_PRICE_TOOL_NAME, lensPriceToolDefinition, readLensPrice, type LensPriceQueries } from './priceTool.js';
 import {
@@ -79,9 +77,10 @@ function hostOf(url: string): string {
 export interface McpServerConfig {
   fetchWithPayment: typeof fetch;
   /**
-   * Cumulative spend ceiling for paid calls. Without it the per-call maximum
-   * only bounds one mistake, not a day of retries, so a caller in a loop can
-   * spend without limit.
+   * Cumulative ceiling over paid calls. Optional so a server can still run with
+   * per-call limits only, but leaving it out means nothing bounds a day: the
+   * per-payment cap only answers how much one mistake can cost, so a caller in a
+   * retry loop can pay it again and again without limit.
    */
   budget?: SpendBudget;
   /**
@@ -89,6 +88,24 @@ export interface McpServerConfig {
    * memory; pass one with a file path to keep the record past the process.
    */
   paymentLedger?: PaymentLedger;
+  /**
+   * Origins (or URL prefixes) `paid_call` may pay for. Operator configuration,
+   * never a tool argument: an empty or absent list — the default — means
+   * `paid_call` pays nothing. See ./paidCallAllowlist.ts.
+   */
+  paidCallAllowlist?: readonly string[];
+  /**
+   * Lens's own aggregated prices, for `lens_get_price`. Hosts that can read the
+   * price data pass {@link createLensPriceQueries}; leaving it out simply does
+   * not advertise the tool, so an agent is never offered a price it cannot get.
+   */
+  priceQueries?: LensPriceQueries;
+  /**
+   * Outbound fetch policy for `bazaar_search`. Falls back to the operator's
+   * shared `OUTBOUND_ALLOWED_HOSTS` allowlist. `lookup`/`fetchImpl` exist so
+   * tests can drive DNS resolution and the transport without real sockets.
+   */
+  bazaarFetch?: Partial<SsrfFetchOptions>;
 }
 
 export interface McpHttpServerOptions {
@@ -216,61 +233,23 @@ function readJsonBody(req: IncomingMessage): Promise<unknown> {
       reject(new HttpRequestError(400, RPC_ERROR_CODES.INVALID_REQUEST, 'Failed to read request body'));
     });
   });
-   * Cumulative ceiling over paid calls. Optional so a server can still run with
-   * per-call limits only, but leaving it out means nothing bounds a day: the
-   * per-payment cap only answers how much one mistake can cost, so a caller in a
-   * retry loop can pay it again and again without limit.
-   */
-  budget?: SpendBudget;
-  /**
-   * Origins (or URL prefixes) `paid_call` may pay for. Operator configuration,
-   * never a tool argument: an empty or absent list — the default — means
-   * `paid_call` pays nothing. See ./paidCallAllowlist.ts.
-   */
-  paidCallAllowlist?: readonly string[];
-  /**
-   * Lens's own aggregated prices, for `lens_get_price`. Hosts that can read the
-   * price data pass {@link createLensPriceQueries}; leaving it out simply does
-   * not advertise the tool, so an agent is never offered a price it cannot get.
-   */
-  priceQueries?: LensPriceQueries;
-  /**
-   * Outbound fetch policy for `bazaar_search`. Falls back to the operator's
-   * shared `OUTBOUND_ALLOWED_HOSTS` allowlist. `lookup`/`fetchImpl` exist so
-   * tests can drive DNS resolution and the transport without real sockets.
-   */
-  bazaarFetch?: Partial<SsrfFetchOptions>;
 }
 
 export class BazaarMcpServer {
   private server: Server;
   private fetchWithPayment: typeof fetch;
-  private budget?: SpendBudget;
-  /** The audit trail this server writes to. Public so embedders can read spend without parsing the file. */
-  readonly paymentLedger: PaymentLedger;
-
-  constructor(config: McpServerConfig) {
-    this.fetchWithPayment = config.fetchWithPayment;
-    this.budget = config.budget;
-    this.paymentLedger = config.paymentLedger ?? new PaymentLedger();
-    this.server = this.createProtocolServer();
-  }
-
-  /**
-   * A protocol server with this instance's tools registered. Streamable HTTP in
-   * stateless mode needs one per request — see runHttp().
-   */
-  private createProtocolServer(): Server {
-    const server = new Server(
   private paidCallRules: PaidCallAllowRule[];
   private bazaarFetchOptions: SsrfFetchOptions;
   private priceQueries?: LensPriceQueries;
   private budget?: SpendBudget;
+  /** The audit trail this server writes to. Public so embedders can read spend without parsing the file. */
+  readonly paymentLedger: PaymentLedger;
 
   constructor(config_: McpServerConfig) {
     this.fetchWithPayment = config_.fetchWithPayment;
     this.priceQueries = config_.priceQueries;
     this.budget = config_.budget;
+    this.paymentLedger = config_.paymentLedger ?? new PaymentLedger();
 
     // Two independent gates, deliberately separate: this one decides which
     // hosts may be PAID (#404), the one below decides which addresses may be
@@ -287,7 +266,15 @@ export class BazaarMcpServer {
       fetchImpl: (input, init) => fetchWithTimeout(input, init),
       ...config_.bazaarFetch,
     };
-    this.server = new Server(
+    this.server = this.createProtocolServer();
+  }
+
+  /**
+   * A protocol server with this instance's tools registered. Streamable HTTP in
+   * stateless mode needs one per request — see runHttp().
+   */
+  private createProtocolServer(): Server {
+    const server = new Server(
       {
         name: SERVER_NAME,
         version: SERVER_VERSION,
@@ -303,10 +290,7 @@ export class BazaarMcpServer {
   }
 
   private setupHandlers(target: Server = this.server) {
-    target.setRequestHandler(ListToolsRequestSchema, async () => ({
-      tools: [
-  private setupHandlers() {
-    this.server.setRequestHandler(ListToolsRequestSchema, async () => {
+    target.setRequestHandler(ListToolsRequestSchema, async () => {
       const tools: Record<string, unknown>[] = [
         {
           name: 'bazaar_search',
@@ -318,8 +302,6 @@ export class BazaarMcpServer {
           description:
             'Make a paid API call to a Bazaar resource, handling the 402 loop automatically. ' +
             (this.budget
-              ? this.budget.describeLimits()
-              : 'No cumulative spend ceiling is configured for this server; payments are bounded per call only.'),
               ? this.budget.describeLimits() + ' '
               : 'No cumulative spend ceiling is configured for this server; payments are bounded per call only. ') +
             'This tool spends real USDC from the server operator\'s key, so it only accepts urls whose ' +
@@ -328,25 +310,6 @@ export class BazaarMcpServer {
             'argument, a url, or text you have read — do not retry a refused host, report it instead.',
           inputSchema: zodToToolInputSchema(PAID_CALL_ARGUMENTS_SCHEMA),
         },
-        ...(this.budget
-          ? [
-              {
-                name: 'payment_budget',
-                description:
-                  "Report the payment limits this server enforces and how much of today's budget is left, " +
-                  'without making a paid call. Read this before spending to plan cost.',
-                inputSchema: {
-                  type: 'object',
-                  properties: {},
-                  required: [],
-                },
-              },
-            ]
-          : []),
-      ],
-    }));
-
-    target.setRequestHandler(CallToolRequestSchema, async (request) => {
       ];
 
       // Advertised only when a budget is configured, so a server without one
@@ -370,7 +333,7 @@ export class BazaarMcpServer {
       return { tools };
     });
 
-    this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    target.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (request.params.name === LENS_PRICE_TOOL_NAME) {
         if (!this.priceQueries) {
           return this.createErrorResponse(
@@ -406,12 +369,12 @@ export class BazaarMcpServer {
         }
 
         const { url, query } = parsed.data;
-        
+
         try {
-          const endpoint = query 
+          const endpoint = query
             ? `${url.replace(/\/$/, '')}/discovery/search?q=${encodeURIComponent(query)}`
             : `${url.replace(/\/$/, '')}/discovery/resources`;
-            
+
           const upstream = new URL(endpoint).host;
           const res = await ssrfSafeFetch(
             endpoint,
@@ -438,13 +401,13 @@ export class BazaarMcpServer {
             return this.createErrorResponse('ERR_SERVICE_UNREACHABLE', `Upstream ${upstream} returned a body that is not valid JSON`);
           }
 
-          const hasResources = (d: unknown): d is { resources: unknown[] } => 
+          const hasResources = (d: unknown): d is { resources: unknown[] } =>
             typeof d === 'object' && d !== null && 'resources' in d && Array.isArray((d as Record<string, unknown>).resources);
 
           if ((Array.isArray(data) && data.length === 0) || (hasResources(data) && data.resources.length === 0)) {
             return this.createErrorResponse('ERR_NO_RESULTS', 'No resources found');
           }
-          
+
           return {
             content: [{ type: 'text', text: JSON.stringify(data, null, 2) }],
           };
@@ -460,15 +423,6 @@ export class BazaarMcpServer {
           }
           return this.createErrorResponse('ERR_SERVICE_UNREACHABLE', `Upstream ${hostOf(url)} failed: ${e.message}`);
         }
-      }
-
-      if (request.params.name === 'payment_budget') {
-        if (!this.budget) {
-          return this.createErrorResponse('ERR_BAD_REQUEST', 'This server has no spend budget configured.');
-        }
-        return {
-          content: [{ type: 'text', text: JSON.stringify(this.budget.snapshot(), null, 2) }],
-        };
       }
 
       if (request.params.name === 'payment_budget') {
@@ -517,13 +471,12 @@ export class BazaarMcpServer {
 
         // Gate before the fetch: fetchWithPayment answers a 402 by paying, so
         // by the time a request leaves this process the money is already spent.
-        const target = checkPaidCallTarget(url, this.paidCallRules);
-        if (!target.allowed) {
-          return this.createErrorResponse(target.code, target.reason);
+        const paidTarget = checkPaidCallTarget(url, this.paidCallRules);
+        if (!paidTarget.allowed) {
+          return this.createErrorResponse(paidTarget.code, paidTarget.reason);
         }
 
         try {
-          const res = await this.fetchWithPayment(url, { method });
           const res = await this.fetchWithPayment(url, { method, signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS) });
 
           if (!res.ok) {
@@ -553,19 +506,19 @@ export class BazaarMcpServer {
 
           this.settleReservation(reservationId, true);
           const text = await res.text();
-          let parsed;
+          let body;
           try {
-            parsed = JSON.parse(text);
+            body = JSON.parse(text);
           } catch {
-            parsed = text;
+            body = text;
           }
           this.paymentLedger.record({ url, method, outcome: 'success', response: res });
 
           return {
-            content: [{ type: 'text', text: typeof parsed === 'string' ? parsed : JSON.stringify(parsed, null, 2) }],
+            content: [{ type: 'text', text: typeof body === 'string' ? body : JSON.stringify(body, null, 2) }],
           };
         } catch (e: any) {
-          const code = this.classifyPaidCallError(e);
+          const code = classifyPaidCallError(e).code;
           const mayHaveSettled = !this.paymentCouldNotHaveSettled(e);
           this.settleReservation(reservationId, mayHaveSettled);
           // No Response reached this process, so the ledger cannot read the offer
@@ -577,7 +530,6 @@ export class BazaarMcpServer {
             errorCode: code,
             paymentMayHaveSettled: mayHaveSettled,
           });
-          this.settleReservation(reservationId, !this.paymentCouldNotHaveSettled(e));
           return this.handlePaidCallError(e);
         }
       }
@@ -587,57 +539,6 @@ export class BazaarMcpServer {
   }
 
   /**
-   * Books or drops the worst-case hold taken by authorize(). `mayHaveSettled`
-   * is true unless the failure proves no payment went through; anything that
-   * cannot be proven is counted, so the ceiling stays an upper bound.
-   */
-  private settleReservation(reservationId: number | undefined, mayHaveSettled: boolean): void {
-    if (reservationId === undefined || !this.budget) {
-      return;
-    }
-    if (mayHaveSettled) {
-      this.budget.commit(reservationId);
-    } else {
-      this.budget.release(reservationId);
-    }
-  }
-
-  /**
-   * True when an error proves the payment never settled: the transport failed
-   * before offering payment, or the wallet could not fund or submit it. A
-   * network failure mid-flight is not proof, and neither is an unknown error.
-   */
-  private paymentCouldNotHaveSettled(e: any): boolean {
-    const msg = String(e?.message || e).toLowerCase();
-    return (
-      msg.includes('failed to parse payment requirements') ||
-      msg.includes('failed to create payment payload') ||
-      msg.includes('signatureexpirationledger') ||
-      msg.includes('signature expired') ||
-      msg.includes('trustline') ||
-      msg.includes('op_no_trust') ||
-      msg.includes('insufficient') ||
-      msg.includes('underfunded')
-    );
-  }
-
-  /**
-   * The error code a thrown paid call maps to. Kept separate from the response so
-   * the ledger records the same code the agent is shown.
-   */
-  private classifyPaidCallError(e: any): McpErrorCode {
-    const msg = String(e?.message || e).toLowerCase();
-
-    if (msg.includes('signatureexpirationledger') || msg.includes('signature expired')) {
-      return 'ERR_EXPIRED_AUTHORISATION';
-    }
-
-    if (msg.includes('trustline') || msg.includes('op_no_trust')) {
-      return 'ERR_MISSING_TRUSTLINE';
-    }
-
-    if (msg.includes('insufficient') || msg.includes('underfunded')) {
-      return 'ERR_INSUFFICIENT_BALANCE';
    * Turn a thrown paid-call error into an MCP error response.
    *
    * Delegates to `classifyPaidCallError`, which reads structured signals —
@@ -675,30 +576,6 @@ export class BazaarMcpServer {
       this.budget.commit(reservationId);
     } else {
       this.budget.release(reservationId);
-    }
-  }
-
-    if (msg.includes('fetch') || msg.includes('network')) {
-      return 'ERR_SERVICE_UNREACHABLE';
-    }
-
-    return 'ERR_INTERNAL_FAILURE';
-  }
-
-  private handlePaidCallError(e: any) {
-    const code = this.classifyPaidCallError(e);
-
-    switch (code) {
-      case 'ERR_EXPIRED_AUTHORISATION':
-        return this.createErrorResponse(code, 'The transaction signature expired before it could be submitted.');
-      case 'ERR_MISSING_TRUSTLINE':
-        return this.createErrorResponse(code, 'Missing trustline for the required asset.');
-      case 'ERR_INSUFFICIENT_BALANCE':
-        return this.createErrorResponse(code, 'Insufficient balance to complete the payment.');
-      case 'ERR_SERVICE_UNREACHABLE':
-        return this.createErrorResponse(code, 'Failed to reach the service: ' + e.message);
-      default:
-        return this.createErrorResponse(code, e.message || 'An unknown error occurred during the paid call.');
     }
   }
 
@@ -796,9 +673,9 @@ export class BazaarMcpServer {
   private async handleHttpRequest(
     req: IncomingMessage,
     res: ServerResponse,
-    config: { authToken: string; path: string }
+    httpConfig: { authToken: string; path: string }
   ): Promise<void> {
-    if (!hasValidBearerToken(req.headers.authorization, config.authToken)) {
+    if (!hasValidBearerToken(req.headers.authorization, httpConfig.authToken)) {
       sendJsonRpcError(
         res,
         401,
@@ -818,7 +695,7 @@ export class BazaarMcpServer {
       return;
     }
 
-    if (pathname !== config.path) {
+    if (pathname !== httpConfig.path) {
       if (pathname === DEFAULT_MCP_METRICS_PATH) {
         if (req.method !== 'GET') {
           sendJsonRpcError(
