@@ -1,4 +1,4 @@
-import { amm_snapshots_total, trades_ingested_total, last_trade_timestamp } from '../../metrics'
+import { amm_snapshots_total, trades_ingested_total, last_trade_timestamp, markIngestSuccess } from '../../metrics'
 import { config, activeNetwork, getNetworkConfig, type NetworkName } from '../../config'
 import { upsertPricePoints, getIndexerState, setIndexerCursor, prisma } from '../../db'
 import { resolvePageLedgers } from '../../ingesters/toid'
@@ -106,6 +106,7 @@ export async function snapshotPool(
         ],
         network
       )
+      markIngestSuccess('AMM', network)
 
       const trackerKey = pair.pairKey
       const { previousPrice } = setLastPrice('AMM', network, trackerKey, spotPrice)
@@ -192,6 +193,7 @@ export async function ingestPoolTrades(
     )
 
     await upsertPricePoints(points, network)
+    markIngestSuccess('AMM', network)
 
     trades_ingested_total.inc({ pair: pair.pairKey, network }, points.length)
     last_trade_timestamp.set(

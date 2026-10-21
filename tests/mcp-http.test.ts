@@ -25,6 +25,13 @@ vi.mock('../src/fetch', () => ({
 const TEST_AUTH_TOKEN = 'lens-mcp-http-test-token-4d1f8b6e2a97';
 const PAID_URL = 'https://bazaar.example/api/v1/price';
 
+/**
+ * paid_call is deny-all unless the operator names hosts (#487), so these servers
+ * carry the host the tests below fetch. Nothing here spends real money: the
+ * payment transport is always a mock.
+ */
+const PAID_CALL_HOSTS = ['bazaar.example'];
+
 const openHandles: McpHttpServerHandle[] = [];
 
 afterEach(async () => {
@@ -41,6 +48,7 @@ function mcpUrl(handle: McpHttpServerHandle, path = '/mcp'): string {
 async function startHttp(fetchWithPayment: Mock = vi.fn()): Promise<McpHttpServerHandle> {
   const server = new BazaarMcpServer({
     fetchWithPayment: fetchWithPayment as unknown as typeof fetch,
+    paidCallAllowlist: PAID_CALL_HOSTS,
   });
   const handle = await server.runHttp({
     host: '127.0.0.1',
@@ -270,7 +278,10 @@ describe('MCP HTTP transport parity', () => {
 
     // InMemoryTransport stands in for stdio: the same BazaarMcpServer and the
     // same SDK routing, without spawning a process to pipe stdin/stdout.
-    const directServer = new BazaarMcpServer({ fetchWithPayment: directFetch as unknown as typeof fetch });
+    const directServer = new BazaarMcpServer({
+      fetchWithPayment: directFetch as unknown as typeof fetch,
+      paidCallAllowlist: PAID_CALL_HOSTS,
+    });
     const [directClientTransport, directServerTransport] = InMemoryTransport.createLinkedPair();
     await (directServer as any).server.connect(directServerTransport);
     const directClient = new Client({ name: 'lens-direct-test', version: '1.0.0' }, { capabilities: {} });
@@ -284,7 +295,12 @@ describe('MCP HTTP transport parity', () => {
     expect(httpTools.tools.map((tool: any) => tool.name)).toEqual(['bazaar_search', 'paid_call']);
     expect(httpPaidCall).toEqual(directPaidCall);
     expect(JSON.parse((httpPaidCall.content as any)[0].text)).toEqual({ asset: 'XLM', price: '0.15' });
-    expect(httpFetch).toHaveBeenCalledWith(PAID_URL, { method: 'GET' });
+    // The same call the in-process transport makes, deadline included: main's
+    // upstream timeout is part of what parity has to preserve.
+    expect(httpFetch).toHaveBeenCalledWith(PAID_URL, {
+      method: 'GET',
+      signal: expect.any(AbortSignal),
+    });
   });
 
   it('keeps a deterministic tool error deterministic across the wire', async () => {

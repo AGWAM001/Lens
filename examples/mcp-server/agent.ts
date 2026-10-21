@@ -86,6 +86,27 @@ async function main() {
 
   const BAZAAR_URL = 'http://localhost:3000';
 
+  // Step 0 is the one that needs no Bazaar node and no payment: Lens answering
+  // for its own data. It reads the ingestion database, so a machine without one
+  // gets a deterministic refusal instead of a number.
+  console.log('\n[agent] 0. Asking Lens directly for a price...');
+
+  const priceResult = await client.callTool({
+    name: 'lens_get_price',
+    arguments: { assetA: 'native', assetB: 'USDC' },
+  });
+
+  if (priceResult.isError) {
+    console.log('[agent] lens_get_price refused:', JSON.parse(priceResult.content[0].text).reason);
+  } else {
+    const price: any = priceResult.structuredContent ?? JSON.parse(priceResult.content[0].text);
+    console.log(
+      `[agent] ${price.pairKey} on ${price.network}: ${price.price} ${price.quote.code} per ${price.base.code} ` +
+        `(confidence ${price.confidence}, ${price.sources} source(s), last trade ${price.lastTradeAgeSeconds}s ago, ` +
+        `route ${price.bestRoute?.route ?? 'unknown'})`
+    );
+  }
+
   console.log(`\n[agent] 1. Discovering resources at ${BAZAAR_URL}...`);
   console.log(`[agent] Executing tool: bazaar_search`);
   

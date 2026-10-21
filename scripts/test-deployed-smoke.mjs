@@ -4,11 +4,12 @@ import { createServer } from 'node:http'
 import { spawn } from 'node:child_process'
 import { WebSocketServer } from 'ws'
 
-async function scenario({ stale = false, invalidPrice = false, noUpdate = false, readiness = true, missingReady = false } = {}) {
+async function scenario({ stale = false, invalidPrice = false, noUpdate = false, readiness = true, missingReady = false, liveness = true } = {}) {
   const server = createServer((req, res) => {
     res.setHeader('content-type', 'application/json')
     if (req.url === '/status') res.end(JSON.stringify({ ok: true, ingestLagSeconds: stale ? 900 : 1 }))
-    else if (req.url === '/ready') { res.statusCode = missingReady ? 404 : readiness ? 200 : 503; res.end(JSON.stringify({ ok: readiness })) }
+    else if (req.url === '/ready') { res.statusCode = missingReady ? 404 : readiness ? 200 : 503; res.end(JSON.stringify({ ok: readiness, booted: readiness, checks: { postgres: { status: readiness ? 'up' : 'down' }, redis: { status: 'up' } } })) }
+    else if (req.url === '/live') { res.statusCode = liveness ? 200 : 503; res.end(JSON.stringify({ ok: liveness, uptimeSeconds: 42 })) }
     else if (req.url === '/price/XLM/USDC') res.end(JSON.stringify({
       assetA: 'XLM', assetB: 'USDC', pairKey: 'test-fixture-pair', network: 'testnet', price: invalidPrice ? '1.0' : 1,
       stale: false, lastTradeAgeSeconds: 1
@@ -58,16 +59,26 @@ test('rejects malformed price', async () => {
   assert.equal(result.code, 1)
   assert.match(result.output, /FAIL \/price/)
 })
-test('skips missing /ready and still checks websocket', async () => {
+test('fails when /ready is missing', async () => {
+  // The probe skipping itself when absent is exactly how a deployment ends up
+  // silently unmonitored: the smoke run stays green and nothing checks whether
+  // instances are receiving traffic they can serve.
   const result = await scenario({ missingReady: true })
-  assert.equal(result.code, 0, result.output)
-  assert.match(result.output, /SKIP \/ready/)
-  assert.match(result.output, /PASS GraphQL websocket/)
+  assert.equal(result.code, 1)
+  assert.match(result.output, /FAIL \/ready \+ \/live/)
+  assert.match(result.output, /missing/i)
 })
 test('rejects readiness outage', async () => {
   const result = await scenario({ readiness: false })
   assert.equal(result.code, 1)
-  assert.match(result.output, /FAIL \/ready/)
+  assert.match(result.output, /FAIL \/ready \+ \/live/)
+})
+test('rejects a failing liveness probe', async () => {
+  // Liveness is the restart signal. If it can fail, the platform restarts
+  // instances that were merely degraded.
+  const result = await scenario({ liveness: false })
+  assert.equal(result.code, 1)
+  assert.match(result.output, /FAIL \/ready \+ \/live/)
 })
 test('rejects websocket silence', async () => {
   const result = await scenario({ noUpdate: true })

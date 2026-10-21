@@ -4,6 +4,9 @@ import { rpc } from '@stellar/stellar-sdk'
 import { prisma } from '../db'
 import { getNetworkConfig, type NetworkName } from '../config'
 import { CAIP2_BY_NETWORK, getFacilitator, type SettleResponseShape } from '../x402/facilitator'
+import { submitCatalogListing } from '../bazaar/catalog'
+import type { RegisterBazaarResourceInput } from '../bazaar/types'
+import { toExtensionResponses } from '../bazaar/validation'
 
 /**
  * `POST /settle` — the facilitator endpoint that actually submits a payment.
@@ -233,6 +236,48 @@ export async function registerSettleRoute(app: FastifyInstance) {
         transaction: response.transaction || txHash,
         network: response.network || caip2,
         ...(response.success ? {} : { errorReason: response.errorReason ?? SETTLE_ERROR_REASONS.unexpected }),
+      }
+
+      // A settled payment that carried a discovery extension also catalogues
+      // what it paid for, so a resource server does not need a second call to
+      // list itself.
+      //
+      // This runs after the payment has been submitted, so nothing here can
+      // affect whether money moved — at worst it delays the response. It is
+      // still awaited rather than fired and forgotten, because the result goes
+      // back in the EXTENSION-RESPONSES header and a caller cannot be told
+      // which fields were dropped after the response has gone.
+      if (normalised.success && body.paymentPayload) {
+        try {
+          const rawPayload = body.paymentPayload as Record<string, unknown>
+          const extensions = (rawPayload.extensions as Record<string, unknown>) ?? {}
+          // Both shapes are accepted: `extensions.bazaar` is where the x402
+          // extension envelope puts it, and `discovery` is the flattened form
+          // older callers send.
+          const bazaarExtension = extensions.bazaar ?? rawPayload.discovery
+          if (bazaarExtension && body.paymentRequirements?.payTo) {
+            const authority = {
+              payTo: String(body.paymentRequirements.payTo),
+              network,
+            }
+            // Unvalidated on purpose at this boundary: `submitCatalogListing`
+            // runs `validateListing` against exactly this input and returns
+            // per-field drops, so re-checking the shape here would duplicate
+            // the one place that owns it.
+            const writeResult = await submitCatalogListing(
+              bazaarExtension as RegisterBazaarResourceInput,
+              authority,
+            )
+            const extHeader = toExtensionResponses(writeResult.drops)
+            reply.header('EXTENSION-RESPONSES', JSON.stringify(extHeader))
+          }
+        } catch (err) {
+          // Cataloguing must never turn a successful settlement into a failed
+          // response, so this is swallowed — but not silently. A catalog that
+          // has been broken for a week should be visible in the logs rather
+          // than inferred from listings that never appear.
+          req.log.warn({ err, network }, '[facilitator] cataloguing a settled payment failed')
+        }
       }
 
       await finalise(attemptId, normalised.success ? 'settled' : 'failed', normalised)
