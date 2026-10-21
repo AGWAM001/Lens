@@ -82,6 +82,24 @@ export const statusResponseSchema = {
     // Seconds since the last ingester write for this network, null before the
     // first one. Lets `/status` reveal a stalled ingester on its own.
     ingestLagSeconds: { type: ['integer', 'null'] },
+    // Ingesters that have crashed at least once on this network, newest first,
+    // and empty when none have. Present so a crash-looping ingester that keeps
+    // restarting is visible here rather than only in the logs. `message` only
+    // — never a stack, since this is served over HTTP.
+    crashes: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['name', 'network', 'message', 'at'],
+        additionalProperties: false,
+        properties: {
+          name: { type: 'string' },
+          network: { type: 'string', enum: ['testnet', 'mainnet'] },
+          message: { type: 'string' },
+          at: { type: 'string' },
+        },
+      },
+    },
   },
 } as const
 

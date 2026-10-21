@@ -24,7 +24,7 @@ import {
   PRICE_POINTS_RETENTION_DAYS,
 } from './jobs/pricePointsPartitionJob'
 import { loadPersistedPairs, getActivePairs } from './pairsRegistry'
-import { ingesterRestarts } from './metrics'
+import { markHealthy, recordCrash } from './ingester/restart'
 import { markBootComplete } from './health'
 
 const log = createLogger('startup')
@@ -197,44 +197,18 @@ async function main() {
   const INGESTER_RESTART_MAX_MS = 5 * 60_000
   const INGESTER_HEALTHY_RESET_MS = 5 * 60_000
 
-  type IngesterKey = string
-  const ingesterKey = (name: string, network: NetworkName): IngesterKey => `${name}/${network}`
-
-  interface IngesterState {
-    failures: number
-    lastCrashAt: Date | null
-    lastCrashMessage: string | null
-  }
-  const ingesterState = new Map<IngesterKey, IngesterState>()
-
-  const getIngesterState = (name: string, network: NetworkName): IngesterState => {
-    const key = ingesterKey(name, network)
-    let state = ingesterState.get(key)
-    if (!state) {
-      state = { failures: 0, lastCrashAt: null, lastCrashMessage: null }
-      ingesterState.set(key, state)
-    }
-    return state
-  }
-
   const restartIngester = (name: string, network: NetworkName, fn: () => Promise<void>) => {
-    const state = getIngesterState(name, network)
     let healthyTimer: NodeJS.Timeout | undefined
-    let runId = 0
 
     const run = () => {
       fn().then(() => {
-        // fn() resolving means the ingester ran to completion. Treat a run
-        // that lasted at least INGESTER_HEALTHY_RESET_MS as healthy and reset
-        // the backoff; a shorter run keeps the accumulated failure count.
+        // fn() resolving means the ingester ran to completion rather than
+        // looping forever. Treat that as healthy and reset the backoff.
         if (healthyTimer) clearTimeout(healthyTimer)
-        state.failures = 0
+        markHealthy(name, network)
       }).catch(err => {
         if (healthyTimer) clearTimeout(healthyTimer)
-        state.failures += 1
-        state.lastCrashAt = new Date()
-        state.lastCrashMessage = (err as Error).message
-        ingesterRestarts.inc({ ingester: name, network })
+        const state = recordCrash(name, network, err)
 
         const delay = Math.min(
           INGESTER_RESTART_BASE_MS * 2 ** (state.failures - 1),
@@ -249,9 +223,7 @@ async function main() {
 
       // If the ingester stays up past the healthy threshold, reset the
       // backoff even though fn() has not resolved (infinite loops never do).
-      healthyTimer = setTimeout(() => {
-        state.failures = 0
-      }, INGESTER_HEALTHY_RESET_MS)
+      healthyTimer = setTimeout(() => markHealthy(name, network), INGESTER_HEALTHY_RESET_MS)
       healthyTimer.unref()
     }
 

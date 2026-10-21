@@ -16,6 +16,7 @@ import {
   installResponseValidation,
 } from './schemas'
 import { getDepth } from '../pricing/depth'
+import { listCrashes } from '../ingester/restart'
 
 function makePairKey(a: string, b: string): string {
   return [a, b].sort().join('/')
@@ -95,6 +96,17 @@ export async function registerRESTRoutes(app: FastifyInstance) {
       ingestLagSeconds: lastProcessedAt
         ? Math.max(0, Math.round((Date.now() - new Date(lastProcessedAt).getTime()) / 1000))
         : null,
+      // Ingesters that have crashed at least once on this network, newest
+      // first. An ingester that crash-loops but restarts successfully is
+      // otherwise invisible here: the process is up and the port answers.
+      // Empty when nothing has crashed. Messages only — never a stack, since
+      // this is served over HTTP.
+      crashes: listCrashes(network).map(c => ({
+        name: c.name,
+        network: c.network,
+        message: c.message,
+        at: c.at.toISOString(),
+      })),
     }
   })
 

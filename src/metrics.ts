@@ -19,6 +19,16 @@ register.setDefaultLabels({
 // Do NOT add `issuer` or a raw pool id here — the cardinality notes in that
 // doc explain why those labels do not belong on these metrics.
 
+export const ingesterRestarts = new Counter({
+  name: 'ingester_restarts_total',
+  help: 'Times an ingester crashed and was restarted, by ingester and network',
+  // Bounded: one series per (venue, network) pair the process actually runs,
+  // the same shape as the metrics below. A crash message is deliberately NOT a
+  // label — it is unbounded and arrives from upstream.
+  labelNames: ['ingester', 'network'],
+  registers: [register]
+})
+
 export const trades_ingested_total = new Counter({
   name: 'trades_ingested_total',
   help: 'Total number of trades ingested from SDEX/AMM',
