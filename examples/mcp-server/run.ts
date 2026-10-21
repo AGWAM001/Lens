@@ -41,8 +41,6 @@ async function main() {
     metricHosts: metricHostsFromPaidCallAllowlist(paidCallAllowlist),
   });
 
-  const fetchWithPayment = wrapFetchWithPaymentFromConfig(paymentLedger.instrumentFetch(globalThis.fetch), {
-    maxPrice: process.env.MCP_MAX_PAYMENT_PRICE || '$1.00',
   // A single payment is capped by spendControls.maxAmountPerPayment. The value is
   // passed through to the budget so the cumulative ceiling can reserve each call at
   // its worst case; leaving spendControls unset would let the library default of $1
@@ -51,7 +49,7 @@ async function main() {
   const maxPrice = process.env.MCP_MAX_PAYMENT_PRICE || '$1.00';
   const dailyCeiling = process.env.MCP_DAILY_SPEND_CEILING || '$10.00';
 
-  const fetchWithPayment = wrapFetchWithPaymentFromConfig(globalThis.fetch, {
+  const fetchWithPayment = wrapFetchWithPaymentFromConfig(paymentLedger.instrumentFetch(globalThis.fetch), {
     spendControls: {
       maxAmountPerPayment: maxPrice,
     },
@@ -67,10 +65,6 @@ async function main() {
     ]
   });
 
-  const server = new BazaarMcpServer({
-    fetchWithPayment,
-    paidCallAllowlist,
-    paymentLedger
   // The running total outlives the process: this server signs with a real key, and a
   // restart does not refund what the previous process already spent. Point
   // MCP_SPEND_STATE_FILE somewhere durable if the default location is not.
@@ -82,20 +76,11 @@ async function main() {
 
   const server = new BazaarMcpServer({
     fetchWithPayment,
-    budget
-  // paid_call spends from the keys above, so the hosts it may pay for are the
-  // operator's decision. Unset means no host is payable at all (#404).
-  const paidCallAllowlist = (process.env.MCP_PAID_CALL_ALLOWED_HOSTS || '')
-    .split(',')
-    .map(entry => entry.trim())
-    .filter(Boolean);
-
-  const server = new BazaarMcpServer({
-    fetchWithPayment,
+    budget,
     paidCallAllowlist,
     // Lens's own aggregated prices, read from the same Postgres the API serves.
     priceQueries: createLensPriceQueries(),
-    paidCallAllowlist
+    paymentLedger
   });
 
   console.error('[mcp-server] Starting Bazaar MCP server on stdio...');

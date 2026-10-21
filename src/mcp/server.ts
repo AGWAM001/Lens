@@ -103,10 +103,10 @@ export class BazaarMcpServer {
   private fetchWithPayment: typeof fetch;
   private paidCallRules: PaidCallAllowRule[];
   private bazaarFetchOptions: SsrfFetchOptions;
-  /** The audit trail this server writes to. Public so embedders can read spend without parsing the file. */
-  readonly paymentLedger: PaymentLedger;
   private priceQueries?: LensPriceQueries;
   private budget?: SpendBudget;
+  /** The audit trail this server writes to. Public so embedders can read spend without parsing the file. */
+  readonly paymentLedger: PaymentLedger;
 
   constructor(config_: McpServerConfig) {
     this.fetchWithPayment = config_.fetchWithPayment;
@@ -330,7 +330,8 @@ export class BazaarMcpServer {
 
           if (!res.ok) {
             if (res.status === 402) {
-              // The seller rejected the payment, so nothing settled.
+              // The seller rejected the payment, so nothing settled and the budget is untouched.
+              this.settleReservation(reservationId, false);
               this.paymentLedger.record({
                 url,
                 method,
@@ -341,6 +342,7 @@ export class BazaarMcpServer {
               return this.createErrorResponse('ERR_PAYMENT_REJECTED', 'Payment required but was rejected or failed.');
             }
             // The resource failed after the payment loop ran; the payment may have settled anyway.
+            this.settleReservation(reservationId, true);
             this.paymentLedger.record({
               url,
               method,
@@ -349,12 +351,6 @@ export class BazaarMcpServer {
               response: res,
               paymentMayHaveSettled: true,
             });
-              // The seller rejected the payment, so nothing settled and the budget is untouched.
-              this.settleReservation(reservationId, false);
-              return this.createErrorResponse('ERR_PAYMENT_REJECTED', 'Payment required but was rejected or failed.');
-            }
-            // The resource failed after the payment loop ran; the payment may have settled anyway.
-            this.settleReservation(reservationId, true);
             return this.createErrorResponse('ERR_BAD_REQUEST', `Request failed with status ${res.status}`);
           }
 
@@ -373,16 +369,19 @@ export class BazaarMcpServer {
           };
         } catch (e: any) {
           const mayHaveSettled = !this.paymentCouldNotHaveSettled(e);
+          this.settleReservation(reservationId, mayHaveSettled);
+          // Mirror handlePaidCallError so the ledger records the code the agent is shown;
+          // an AbortError has no signal for the shared classifier, only the caller does.
+          const code = isTimeoutError(e) ? 'ERR_SERVICE_UNREACHABLE' : classifyPaidCallError(e).code;
           // No Response reached this process, so the ledger cannot read the offer
           // or a settlement header; the caller's verdict is all the record can hold.
           this.paymentLedger.record({
             url,
             method,
             outcome: 'failure',
-            errorCode: this.classifyPaidCallError(e),
+            errorCode: code,
             paymentMayHaveSettled: mayHaveSettled,
           });
-          this.settleReservation(reservationId, !this.paymentCouldNotHaveSettled(e));
           return this.handlePaidCallError(e);
         }
       }
@@ -392,41 +391,6 @@ export class BazaarMcpServer {
   }
 
   /**
-   * True when an error proves the payment never settled: the transport failed
-   * before offering payment, or the wallet could not fund or submit it. A
-   * network failure mid-flight is not proof, and neither is an unknown error.
-   */
-  private paymentCouldNotHaveSettled(e: any): boolean {
-    const msg = String(e?.message || e).toLowerCase();
-    return (
-      msg.includes('failed to parse payment requirements') ||
-      msg.includes('failed to create payment payload') ||
-      msg.includes('signatureexpirationledger') ||
-      msg.includes('signature expired') ||
-      msg.includes('trustline') ||
-      msg.includes('op_no_trust') ||
-      msg.includes('insufficient') ||
-      msg.includes('underfunded')
-    );
-  }
-
-  /**
-   * The error code a thrown paid call maps to. Kept separate from the response so
-   * the ledger records the same code the agent is shown.
-   */
-  private classifyPaidCallError(e: any): McpErrorCode {
-    const msg = String(e?.message || e).toLowerCase();
-
-    if (msg.includes('signatureexpirationledger') || msg.includes('signature expired')) {
-      return 'ERR_EXPIRED_AUTHORISATION';
-    }
-
-    if (msg.includes('trustline') || msg.includes('op_no_trust')) {
-      return 'ERR_MISSING_TRUSTLINE';
-    }
-
-    if (msg.includes('insufficient') || msg.includes('underfunded')) {
-      return 'ERR_INSUFFICIENT_BALANCE';
    * Turn a thrown paid-call error into an MCP error response.
    *
    * Delegates to `classifyPaidCallError`, which reads structured signals —
@@ -467,28 +431,6 @@ export class BazaarMcpServer {
     }
   }
 
-    if (msg.includes('fetch') || msg.includes('network')) {
-      return 'ERR_SERVICE_UNREACHABLE';
-    }
-
-    return 'ERR_INTERNAL_FAILURE';
-  }
-
-  private handlePaidCallError(e: any) {
-    const code = this.classifyPaidCallError(e);
-
-    switch (code) {
-      case 'ERR_EXPIRED_AUTHORISATION':
-        return this.createErrorResponse(code, 'The transaction signature expired before it could be submitted.');
-      case 'ERR_MISSING_TRUSTLINE':
-        return this.createErrorResponse(code, 'Missing trustline for the required asset.');
-      case 'ERR_INSUFFICIENT_BALANCE':
-        return this.createErrorResponse(code, 'Insufficient balance to complete the payment.');
-      case 'ERR_SERVICE_UNREACHABLE':
-        return this.createErrorResponse(code, 'Failed to reach the service: ' + e.message);
-      default:
-        return this.createErrorResponse(code, e.message || 'An unknown error occurred during the paid call.');
-    }
   /**
    * True when an error proves the payment never settled: the transport failed
    * before offering payment, or the wallet could not fund or submit it. A
