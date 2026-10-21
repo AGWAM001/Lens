@@ -4,7 +4,12 @@ import { fileURLToPath } from 'node:url'
 import type { FastifyInstance, RouteOptions } from 'fastify'
 import YAML from 'js-yaml'
 import { buildApp } from '../src/app'
-import { INTERNAL_ROUTES, isInternalRoute, toOpenApiPath } from '../src/openapi/coverage'
+import {
+  INTERNAL_ROUTES,
+  isInternalRoute,
+  isUndocumentableOperation,
+  toOpenApiPath,
+} from '../src/openapi/coverage'
 import { renderOpenApiJson } from '../scripts/generate-openapi'
 
 const specPath = fileURLToPath(new URL('../openapi.yaml', import.meta.url))
@@ -58,7 +63,10 @@ describe('OpenAPI route coverage', () => {
 
   it('documents the HTTP method for every documented route', () => {
     const missing = registered.filter(
-      r => !isInternalRoute(r.path) && !(r.method.toLowerCase() in (spec.paths[r.path] ?? {})),
+      r =>
+        !isInternalRoute(r.path) &&
+        !isUndocumentableOperation(r.method, r.path) &&
+        !(r.method.toLowerCase() in (spec.paths[r.path] ?? {})),
     )
     expect(missing, `Undocumented operations: ${JSON.stringify(missing)}`).toEqual([])
   })

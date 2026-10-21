@@ -263,6 +263,7 @@ model ApiKey {
   ratePerMin       Int       @default(60) @map("rate_per_min")
   ratePerDay       Int       @default(10000) @map("rate_per_day")
   revokedAt        DateTime? @map("revoked_at")
+  expiresAt        DateTime? @map("expires_at")
   createdAt        DateTime  @default(now()) @map("created_at")
   monthlyQuotaCents Int?     @default(10000) @map("monthly_quota_cents")
   dailyQuotaCents  Int?      @default(500) @map("daily_quota_cents")

@@ -9,6 +9,9 @@ import {
 } from '../../src/mcp/config';
 import { SpendBudget, defaultSpendStateFile } from '../../src/mcp/budget';
 import { PaymentLedger, defaultPaymentLedgerFile } from '../../src/mcp/ledger';
+import { createLensPriceQueries } from '../../src/mcp/priceQueries';
+import { activeNetwork } from '../../src/config';
+import { SpendBudget, defaultSpendStateFile } from '../../src/mcp/budget';
 import { wrapFetchWithPaymentFromConfig } from '@x402/fetch';
 import { ExactStellarScheme } from '@x402/stellar/exact/client';
 import { createEd25519Signer } from '@x402/stellar';
@@ -82,6 +85,16 @@ async function main() {
   });
 
   const fetchWithPayment = wrapFetchWithPaymentFromConfig(paymentLedger.instrumentFetch(globalThis.fetch), {
+  
+  // A single payment is capped by spendControls.maxAmountPerPayment. The value is
+  // passed through to the budget so the cumulative ceiling can reserve each call at
+  // its worst case; leaving spendControls unset would let the library default of $1
+  // differ from whatever MCP_MAX_PAYMENT_PRICE says. maxPrice is not a field of the
+  // x402 client config, so setting it here previously bounded nothing.
+  const maxPrice = process.env.MCP_MAX_PAYMENT_PRICE || '$1.00';
+  const dailyCeiling = process.env.MCP_DAILY_SPEND_CEILING || '$10.00';
+
+  const fetchWithPayment = wrapFetchWithPaymentFromConfig(globalThis.fetch, {
     spendControls: {
       maxAmountPerPayment: maxPrice,
     },
@@ -110,6 +123,7 @@ async function main() {
     fetchWithPayment,
     budget,
     paymentLedger
+    budget
   // paid_call spends from the keys above, so the hosts it may pay for are the
   // operator's decision. Unset means no host is payable at all (#404).
   const paidCallAllowlist = (process.env.MCP_PAID_CALL_ALLOWED_HOSTS || '')
@@ -119,6 +133,9 @@ async function main() {
 
   const server = new BazaarMcpServer({
     fetchWithPayment,
+    paidCallAllowlist,
+    // Lens's own aggregated prices, read from the same Postgres the API serves.
+    priceQueries: createLensPriceQueries(),
     paidCallAllowlist
   });
 
@@ -153,6 +170,9 @@ async function main() {
   console.error(
     '[mcp-server] stdio serves no HTTP listener, so the spend metrics of this process cannot be scraped; read the running total with the payment_budget tool or from the audit file above.'
   );
+  console.error(`[mcp-server] lens_get_price serves aggregated prices on ${activeNetwork}`);
+  // Limits and file paths only: the signing key is never logged.
+  console.error(`[mcp-server] Spend limits: ${budget.describeLimits()}`);
   console.error(
     paidCallAllowlist.length > 0
       ? `[mcp-server] paid_call may pay these allow-listed origins: ${paidCallAllowlist.join(', ')}`

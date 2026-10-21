@@ -8,6 +8,7 @@ import {
   Operation,
   TransactionBuilder,
 } from '@stellar/stellar-sdk'
+import * as catalogModule from '../bazaar/catalog'
 
 const { mockCreate, mockFindUnique, mockUpdate, mockGetFacilitator, mockSettle, mockGetTransaction } = vi.hoisted(
   () => ({
@@ -68,6 +69,7 @@ function settleBody(
     transaction?: string
     network?: string
     payer?: string
+    extensions?: Record<string, unknown>
   } = {},
 ) {
   return {
@@ -77,6 +79,7 @@ function settleBody(
       scheme: 'exact',
       network: overrides.network ?? 'stellar:testnet',
       ...(overrides.payer ? { payer: overrides.payer } : {}),
+      ...(overrides.extensions ? { extensions: overrides.extensions } : {}),
       payload: { transaction: overrides.transaction ?? TESTNET_ENVELOPE },
     },
     paymentRequirements: {
@@ -360,6 +363,49 @@ describe('POST /settle — failure semantics', () => {
     const body = (await app.inject({ method: 'POST', url: '/settle', payload: settleBody() })).json()
 
     expect(body.errorReason).toBe('settle_exact_stellar_transaction_submission_failed')
+  })
+
+  it('catalogs the resource automatically on successful settle and sets EXTENSION-RESPONSES header (#130)', async () => {
+    const submitSpy = vi.spyOn(catalogModule, 'submitCatalogListing').mockResolvedValue({
+      accepted: true,
+      drops: [],
+    })
+    mockSettle.mockResolvedValue({ success: true, transaction: 'onchain-hash', network: 'stellar:testnet' })
+    const app = await buildApp()
+
+    const payload = settleBody({
+      extensions: {
+        bazaar: {
+          resource: { url: 'https://api.seller.com/price', serviceName: 'Seller Price API' },
+          bazaar: { schema: { type: 'object' }, info: { input: {} } },
+        },
+      },
+    })
+
+    const res = await app.inject({ method: 'POST', url: '/settle', payload })
+    expect(res.statusCode).toBe(200)
+    expect(submitSpy).toHaveBeenCalled()
+    expect(res.headers['extension-responses']).toBeDefined()
+    const extHeader = JSON.parse(res.headers['extension-responses'] as string)
+    expect(extHeader.bazaar.catalog.accepted).toBe(true)
+  })
+
+  it('does not delay or fail settlement if cataloging throws (#130)', async () => {
+    vi.spyOn(catalogModule, 'submitCatalogListing').mockRejectedValue(new Error('Catalog storage down'))
+    mockSettle.mockResolvedValue({ success: true, transaction: 'onchain-hash', network: 'stellar:testnet' })
+    const app = await buildApp()
+
+    const payload = settleBody({
+      extensions: {
+        bazaar: {
+          resource: { url: 'https://api.seller.com/price' },
+        },
+      },
+    })
+
+    const res = await app.inject({ method: 'POST', url: '/settle', payload })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().success).toBe(true)
   })
 })
 

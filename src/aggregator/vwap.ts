@@ -1,6 +1,10 @@
 import { pgPool } from '../db'
 import type { NetworkName } from '../config'
 
+export const STALENESS_THRESHOLD_SECONDS = 300
+export const HIGH_CONFIDENCE_MAX_AGE_SECONDS = 30
+export const MEDIUM_CONFIDENCE_MAX_AGE_SECONDS = 300
+
 /**
  * Every query in this module filters on `network`.
  *
@@ -180,15 +184,15 @@ export async function getAggregatedPrice(pairKey: string, network: NetworkName):
   let confidence: 'high' | 'medium' | 'low' | 'unknown' = 'unknown'
   if (lastTradeAgeSeconds === null) {
     confidence = 'unknown'
-  } else if (lastTradeAgeSeconds < 30 && sources > 1 && volume24h > 0) {
+  } else if (lastTradeAgeSeconds < HIGH_CONFIDENCE_MAX_AGE_SECONDS && sources > 1 && volume24h > 0) {
     confidence = 'high'
-  } else if (lastTradeAgeSeconds < 300) {
+  } else if (lastTradeAgeSeconds < MEDIUM_CONFIDENCE_MAX_AGE_SECONDS) {
     confidence = 'medium'
   } else {
     confidence = 'low'
   }
 
-  const stale = lastTradeAgeSeconds !== null && lastTradeAgeSeconds >= 300
+  const stale = lastTradeAgeSeconds !== null && lastTradeAgeSeconds >= STALENESS_THRESHOLD_SECONDS
 
   return {
     price: vwap1h || vwap24h || ammPrice || 0,
