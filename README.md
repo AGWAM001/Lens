@@ -5,7 +5,64 @@
 [![Stellar](https://img.shields.io/badge/Stellar-SDEX%20%2B%20AMM-black)](https://stellar.org)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-Aggregates price data from Stellar's Classic Order Book (SDEX) and AMM Liquidity Pools into a single, unified API.
+## Quickstart
+
+### REST
+
+```bash
+curl http://localhost:3002/status
+# {
+#   "ok": true,
+#   "network": "testnet",
+#   "watchedPairs": ["XLM:native/USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"],
+#   "lastIndexedLedger": 53842917,  // illustrative — actual value depends on when /status is queried
+#   "lastProcessedAt": "2026-05-07T18:45:11.220Z",  // illustrative — actual value depends on when /status is queried
+#   "ingestLagSeconds": 4  // illustrative — actual value depends on when /status is queried
+# }
+#
+# /status answers for one network — pass ?network=mainnet (or the
+# x-network header) to check the mainnet indexer instead. ingestLagSeconds is
+# null until that network has ingested, and lastIndexedLedger is null until
+# its SDEX ingester has recorded a trade.
+```
+
+### GraphQL
+
+```bash
+curl -X POST http://localhost:3002/graphql \
+  -H "Content-Type: application/json" \
+  -d '{"query":"{ getPrice(assetA:\"XLM\", assetB:\"USDC\") { price assetA assetB pairKey bestRoute lastUpdated } }"}'
+# {
+#   "data": {
+#     "getPrice": {
+#       "price": 0.1245,
+#       "assetA": "XLM",
+#       "assetB": "USDC",
+#       "pairKey": "XLM:native/USDC:GA5...",
+#       "bestRoute": "amm",
+#       "lastUpdated": "2026-05-07T18:46:02.114Z"
+#     }
+#   }
+# }
+```
+
+### MCP
+
+```bash
+# List available Bazaar MCP tools (requires running server)
+npx @modelcontextprotocol/inspector --address localhost:3002 \
+  call_tool bazaar_search '{"url": "https://bazaar.example.com"}'
+# [
+#   {
+#     "name": "bazaar_search",
+#     "description": "Search for resources in a Stellar Bazaar node"
+#   },
+#   {
+#     "name": "paid_call",
+#     "description": "Make a paid API call to a Bazaar resource"
+#   }
+# ]
+```
 
 **What Horizon doesn't do:** Horizon's `/trade_aggregations` only covers SDEX. AMM pool prices (derived from reserve ratios) are not aggregated anywhere. Lens fills this gap.
 
