@@ -8,8 +8,6 @@ import {
   ErrorCode,
   McpError,
 } from '@modelcontextprotocol/sdk/types.js';
-import { MCP_ERROR_CODES, McpErrorCode } from './codes.js';
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { MCP_ERROR_CODES, McpErrorCode, classifyPaidCallError } from './codes.js';
 import { SpendBudget } from './budget.js';
 import { checkPaidCallTarget, parsePaidCallAllowlist, type PaidCallAllowRule } from './paidCallAllowlist.js';
@@ -20,18 +18,11 @@ import {
   zodToToolInputSchema,
   formatZodError,
 } from './toolSchemas.js';
+import { boundSerialized, readBodyCapped, type McpLimits, type ResultBudget } from './limits.js';
 import { fetchWithTimeout } from '../fetch.js';
 import { config } from '../config.js';
 import { ssrfSafeFetch, SsrfError, type SsrfFetchOptions } from '../net/ssrf.js';
-import { boundSerialized, readBodyCapped, type ResultBudget } from './limits.js';
 import { defaultResources, snapshotResource, type LensResourceDescriptor } from './resources.js';
-
-/** Size bounds applied to every tool result, and the pages asked of a node. */
-export interface McpLimits {
-  maxResultBytes: number;
-  maxUpstreamBytes: number;
-  defaultPageLimit: number;
-  maxPageLimit: number;
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
@@ -108,13 +99,18 @@ export interface McpServerConfig {
    * tests can drive DNS resolution and the transport without real sockets.
    */
   bazaarFetch?: Partial<SsrfFetchOptions>;
-  /** Overrides the `MCP_*` env bounds — primarily for tests. */
+  /**
+   * Bounds on what a tool result may cost the agent in context (#416), from the
+   * `MCP_*` env by default. Overridable so a test can drive the limits without
+   * touching process state.
+   */
   limits?: Partial<McpLimits>;
   /**
-   * The read-only resources this server exposes. Defaults to the stable,
-   * cacheable Lens facts derived from config and the on-disk OpenAPI document.
-   * Pass a custom set to serve richer runtime state (a hot pair registry, a live
-   * health check) without giving the stdio server a database dependency.
+   * The read-only resources this server advertises. Defaults to the stable
+   * Lens facts derived from `config` and the on-disk OpenAPI document; pass a
+   * custom set to serve richer runtime state (a live health check, the runtime
+   * pair registry) without giving the stdio server a database dependency — the
+   * same split `priceQueries` makes for {@link LENS_PRICE_TOOL_NAME}.
    */
   resources?: LensResourceDescriptor[];
 }
@@ -122,21 +118,18 @@ export interface McpServerConfig {
 export class BazaarMcpServer {
   private server: Server;
   private fetchWithPayment: typeof fetch;
+  private paidCallRules: PaidCallAllowRule[];
   private bazaarFetchOptions: SsrfFetchOptions;
+  private priceQueries?: LensPriceQueries;
+  private budget?: SpendBudget;
   private limits: McpLimits;
   private resources: LensResourceDescriptor[];
 
   constructor(config_: McpServerConfig) {
     this.fetchWithPayment = config_.fetchWithPayment;
-  private paidCallRules: PaidCallAllowRule[];
-  private bazaarFetchOptions: SsrfFetchOptions;
-  private priceQueries?: LensPriceQueries;
-  private budget?: SpendBudget;
-
-  constructor(config_: McpServerConfig) {
-    this.fetchWithPayment = config_.fetchWithPayment;
     this.priceQueries = config_.priceQueries;
     this.budget = config_.budget;
+    this.limits = { ...config.mcp, ...config_.limits };
 
     // Two independent gates, deliberately separate: this one decides which
     // hosts may be PAID (#404), the one below decides which addresses may be
@@ -153,8 +146,8 @@ export class BazaarMcpServer {
       fetchImpl: (input, init) => fetchWithTimeout(input, init),
       ...config_.bazaarFetch,
     };
-    this.limits = { ...config.mcp, ...config_.limits };
-    this.resources = config_.resources ?? defaultResources();
+    this.resources =
+      config_.resources ?? defaultResources({ serverName: SERVER_NAME, serverVersion: SERVER_VERSION });
     this.server = new Server(
       {
         name: SERVER_NAME,
@@ -177,49 +170,8 @@ export class BazaarMcpServer {
         {
           name: 'bazaar_search',
           description:
-            'Search for resources in a Stellar Bazaar node. Results are a bounded page: ' +
-            'use limit and offset to ask for more, and check "truncated" / "total" in the response.',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              url: {
-                type: 'string',
-                description: 'The base URL of the Bazaar API',
-              },
-              query: {
-                type: 'string',
-                description: 'Optional search query',
-              },
-              limit: {
-                type: 'number',
-                description: `Maximum number of resources to return (default ${config.mcp.defaultPageLimit}, capped at ${config.mcp.maxPageLimit})`,
-              },
-              offset: {
-                type: 'number',
-                description: 'Number of resources to skip, to page past a truncated result (default 0)',
-              },
-            },
-            required: ['url'],
-          },
-        },
-        {
-          name: 'paid_call',
-          description: 'Make a paid API call to a Bazaar resource, handling the 402 loop automatically. Oversized responses are truncated; the result says so.',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              url: {
-                type: 'string',
-                description: 'The full URL of the resource to fetch',
-              },
-              method: {
-                type: 'string',
-                description: 'HTTP method (default: GET)',
-              },
-            },
-            required: ['url'],
-          },
-          description: 'Search for resources in a Stellar Bazaar node',
+            'Search for resources in a Stellar Bazaar node. The result is a bounded page: ' +
+            'check "truncated" and "total", and re-ask with limit and offset to page through the rest.',
           inputSchema: zodToToolInputSchema(BAZAAR_SEARCH_ARGUMENTS_SCHEMA),
         },
         {
@@ -258,6 +210,9 @@ export class BazaarMcpServer {
       return { tools };
     });
 
+    // Listing resolves each resource rather than returning a static catalogue,
+    // so the freshness it reports is real. These payloads are small and cheap
+    // to produce; a stale or invented `lastModified` would be worse than none.
     this.server.setRequestHandler(ListResourcesRequestSchema, async () => ({
       resources: this.resources.map((descriptor) => {
         const snapshot = snapshotResource(descriptor);
@@ -281,6 +236,11 @@ export class BazaarMcpServer {
     this.server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
       const uri = request.params.uri;
       const descriptor = this.resources.find((d) => d.uri === uri);
+      // A refusal to read is a protocol error, not a tool result: unlike a tool
+      // call, `ReadResourceResult` has no `isError` shape, so a payload faking
+      // one would be misread by clients. This is not a third entry in the
+      // MCP_ERROR_CODES vocabulary — that set answers "why did the money or the
+      // fetch fail", which is a different question from "no such resource".
       if (!descriptor) {
         throw new McpError(
           ErrorCode.InvalidParams,
@@ -330,11 +290,19 @@ export class BazaarMcpServer {
           }
 
           // structuredContent is what the agent reads; the text block keeps the
-          // same payload visible to clients that only render content.
-          return {
-            content: [{ type: 'text', text: JSON.stringify(outcome.result, null, 2) }],
-            structuredContent: outcome.result,
-          };
+          // same payload visible to clients that only render content. When the
+          // payload does not fit the result limit the text carries the label and
+          // structuredContent is dropped — shipping it whole would keep the very
+          // context blow-up #416 is about, just in a different field.
+          const bounded = boundSerialized(outcome.result, {
+            maxBytes: this.limits.maxResultBytes,
+            maxItems: Number.MAX_SAFE_INTEGER,
+            offset: 0,
+            notice: `A Lens price was truncated to fit a ${this.limits.maxResultBytes}-byte tool output limit; request fewer venues or a narrower pair.`,
+          });
+          return bounded.truncated
+            ? { content: [{ type: 'text', text: bounded.text }] }
+            : { content: [{ type: 'text', text: bounded.text }], structuredContent: outcome.result };
         } catch (e: any) {
           // Prices come from Postgres and Horizon, so a throw here is the data
           // layer being unreachable — never an answer about the pair.
@@ -343,34 +311,24 @@ export class BazaarMcpServer {
       }
 
       if (request.params.name === 'bazaar_search') {
-        const url = String(request.params.arguments?.url);
-        const args = request.params.arguments ?? {};
-        const query = args.query ? String(args.query) : undefined;
-        const { limit, offset } = this.parsePage(args);
-
-        try {
-          const search = new URLSearchParams();
-          if (query) search.set('q', query);
-          search.set('limit', String(limit));
-          search.set('offset', String(offset));
-
-          const endpoint = query
-            ? `${url.replace(/\/$/, '')}/discovery/search?${search}`
-            : `${url.replace(/\/$/, '')}/discovery/resources?${search}`;
-
-          const res = await ssrfSafeFetch(endpoint, {}, this.bazaarFetchOptions);
         const parsed = BAZAAR_SEARCH_ARGUMENTS_SCHEMA.safeParse(request.params.arguments ?? {});
         if (!parsed.success) {
           return this.createErrorResponse('ERR_BAD_REQUEST', formatZodError(parsed.error));
         }
 
         const { url, query } = parsed.data;
-        
+        const page = this.resolvePage(parsed.data);
+
         try {
-          const endpoint = query 
-            ? `${url.replace(/\/$/, '')}/discovery/search?q=${encodeURIComponent(query)}`
-            : `${url.replace(/\/$/, '')}/discovery/resources`;
-            
+          const search = new URLSearchParams();
+          if (query) search.set('q', query);
+          search.set('limit', String(page.limit));
+          search.set('offset', String(page.offset));
+
+          const endpoint = query
+            ? `${url.replace(/\/$/, '')}/discovery/search?${search}`
+            : `${url.replace(/\/$/, '')}/discovery/resources?${search}`;
+
           const upstream = new URL(endpoint).host;
           const res = await ssrfSafeFetch(
             endpoint,
@@ -382,14 +340,6 @@ export class BazaarMcpServer {
             return this.createErrorResponse('ERR_SERVICE_UNREACHABLE', `Upstream ${upstream} returned HTTP ${res.status}`);
           }
 
-          // Cap the read, not just the reply: a node that streams megabytes is
-          // never buffered here in full.
-          const body = await readBodyCapped(res, this.limits.maxUpstreamBytes);
-          if (body.exceeded) {
-            return this.createErrorResponse(
-              'ERR_RESPONSE_TOO_LARGE',
-              `Node sent more than ${this.limits.maxUpstreamBytes} bytes, which cannot be parsed as one document. ` +
-                `Retry with a smaller limit (currently ${limit}) or a larger offset.`
           const contentType = res.headers.get('content-type') ?? '';
           if (!/\bjson\b/i.test(contentType)) {
             return this.createErrorResponse(
@@ -398,15 +348,21 @@ export class BazaarMcpServer {
             );
           }
 
+          // Cap the read, not only the reply: `res.json()` would buffer whatever a
+          // node chose to send before we got a say in the size.
+          const body = await readBodyCapped(res, this.limits.maxUpstreamBytes);
+          if (body.exceeded) {
+            return this.createErrorResponse(
+              'ERR_RESPONSE_TOO_LARGE',
+              `Upstream ${upstream} sent more than ${this.limits.maxUpstreamBytes} bytes, which cannot be read as one document. ` +
+                `Retry with a smaller limit (this page asked for ${page.limit}) or a larger offset.`,
+              { maxUpstreamBytes: this.limits.maxUpstreamBytes, limit: page.limit, offset: page.offset },
+            );
+          }
+
           let data: unknown;
           try {
             data = JSON.parse(body.text);
-          } catch {
-            return this.createErrorResponse('ERR_SERVICE_UNREACHABLE', 'Service returned a response that is not valid JSON');
-          }
-
-          const hasResources = (d: unknown): d is { resources: unknown[] } =>
-            data = await res.json();
           } catch {
             return this.createErrorResponse('ERR_SERVICE_UNREACHABLE', `Upstream ${upstream} returned a body that is not valid JSON`);
           }
@@ -420,18 +376,17 @@ export class BazaarMcpServer {
 
           return this.createBoundedResult(data, {
             maxBytes: this.limits.maxResultBytes,
-            maxItems: limit,
-            offset,
+            maxItems: page.limit,
+            offset: page.offset,
             notice:
               `Result truncated to fit a ${this.limits.maxResultBytes}-byte tool output limit, ` +
-              `of which at most ${limit} items fit on one page. ` +
+              `of which at most ${page.limit} items fit on one page. ` +
               'Ask for the rest with the limit and offset arguments.',
           });
         } catch (e: any) {
           if (e instanceof SsrfError) {
             return this.createErrorResponse('ERR_URL_BLOCKED', `Blocked request: ${e.message}`);
           }
-          return this.createErrorResponse('ERR_SERVICE_UNREACHABLE', e.message);
           if (isTimeoutError(e)) {
             return this.createErrorResponse(
               'ERR_SERVICE_UNREACHABLE',
@@ -446,18 +401,15 @@ export class BazaarMcpServer {
         if (!this.budget) {
           return this.createErrorResponse('ERR_BAD_REQUEST', 'This server has no spend budget configured.');
         }
-        return {
-          content: [{ type: 'text', text: JSON.stringify(this.budget.snapshot(), null, 2) }],
-        };
+        return this.createBoundedResult(this.budget.snapshot(), {
+          maxBytes: this.limits.maxResultBytes,
+          maxItems: Number.MAX_SAFE_INTEGER,
+          offset: 0,
+          notice: `The spend budget was truncated to fit a ${this.limits.maxResultBytes}-byte tool output limit.`,
+        });
       }
 
       if (request.params.name === 'paid_call') {
-        const url = String(request.params.arguments?.url);
-        const method = request.params.arguments?.method ? String(request.params.arguments?.method) : 'GET';
-
-        try {
-          const res = await this.fetchWithPayment(url, { method });
-
         const parsed = PAID_CALL_ARGUMENTS_SCHEMA.safeParse(request.params.arguments ?? {});
         if (!parsed.success) {
           return this.createErrorResponse('ERR_BAD_REQUEST', formatZodError(parsed.error));
@@ -492,12 +444,13 @@ export class BazaarMcpServer {
             return this.createErrorResponse('ERR_BAD_REQUEST', `Request failed with status ${res.status}`);
           }
 
+          this.settleReservation(reservationId, true);
           const body = await readBodyCapped(res, this.limits.maxUpstreamBytes);
 
           const budget: ResultBudget = {
             maxBytes: this.limits.maxResultBytes,
-            // A paid response has no pagination contract, so paging a collection
-            // would hide items with no way to ask for the next one; only the
+            // paid_call has no pagination contract, so paging a collection would
+            // hide items with no way to ask for the next page; here only the
             // byte ceiling applies.
             maxItems: Number.MAX_SAFE_INTEGER,
             offset: 0,
@@ -509,14 +462,13 @@ export class BazaarMcpServer {
                 'Ask the resource for a smaller response or a paginated endpoint.',
           };
 
-          this.settleReservation(reservationId, true);
-          const text = await res.text();
           let parsed;
           try {
             parsed = JSON.parse(body.text);
           } catch {
-            // Genuinely non-JSON (or a cut-off body, which cannot parse): hand
-            // back the raw text, bounded and labelled as partial.
+            // Also the case of a body cut off mid-read, which cannot parse:
+            // knownTruncated labels the fragment instead of passing it off as an
+            // answer.
             parsed = body.text;
           }
 
@@ -531,26 +483,21 @@ export class BazaarMcpServer {
     });
   }
 
-  /** Clamp a caller-requested page; mirrors the node's own discovery limits. */
-  private parsePage(args: Record<string, unknown> | undefined): { limit: number; offset: number } {
-    if (!args || typeof args !== 'object') return { limit: this.limits.defaultPageLimit, offset: 0 };
-
-    const rawLimit = Number(args.limit);
+  /**
+   * Clamp a caller-requested page to the operator's bounds. Zod has already
+   * rejected non-positive or non-integer values; this is the ceiling an agent
+   * may not argue past, mirroring the node's own discovery limits.
+   */
+  private resolvePage(requested: { limit?: number; offset?: number }): { limit: number; offset: number } {
     const limit =
-      Number.isFinite(rawLimit) && rawLimit > 0
-        ? Math.min(Math.floor(rawLimit), this.limits.maxPageLimit)
-        : this.limits.defaultPageLimit;
-
-    const rawOffset = Number(args.offset);
-    const offset = Number.isFinite(rawOffset) && rawOffset > 0 ? Math.floor(rawOffset) : 0;
-
-    return { limit, offset };
+      requested.limit !== undefined ? Math.min(requested.limit, this.limits.maxPageLimit) : this.limits.defaultPageLimit;
+    return { limit, offset: requested.offset ?? 0 };
   }
 
   /**
-   * Serialize a successful result compactly (indentation is for humans and
-   * costs the agent context) and within `budget`, so no upstream response —
-   * large or hostile — can fill the context window in one call. Truncation is
+   * Serialize a successful result compactly — indentation is for humans and
+   * costs the agent context — and within `budget`, so no upstream response,
+   * large or hostile, can fill a context window in one call. Truncation is
    * stated in the payload rather than left to be inferred.
    */
   private createBoundedResult(data: unknown, budget: ResultBudget) {
@@ -560,7 +507,6 @@ export class BazaarMcpServer {
     };
   }
 
-  private handlePaidCallError(e: any) {
   /**
    * Turn a thrown paid-call error into an MCP error response.
    *
@@ -621,7 +567,6 @@ export class BazaarMcpServer {
     );
   }
 
-  private createErrorResponse(code: McpErrorCode, reason: string) {    // For MCP, returning isError: true with a JSON payload is the standard way to return tool errors.
   private createErrorResponse(code: McpErrorCode, reason: string, details?: Record<string, unknown>) {
     // For MCP, returning isError: true with a JSON payload is the standard way to return tool errors.
     const payload = {

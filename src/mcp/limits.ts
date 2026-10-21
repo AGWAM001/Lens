@@ -19,6 +19,17 @@
 /** Keys that hold a page's items when the payload is an object. */
 const COLLECTION_KEYS = ['resources', 'results', 'items']
 
+/**
+ * Operator-configurable bounds, resolved from the `MCP_*` env in config.ts and
+ * overridable per server for tests.
+ */
+export interface McpLimits {
+  maxResultBytes: number
+  maxUpstreamBytes: number
+  defaultPageLimit: number
+  maxPageLimit: number
+}
+
 export interface ResultBudget {
   /** Maximum size, in UTF-8 bytes, of the text handed to the agent. */
   maxBytes: number
@@ -159,6 +170,12 @@ export function boundSerialized(value: unknown, budget: ResultBudget): BoundedRe
   }
 
   const compact = JSON.stringify(value) ?? 'null'
+  if (typeof value === 'string' && byteLength(value) <= budget.maxBytes) {
+    // Plain-text answers stay plain text: quoting them would change what the
+    // agent reads for a resource that never produced JSON.
+    return { text: value, truncated: false }
+  }
+
   const collection = findCollection(value)
   if (byteLength(compact) <= budget.maxBytes && (!collection || collection.items.length <= budget.maxItems)) {
     return { text: compact, truncated: false }

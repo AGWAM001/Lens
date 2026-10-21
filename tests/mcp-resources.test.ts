@@ -1,175 +1,221 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest'
+import { BazaarMcpServer } from '../src/mcp/server'
 import {
   ListResourcesRequestSchema,
   ReadResourceRequestSchema,
   McpError,
   ErrorCode,
-} from '@modelcontextprotocol/sdk/types.js';
-import { BazaarMcpServer } from '../src/mcp/server';
-import { defaultResources, snapshotResource } from '../src/mcp/resources';
+} from '@modelcontextprotocol/sdk/types.js'
+import { defaultResources, snapshotResource, type LensResourceDescriptor } from '../src/mcp/resources'
 
-/** Capture the resource handlers the way tests/mcp.test.ts captures tool handlers. */
-function captureHandlers(server: BazaarMcpServer) {
-  const handlers: Record<string, any> = {};
-  (server as any).server.setRequestHandler = (schema: any, fn: any) => {
-    if (schema === ListResourcesRequestSchema) handlers.list = fn;
-    if (schema === ReadResourceRequestSchema) handlers.read = fn;
-  };
-  (server as any).setupHandlers();
-  return handlers;
+/**
+ * #418 — the server advertised only tools, so an agent had to call one every
+ * turn to keep facts that barely change in context. These tests pin the other
+ * half of the capability: the resources are listed with stable URIs and honest
+ * freshness, a read returns the body, and a URI that does not exist is refused
+ * as a protocol error rather than a fabricated tool result.
+ */
+
+function buildHarness(resources?: LensResourceDescriptor[]) {
+  const server = new BazaarMcpServer({
+    fetchWithPayment: vi.fn(),
+    ...(resources ? { resources } : {}),
+  })
+
+  const handlers: Record<string, any> = {}
+  ;(server as any).server.setRequestHandler = (schema: any, fn: any) => {
+    if (schema === ListResourcesRequestSchema) handlers.list = fn
+    if (schema === ReadResourceRequestSchema) handlers.read = fn
+  }
+  ;(server as any).setupHandlers()
+
+  return {
+    server,
+    listResources: () => handlers.list(),
+    read: (uri: string) => handlers.read({ params: { uri } }),
+  }
 }
 
-function serverWith(resources: any) {
-  return new BazaarMcpServer({
-    fetchWithPayment: async () => new Response(),
-    resources,
-  });
+const FIXED = new Date('2026-01-01T00:00:00.000Z').toISOString()
+
+function stubResource(overrides: Partial<LensResourceDescriptor> = {}): LensResourceDescriptor {
+  return {
+    uri: 'lens://pairs',
+    name: 'pairs',
+    title: 'Watched pairs',
+    description: 'd',
+    mimeType: 'application/json',
+    read: () => ({ data: { network: 'testnet', pairs: [] }, lastModified: FIXED }),
+    ...overrides,
+  }
 }
 
-describe('BazaarMcpServer MCP resources (#418)', () => {
-  const fixed = new Date('2026-01-01T00:00:00.000Z');
+describe('BazaarMcpServer resources capability (#418)', () => {
+  it('declares resources alongside tools', () => {
+    const { server } = buildHarness()
+    const capabilities = (server as any).server._capabilities
+    expect(capabilities).toHaveProperty('tools')
+    expect(capabilities).toHaveProperty('resources')
+  })
 
-  it('declares the resources capability', () => {
-    const server = serverWith(defaultResources());
-    const caps = (server as any).server._capabilities ?? (server as any).server.serverCapabilities;
-    expect(caps).toHaveProperty('resources');
-    expect(caps).toHaveProperty('tools');
-  });
+  it('lists each resource with a stable URI, MIME type and freshness', async () => {
+    const { listResources } = buildHarness([stubResource()])
+    const { resources } = await listResources()
 
-  it('lists stable URIs, MIME types and freshness for every resource', async () => {
-    const { list } = captureHandlers(
-      serverWith([
-        {
-          uri: 'lens://pairs',
-          name: 'pairs',
-          title: 'Watched pairs',
-          description: 'd',
-          mimeType: 'application/json',
-          read: () => ({ data: { pairs: ['XLM/USDC'] }, lastModified: fixed.toISOString() }),
-        },
-      ])
-    );
+    expect(resources).toHaveLength(1)
+    const [resource] = resources
+    expect(resource.uri).toBe('lens://pairs')
+    expect(resource.mimeType).toBe('application/json')
+    expect(resource.annotations.lastModified).toBe(FIXED)
+    expect(resource._meta.version).toMatch(/^sha256:[0-9a-f]{64}$/)
+    expect(resource._meta.lastModified).toBe(FIXED)
+  })
 
-    const { resources } = await list();
-    expect(resources).toHaveLength(1);
-    const r = resources[0];
-    expect(r.uri).toBe('lens://pairs');
-    expect(r.mimeType).toBe('application/json');
-    expect(r.annotations.lastModified).toBe(fixed.toISOString());
-    expect(r._meta.version).toMatch(/^sha256:[0-9a-f]{64}$/);
-  });
+  it('omits lastModified rather than inventing one when a source has no notion of change', async () => {
+    const { listResources, read } = buildHarness([
+      stubResource({ read: () => ({ data: { constant: true } }) }),
+    ])
 
-  it('reads a resource, returning its JSON body and version', async () => {
-    const { read } = captureHandlers(
-      serverWith([
-        {
-          uri: 'lens://pairs',
-          name: 'pairs',
-          title: 'Watched pairs',
-          description: 'd',
-          mimeType: 'application/json',
-          read: () => ({ data: { network: 'testnet', pairs: [] }, lastModified: fixed.toISOString() }),
-        },
-      ])
-    );
+    const [listed] = (await listResources()).resources
+    expect(listed.annotations).toBeUndefined()
+    expect(listed._meta.lastModified).toBeUndefined()
+    // The version is still reported: it is derived from content, not from time.
+    expect(listed._meta.version).toMatch(/^sha256:[0-9a-f]{64}$/)
 
-    const result = await read({ params: { uri: 'lens://pairs' } });
-    expect(result.contents).toHaveLength(1);
-    const c = result.contents[0];
-    expect(c.uri).toBe('lens://pairs');
-    expect(c.mimeType).toBe('application/json');
-    expect(JSON.parse(c.text)).toEqual({ network: 'testnet', pairs: [] });
-    expect(c._meta.version).toMatch(/^sha256:[0-9a-f]{64}$/);
-    expect(c._meta.lastModified).toBe(fixed.toISOString());
-  });
+    const { contents } = await read('lens://pairs')
+    expect(contents[0]._meta.lastModified).toBeUndefined()
+  })
 
-  it('serves a text body verbatim (OpenAPI document)', async () => {
-    const doc = '{"openapi":"3.0.0","info":{"title":"Lens"}}';
-    const { read } = captureHandlers(
-      serverWith([
-        {
-          uri: 'lens://openapi.json',
-          name: 'openapi',
-          title: 'OpenAPI document',
-          description: 'd',
-          mimeType: 'application/json',
-          read: () => ({ text: doc, lastModified: fixed.toISOString() }),
-        },
-      ])
-    );
+  it('reads a resource and returns its JSON body with the version', async () => {
+    const { read } = buildHarness([
+      stubResource({ read: () => ({ data: { network: 'testnet', pairs: ['XLM/USDC'] }, lastModified: FIXED }) }),
+    ])
 
-    const result = await read({ params: { uri: 'lens://openapi.json' } });
-    expect(result.contents[0].text).toBe(doc);
-  });
+    const { contents } = await read('lens://pairs')
+    expect(contents).toHaveLength(1)
+    const [body] = contents
+    expect(body.uri).toBe('lens://pairs')
+    expect(body.mimeType).toBe('application/json')
+    expect(JSON.parse(body.text)).toEqual({ network: 'testnet', pairs: ['XLM/USDC'] })
+    expect(body._meta.version).toMatch(/^sha256:[0-9a-f]{64}$/)
+    expect(body._meta.lastModified).toBe(FIXED)
+  })
 
-  it('rejects an unknown URI with an InvalidParams JSON-RPC error', async () => {
-    const { read } = captureHandlers(serverWith(defaultResources()));
-    await expect(read({ params: { uri: 'lens://nope' } })).rejects.toMatchObject({
-      code: ErrorCode.InvalidParams,
-    });
-    await expect(read({ params: { uri: 'lens://nope' } })).rejects.toBeInstanceOf(McpError);
-  });
+  it('serves a text body verbatim instead of re-serializing it', async () => {
+    const document = '{"openapi":"3.0.0","info":{"title":"Lens"}}'
+    const { read } = buildHarness([
+      stubResource({ uri: 'lens://openapi.json', name: 'openapi', read: () => ({ text: document, lastModified: FIXED }) }),
+    ])
+
+    const { contents } = await read('lens://openapi.json')
+    expect(contents[0].text).toBe(document)
+  })
+})
+
+describe('BazaarMcpServer resource refusals (#418)', () => {
+  it('rejects an unknown URI as an InvalidParams protocol error', async () => {
+    const { read } = buildHarness()
+    await expect(read('lens://nope')).rejects.toBeInstanceOf(McpError)
+    await expect(read('lens://nope')).rejects.toMatchObject({ code: ErrorCode.InvalidParams })
+  })
+
+  it('does not dress an unknown URI up as a readable resource', async () => {
+    const { read } = buildHarness()
+    // A faked `{ content, isError }` tool result would parse as a successful
+    // read here, so the refusal has to travel as an exception instead.
+    await expect(read('lens://missing')).rejects.toThrow(/Unknown resource/)
+  })
 
   it('reports an internal error when a resource source fails', async () => {
-    const { read } = captureHandlers(
-      serverWith([
-        {
-          uri: 'lens://status',
-          name: 'status',
-          title: 'Service status',
-          description: 'd',
-          mimeType: 'application/json',
-          read: () => {
-            throw new Error('health check timed out');
-          },
+    const { read } = buildHarness([
+      stubResource({
+        uri: 'lens://status',
+        name: 'status',
+        read: () => {
+          throw new Error('health check timed out')
         },
-      ])
-    );
+      }),
+    ])
 
-    await expect(read({ params: { uri: 'lens://status' } })).rejects.toMatchObject({
+    await expect(read('lens://status')).rejects.toMatchObject({
       code: ErrorCode.InternalError,
       message: expect.stringContaining('health check timed out'),
-    });
-  });
+    })
+  })
+})
 
-  it('exposes at least the pair list and the OpenAPI document by default', () => {
-    const uris = defaultResources().map((r) => r.uri);
-    expect(uris).toContain('lens://pairs');
-    expect(uris).toContain('lens://openapi.json');
-    expect(uris).toContain('lens://venues');
-    expect(uris).toContain('lens://status');
-  });
+describe('MCP default resources (#418)', () => {
+  it('exposes the pair list and the OpenAPI document, among others', () => {
+    const uris = defaultResources().map((r) => r.uri)
+    expect(uris).toContain('lens://pairs')
+    expect(uris).toContain('lens://openapi.json')
+    expect(uris).toContain('lens://venues')
+    expect(uris).toContain('lens://status')
+  })
 
-  it('produces a stable version for identical content and a new one when it changes', () => {
-    const mk = (pairs: string[]) => ({
+  it('names every resource uniquely, so a handle cannot be ambiguous', () => {
+    const descriptors = defaultResources()
+    const names = descriptors.map((d) => d.name)
+    expect(new Set(names).size).toBe(names.length)
+    expect(new Set(descriptors.map((d) => d.uri)).size).toBe(descriptors.length)
+  })
+
+  it('advertises the server version passed in, not a hard-coded one', () => {
+    const snapshot = snapshotResource(
+      defaultResources({ serverVersion: '9.9.9-test' }).find((d) => d.uri === 'lens://status')!
+    )
+    expect(JSON.parse(snapshot.text).serverVersion).toBe('9.9.9-test')
+  })
+
+  it('reports a stable version for identical content and a new one once it changes', () => {
+    const forPairs = (keys: string[]): LensResourceDescriptor => ({
       uri: 'lens://x',
       name: 'x',
       title: 'x',
       description: 'x',
       mimeType: 'application/json',
-      read: () => ({ data: { pairs } }),
-    });
-    const a = snapshotResource(mk(['XLM/USDC'])).version;
-    const b = snapshotResource(mk(['XLM/USDC'])).version;
-    const c = snapshotResource(mk(['BTC/USDC'])).version;
-    expect(a).toBe(b);
-    expect(a).not.toBe(c);
-  });
+      read: () => ({ data: { pairs: keys } }),
+    })
+    const once = snapshotResource(forPairs(['XLM/USDC'])).version
+    const same = snapshotResource(forPairs(['XLM/USDC'])).version
+    const changed = snapshotResource(forPairs(['BTC/USDC'])).version
+    expect(once).toBe(same)
+    expect(once).not.toBe(changed)
+  })
 
-  it('reads the real OpenAPI document from disk with an mtime-based version', async () => {
-    const { read } = captureHandlers(serverWith(defaultResources()));
-    const result = await read({ params: { uri: 'lens://openapi.json' } });
-    const parsed = JSON.parse(result.contents[0].text);
-    expect(parsed).toHaveProperty('openapi');
-    expect(parsed).toHaveProperty('paths');
-    expect(new Date(result.contents[0]._meta.lastModified).toString()).not.toBe('Invalid Date');
-  });
+  it('reads the real OpenAPI document from disk, stamped with its file mtime', async () => {
+    const { read } = buildHarness()
+    const { contents } = await read('lens://openapi.json')
+    const document = JSON.parse(contents[0].text)
 
-  it('treats status as never-cacheable: each read is a new version', async () => {
-    const { read } = captureHandlers(serverWith(defaultResources()));
-    const v1 = (await read({ params: { uri: 'lens://status' } })).contents[0]._meta.version;
-    await new Promise((r) => setTimeout(r, 5));
-    const v2 = (await read({ params: { uri: 'lens://status' } })).contents[0]._meta.version;
-    expect(v1).not.toBe(v2);
-  });
-});
+    expect(document).toHaveProperty('openapi')
+    expect(document).toHaveProperty('paths')
+    expect(Number.isNaN(Date.parse(contents[0]._meta.lastModified))).toBe(false)
+  })
+
+  it('treats status as never cacheable: every read is a new version', async () => {
+    const { read } = buildHarness()
+    const first = (await read('lens://status')).contents[0]._meta.version
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    const second = (await read('lens://status')).contents[0]._meta.version
+    expect(first).not.toBe(second)
+  })
+
+  it('keeps the pair and venue lists cacheable: repeat reads agree', async () => {
+    const { read } = buildHarness()
+    for (const uri of ['lens://pairs', 'lens://venues']) {
+      const first = (await read(uri)).contents[0]
+      const second = (await read(uri)).contents[0]
+      expect(first._meta.version).toBe(second._meta.version)
+      expect(first._meta.lastModified).toBe(second._meta.lastModified)
+    }
+  })
+
+  it('describes the watched pairs on the active network', async () => {
+    const { read } = buildHarness()
+    const { contents } = await read('lens://pairs')
+    const body = JSON.parse(contents[0].text)
+    expect(Array.isArray(body.pairs)).toBe(true)
+    expect(['testnet', 'mainnet']).toContain(body.network)
+  })
+})

@@ -1,16 +1,16 @@
 import { createHash } from 'node:crypto';
 import { readFileSync, statSync } from 'node:fs';
-import path from 'node:path';
+import { join } from 'node:path';
 import { config, activeNetwork } from '../config.js';
 
 /**
- * A resource an agent can attach to its context once, rather than re-fetching
- * by calling a tool every turn. These are the stable, cacheable facts about the
- * Lens service itself — the pairs it quotes, the venues it reads, its OpenAPI
+ * A resource an agent can attach to its context once, rather than re-fetching by
+ * calling a tool every turn. These are the stable, cacheable facts *about the
+ * service itself* — the pairs it quotes, the venues it reads, its OpenAPI
  * document, and its current status.
  *
- * `read` may be called on every `resources/list` and `resources/read`, so it
- * must be cheap. Throwing is allowed and surfaces to the caller as a read
+ * `read` may run on every `resources/list` as well as `resources/read`, so it
+ * must stay cheap. Throwing is allowed and surfaces to the caller as a read
  * error.
  */
 export interface LensResourceDescriptor {
@@ -22,8 +22,8 @@ export interface LensResourceDescriptor {
   description: string;
   mimeType: string;
   /**
-   * Produce the current payload. Supply `text` for a verbatim body (e.g. a
-   * file served byte-for-byte) or `data`, which is serialized to compact JSON.
+   * Produce the current payload. Supply `text` for a verbatim body (a file
+   * served byte-for-byte) or `data`, which is serialized to compact JSON.
    * `lastModified` is the instant the underlying source last changed; omit it
    * when the source genuinely has no notion of change.
    */
@@ -42,18 +42,29 @@ export interface LensResourceSnapshot {
   lastModified?: string;
 }
 
+export interface LensResourceOptions {
+  /**
+   * The server name and version reported by `lens://status`. Passed in rather
+   * than imported so this module does not depend on `server.ts`, which imports
+   * it — the cycle would resolve at call time in CommonJS, but depending on
+   * that ordering is not worth it for two strings.
+   */
+  serverName?: string;
+  serverVersion?: string;
+}
+
 /**
  * The instant this process resolved its config. The pairs, venues and status
- * resources are derived from a config snapshot frozen at import, so "when did
- * this change" for those sources is "when did this process start." Reporting the
- * boot time is honest about that — a restart with new env is a new version, and
- * a running process never silently mutates these.
+ * resources derive from a config snapshot frozen at import, so "when did this
+ * change" for those sources is "when did this process start". Reporting boot
+ * time is honest about that: a restart with new env is a new version, and a
+ * running process never silently mutates these.
  */
 const BOOT_TIME = new Date().toISOString();
 
 /**
- * Content-hash version. A client that cached a previous body can compare this
- * to decide whether its copy is still current without diffing the text. Deriving
+ * Content-hash version. A client that cached a previous body compares this to
+ * decide whether its copy is still current without diffing the text. Deriving
  * it from the exact bytes we return keeps it truthful: same payload, same
  * version; any change, a new one.
  */
@@ -61,37 +72,45 @@ function computeVersion(text: string): string {
   return 'sha256:' + createHash('sha256').update(text).digest('hex');
 }
 
-/** Resolve the OpenAPI document path, honoring an operator override. */
+/**
+ * Resolve the OpenAPI document path, honoring an operator override.
+ *
+ * `__dirname`, not `import.meta.url`: this project compiles with
+ * `module: commonjs`, under which `import.meta` is a TypeScript error. Two
+ * levels up reaches the repo root from both `src/mcp/` and `dist/mcp/`, since
+ * `rootDir` is `src` and `outDir` is `dist`.
+ */
 function openapiPath(): string {
-  if (process.env.LENS_OPENAPI_PATH) return process.env.LENS_OPENAPI_PATH;
-  // Runs the same from src/mcp (tsx) and dist/mcp (build): the document lives at
-  // the package root, two directories up from this module.
-  return path.resolve(__dirname, '..', '..', 'openapi.json');
-}
-
-/** Serialize an object payload to the compact JSON that becomes the body. */
-function jsonText(data: unknown): string {
-  return JSON.stringify(data);
+  if (process.env.MCP_OPENAPI_PATH) return process.env.MCP_OPENAPI_PATH;
+  return join(__dirname, '..', '..', 'openapi.json');
 }
 
 /**
  * The default set of Lens resources, derived only from `config` and the on-disk
- * OpenAPI document — deliberately with no database dependency, so the stdio MCP
- * server stays as lightweight as the payment client that hosts it. A process
- * that *does* have the richer runtime state (a registry with hot-added pairs, a
- * live health check) can pass its own descriptors to override these.
+ * OpenAPI document — deliberately with no database dependency, for the same
+ * reason {@link createLensPriceQueries} lives in its own module: a process that
+ * does not opt into Lens's own price data should not pay for importing `pg` and
+ * Prisma just to advertise what it watches.
+ *
+ * A host that does hold that state can pass its own descriptors to
+ * `BazaarMcpServer`, exactly as it passes `priceQueries`.
  */
-export function defaultResources(): LensResourceDescriptor[] {
+export function defaultResources(options: LensResourceOptions = {}): LensResourceDescriptor[] {
   return [
     {
       uri: 'lens://pairs',
       name: 'pairs',
       title: 'Watched pairs',
-      description: 'The asset pairs Lens actively quotes on the configured network.',
+      description: 'The asset pairs Lens quotes on the configured network.',
       mimeType: 'application/json',
       read: () => ({
         data: {
           network: activeNetwork,
+          // The declared pair list for this network, not the process-wide
+          // runtime registry — the same choice `lens_get_price` makes, and for
+          // the same reason: pairs added through POST /pairs register against
+          // whichever network that API process runs, so reading the registry
+          // here could advertise a pair that only exists on another network.
           pairs: config.pairs.map((p) => ({
             pairKey: p.pairKey,
             assetA: p.assetA,
@@ -124,7 +143,7 @@ export function defaultResources(): LensResourceDescriptor[] {
       uri: 'lens://openapi.json',
       name: 'openapi',
       title: 'OpenAPI document',
-      description: 'The service OpenAPI 3 specification, served verbatim as JSON.',
+      description: "The service's OpenAPI 3 specification, served verbatim as JSON.",
       mimeType: 'application/json',
       read: () => {
         const file = openapiPath();
@@ -142,6 +161,8 @@ export function defaultResources(): LensResourceDescriptor[] {
         const generatedAt = new Date().toISOString();
         return {
           data: {
+            serverName: options.serverName ?? 'lens-mcp-server',
+            serverVersion: options.serverVersion ?? '0.0.0-unknown',
             network: activeNetwork,
             generatedAt,
             horizonUrl: config.horizon.url,
@@ -153,8 +174,8 @@ export function defaultResources(): LensResourceDescriptor[] {
               oracle: config.oracle.enabled,
             },
           },
-          // Status is defined by being current: every read is a new version, so a
-          // client knows it must not treat this as a long-lived cache.
+          // Status is defined by being current: every read is a new version, so
+          // a client knows it must not treat this as a long-lived cache.
           lastModified: generatedAt,
         };
       },
@@ -165,7 +186,7 @@ export function defaultResources(): LensResourceDescriptor[] {
 /** Resolve a descriptor into the body plus version/freshness returned to clients. */
 export function snapshotResource(descriptor: LensResourceDescriptor): LensResourceSnapshot {
   const { data, text: rawText, lastModified } = descriptor.read();
-  const text = rawText ?? jsonText(data);
+  const text = rawText ?? JSON.stringify(data);
   return {
     uri: descriptor.uri,
     name: descriptor.name,
