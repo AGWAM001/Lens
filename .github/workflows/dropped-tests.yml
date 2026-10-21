@@ -1,0 +1,47 @@
+name: Dropped tests
+
+# Fails a PR that would delete test cases which exist on the base branch.
+#
+# This exists because it happened twice in one day and git reported no conflict
+# either time (#480 and #492). A branch opened before other PRs land replaces a
+# whole test file instead of merging it, so the result is the older file plus
+# the author's additions — and every case added in between disappears. Both PRs
+# said "mergeable", both typechecked, and the loss was only visible by counting
+# test cases on each side.
+#
+# It does not run the tests and does not judge whether a removal is correct.
+# Removing a test is sometimes exactly right. It makes the removal deliberate
+# instead of accidental: say so in the PR and apply the
+# `tests-removed-intentionally` label to pass.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+jobs:
+  dropped-tests:
+    name: No test case silently removed
+    runs-on: ubuntu-latest
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'tests-removed-intentionally') }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # Full history: the check compares the base against the tree a merge
+          # would produce, which needs both sides and their merge base.
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '20'
+
+      - name: Compare test cases against the base
+        run: |
+          node scripts/check-dropped-tests.mjs \
+            "origin/${{ github.event.pull_request.base.ref }}" \
+            "${{ github.event.pull_request.head.sha }}"
