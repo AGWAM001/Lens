@@ -33,6 +33,18 @@ export interface NetworkConfig {
     /** Aquarius AMM pools API base URL for this network. */
     apiUrl: string
   }
+  defindex: {
+    /** Whether DeFindex has a usable deployment on this network. */
+    enabled: boolean
+    /**
+     * DeFindex factory contract id — the on-chain registry used to enumerate
+     * vaults (56-char `C...`). Sourced from the protocol's own
+     * `*.contracts.json`; a malformed id disables the venue.
+     */
+    factoryAddress: string
+    /** How often to poll DeFindex vault share prices in ms. */
+    pollIntervalMs: number
+  }
   oracle: {
     /** Whether the Reflector oracle is deployed on this network. */
     enabled: boolean
@@ -171,6 +183,30 @@ function buildNetworkConfig(network: NetworkName): NetworkConfig {
   const aquariusEnabled =
     (process.env[`AQUARIUS_ENABLED_${suffix}`] ?? (network === 'mainnet' ? 'true' : 'false')).toLowerCase() !== 'false'
 
+  // ── DeFindex vault factory ────────────────────────────────────────────────
+  // DeFindex vaults are enumerable from the factory contract. The factory ids
+  // below are copied whole from the protocol's published deployments —
+  // https://github.com/defindex-io/stellar-contracts (public/mainnet.contracts.json
+  // and public/testnet.contracts.json). Testnet redeploys often, so override
+  // with DEFINDEX_FACTORY_ADDRESS_TESTNET when the published id changes.
+  const defindexFactory =
+    process.env[`DEFINDEX_FACTORY_ADDRESS_${suffix}`] ||
+    process.env.DEFINDEX_FACTORY_ADDRESS ||
+    (network === 'mainnet'
+      ? 'CDKFHFJIET3A73A2YN4KV7NSV32S6YGQMUFH3DNJXLBWL4SKEGVRNFKI'
+      : 'CDSCWE4GLNBYYTES2OCYDFQA2LLY4RBIAX6ZI32VSUXD7GO6HRPO4A32')
+
+  const defindexEnabled =
+    (process.env[`DEFINDEX_ENABLED_${suffix}`] ?? 'true').toLowerCase() !== 'false' &&
+    isUsableContractId(defindexFactory, `DEFINDEX_FACTORY_ADDRESS_${suffix}`)
+
+  const defindexPollMs = parseInt(
+    process.env[`DEFINDEX_POLL_INTERVAL_MS_${suffix}`] ||
+    process.env.DEFINDEX_POLL_INTERVAL_MS ||
+    '60000',
+    10
+  )
+
   // ── Reflector oracle ──────────────────────────────────────────────────────
   // No built-in default: the previous mainnet literal was a malformed
   // (55-character) id and a replacement could not be verified against
@@ -223,6 +259,11 @@ function buildNetworkConfig(network: NetworkName): NetworkConfig {
     aquarius: {
       enabled: aquariusEnabled,
       apiUrl: aquariusApiUrl,
+    },
+    defindex: {
+      enabled: defindexEnabled,
+      factoryAddress: defindexFactory,
+      pollIntervalMs: defindexPollMs,
     },
     oracle: { enabled: oracleEnabled, reflectorContractId },
     pairs: parseWatchedPairs(rawPairs),
@@ -320,6 +361,7 @@ export const config = {
   get network()  { return resolveNetwork(activeNetwork).network },
   get soroswap() { return resolveNetwork(activeNetwork).soroswap },
   get aquarius() { return resolveNetwork(activeNetwork).aquarius },
+  get defindex() { return resolveNetwork(activeNetwork).defindex },
   get oracle()   { return resolveNetwork(activeNetwork).oracle },
   get pairs()    { return resolveNetwork(activeNetwork).pairs },
   get facilitator() { return resolveNetwork(activeNetwork).facilitator },
