@@ -1,6 +1,13 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema,
+  ListResourcesRequestSchema,
+  ReadResourceRequestSchema,
+  ErrorCode,
+  McpError,
+} from '@modelcontextprotocol/sdk/types.js';
 import { MCP_ERROR_CODES, McpErrorCode, classifyPaidCallError } from './codes.js';
 import { SpendBudget } from './budget.js';
 import { checkPaidCallTarget, parsePaidCallAllowlist, type PaidCallAllowRule } from './paidCallAllowlist.js';
@@ -11,9 +18,11 @@ import {
   zodToToolInputSchema,
   formatZodError,
 } from './toolSchemas.js';
+import { boundSerialized, readBodyCapped, type McpLimits, type ResultBudget } from './limits.js';
 import { fetchWithTimeout } from '../fetch.js';
 import { config } from '../config.js';
 import { ssrfSafeFetch, SsrfError, type SsrfFetchOptions } from '../net/ssrf.js';
+import { defaultResources, snapshotResource, type LensResourceDescriptor } from './resources.js';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
@@ -90,6 +99,20 @@ export interface McpServerConfig {
    * tests can drive DNS resolution and the transport without real sockets.
    */
   bazaarFetch?: Partial<SsrfFetchOptions>;
+  /**
+   * Bounds on what a tool result may cost the agent in context (#416), from the
+   * `MCP_*` env by default. Overridable so a test can drive the limits without
+   * touching process state.
+   */
+  limits?: Partial<McpLimits>;
+  /**
+   * The read-only resources this server advertises. Defaults to the stable
+   * Lens facts derived from `config` and the on-disk OpenAPI document; pass a
+   * custom set to serve richer runtime state (a live health check, the runtime
+   * pair registry) without giving the stdio server a database dependency — the
+   * same split `priceQueries` makes for {@link LENS_PRICE_TOOL_NAME}.
+   */
+  resources?: LensResourceDescriptor[];
 }
 
 export class BazaarMcpServer {
@@ -99,11 +122,14 @@ export class BazaarMcpServer {
   private bazaarFetchOptions: SsrfFetchOptions;
   private priceQueries?: LensPriceQueries;
   private budget?: SpendBudget;
+  private limits: McpLimits;
+  private resources: LensResourceDescriptor[];
 
   constructor(config_: McpServerConfig) {
     this.fetchWithPayment = config_.fetchWithPayment;
     this.priceQueries = config_.priceQueries;
     this.budget = config_.budget;
+    this.limits = { ...config.mcp, ...config_.limits };
 
     // Two independent gates, deliberately separate: this one decides which
     // hosts may be PAID (#404), the one below decides which addresses may be
@@ -120,6 +146,8 @@ export class BazaarMcpServer {
       fetchImpl: (input, init) => fetchWithTimeout(input, init),
       ...config_.bazaarFetch,
     };
+    this.resources =
+      config_.resources ?? defaultResources({ serverName: SERVER_NAME, serverVersion: SERVER_VERSION });
     this.server = new Server(
       {
         name: SERVER_NAME,
@@ -128,6 +156,7 @@ export class BazaarMcpServer {
       {
         capabilities: {
           tools: {},
+          resources: {},
         },
       }
     );
@@ -140,7 +169,9 @@ export class BazaarMcpServer {
       const tools: Record<string, unknown>[] = [
         {
           name: 'bazaar_search',
-          description: 'Search for resources in a Stellar Bazaar node',
+          description:
+            'Search for resources in a Stellar Bazaar node. The result is a bounded page: ' +
+            'check "truncated" and "total", and re-ask with limit and offset to page through the rest.',
           inputSchema: zodToToolInputSchema(BAZAAR_SEARCH_ARGUMENTS_SCHEMA),
         },
         {
@@ -179,6 +210,69 @@ export class BazaarMcpServer {
       return { tools };
     });
 
+    // Listing resolves each resource rather than returning a static catalogue,
+    // so the freshness it reports is real. These payloads are small and cheap
+    // to produce; a stale or invented `lastModified` would be worse than none.
+    this.server.setRequestHandler(ListResourcesRequestSchema, async () => ({
+      resources: this.resources.map((descriptor) => {
+        const snapshot = snapshotResource(descriptor);
+        return {
+          uri: snapshot.uri,
+          name: snapshot.name,
+          title: snapshot.title,
+          description: snapshot.description,
+          mimeType: snapshot.mimeType,
+          ...(snapshot.lastModified
+            ? { annotations: { lastModified: snapshot.lastModified } }
+            : {}),
+          _meta: {
+            version: snapshot.version,
+            ...(snapshot.lastModified ? { lastModified: snapshot.lastModified } : {}),
+          },
+        };
+      }),
+    }));
+
+    this.server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+      const uri = request.params.uri;
+      const descriptor = this.resources.find((d) => d.uri === uri);
+      // A refusal to read is a protocol error, not a tool result: unlike a tool
+      // call, `ReadResourceResult` has no `isError` shape, so a payload faking
+      // one would be misread by clients. This is not a third entry in the
+      // MCP_ERROR_CODES vocabulary — that set answers "why did the money or the
+      // fetch fail", which is a different question from "no such resource".
+      if (!descriptor) {
+        throw new McpError(
+          ErrorCode.InvalidParams,
+          `Unknown resource: ${uri}. Call resources/list for the available URIs.`
+        );
+      }
+
+      let snapshot;
+      try {
+        snapshot = snapshotResource(descriptor);
+      } catch (e: any) {
+        throw new McpError(
+          ErrorCode.InternalError,
+          `Failed to read resource ${uri}: ${e?.message ?? String(e)}`
+        );
+      }
+
+      return {
+        contents: [
+          {
+            uri: snapshot.uri,
+            mimeType: snapshot.mimeType,
+            text: snapshot.text,
+            _meta: {
+              version: snapshot.version,
+              ...(snapshot.lastModified ? { lastModified: snapshot.lastModified } : {}),
+            },
+          },
+        ],
+      };
+    });
+
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (request.params.name === LENS_PRICE_TOOL_NAME) {
         if (!this.priceQueries) {
@@ -196,11 +290,19 @@ export class BazaarMcpServer {
           }
 
           // structuredContent is what the agent reads; the text block keeps the
-          // same payload visible to clients that only render content.
-          return {
-            content: [{ type: 'text', text: JSON.stringify(outcome.result, null, 2) }],
-            structuredContent: outcome.result,
-          };
+          // same payload visible to clients that only render content. When the
+          // payload does not fit the result limit the text carries the label and
+          // structuredContent is dropped — shipping it whole would keep the very
+          // context blow-up #416 is about, just in a different field.
+          const bounded = boundSerialized(outcome.result, {
+            maxBytes: this.limits.maxResultBytes,
+            maxItems: Number.MAX_SAFE_INTEGER,
+            offset: 0,
+            notice: `A Lens price was truncated to fit a ${this.limits.maxResultBytes}-byte tool output limit; request fewer venues or a narrower pair.`,
+          });
+          return bounded.truncated
+            ? { content: [{ type: 'text', text: bounded.text }] }
+            : { content: [{ type: 'text', text: bounded.text }], structuredContent: outcome.result };
         } catch (e: any) {
           // Prices come from Postgres and Horizon, so a throw here is the data
           // layer being unreachable — never an answer about the pair.
@@ -215,12 +317,18 @@ export class BazaarMcpServer {
         }
 
         const { url, query } = parsed.data;
-        
+        const page = this.resolvePage(parsed.data);
+
         try {
-          const endpoint = query 
-            ? `${url.replace(/\/$/, '')}/discovery/search?q=${encodeURIComponent(query)}`
-            : `${url.replace(/\/$/, '')}/discovery/resources`;
-            
+          const search = new URLSearchParams();
+          if (query) search.set('q', query);
+          search.set('limit', String(page.limit));
+          search.set('offset', String(page.offset));
+
+          const endpoint = query
+            ? `${url.replace(/\/$/, '')}/discovery/search?${search}`
+            : `${url.replace(/\/$/, '')}/discovery/resources?${search}`;
+
           const upstream = new URL(endpoint).host;
           const res = await ssrfSafeFetch(
             endpoint,
@@ -240,9 +348,21 @@ export class BazaarMcpServer {
             );
           }
 
+          // Cap the read, not only the reply: `res.json()` would buffer whatever a
+          // node chose to send before we got a say in the size.
+          const body = await readBodyCapped(res, this.limits.maxUpstreamBytes);
+          if (body.exceeded) {
+            return this.createErrorResponse(
+              'ERR_RESPONSE_TOO_LARGE',
+              `Upstream ${upstream} sent more than ${this.limits.maxUpstreamBytes} bytes, which cannot be read as one document. ` +
+                `Retry with a smaller limit (this page asked for ${page.limit}) or a larger offset.`,
+              { maxUpstreamBytes: this.limits.maxUpstreamBytes, limit: page.limit, offset: page.offset },
+            );
+          }
+
           let data: unknown;
           try {
-            data = await res.json();
+            data = JSON.parse(body.text);
           } catch {
             return this.createErrorResponse('ERR_SERVICE_UNREACHABLE', `Upstream ${upstream} returned a body that is not valid JSON`);
           }
@@ -253,10 +373,16 @@ export class BazaarMcpServer {
           if ((Array.isArray(data) && data.length === 0) || (hasResources(data) && data.resources.length === 0)) {
             return this.createErrorResponse('ERR_NO_RESULTS', 'No resources found');
           }
-          
-          return {
-            content: [{ type: 'text', text: JSON.stringify(data, null, 2) }],
-          };
+
+          return this.createBoundedResult(data, {
+            maxBytes: this.limits.maxResultBytes,
+            maxItems: page.limit,
+            offset: page.offset,
+            notice:
+              `Result truncated to fit a ${this.limits.maxResultBytes}-byte tool output limit, ` +
+              `of which at most ${page.limit} items fit on one page. ` +
+              'Ask for the rest with the limit and offset arguments.',
+          });
         } catch (e: any) {
           if (e instanceof SsrfError) {
             return this.createErrorResponse('ERR_URL_BLOCKED', `Blocked request: ${e.message}`);
@@ -275,9 +401,12 @@ export class BazaarMcpServer {
         if (!this.budget) {
           return this.createErrorResponse('ERR_BAD_REQUEST', 'This server has no spend budget configured.');
         }
-        return {
-          content: [{ type: 'text', text: JSON.stringify(this.budget.snapshot(), null, 2) }],
-        };
+        return this.createBoundedResult(this.budget.snapshot(), {
+          maxBytes: this.limits.maxResultBytes,
+          maxItems: Number.MAX_SAFE_INTEGER,
+          offset: 0,
+          notice: `The spend budget was truncated to fit a ${this.limits.maxResultBytes}-byte tool output limit.`,
+        });
       }
 
       if (request.params.name === 'paid_call') {
@@ -316,17 +445,34 @@ export class BazaarMcpServer {
           }
 
           this.settleReservation(reservationId, true);
-          const text = await res.text();
+          const body = await readBodyCapped(res, this.limits.maxUpstreamBytes);
+
+          const budget: ResultBudget = {
+            maxBytes: this.limits.maxResultBytes,
+            // paid_call has no pagination contract, so paging a collection would
+            // hide items with no way to ask for the next page; here only the
+            // byte ceiling applies.
+            maxItems: Number.MAX_SAFE_INTEGER,
+            offset: 0,
+            knownTruncated: body.exceeded,
+            notice: body.exceeded
+              ? `Only the first ${this.limits.maxUpstreamBytes} bytes this resource sent are shown, so this result is incomplete. ` +
+                'Ask the resource for a smaller response or a paginated endpoint.'
+              : `Result truncated to fit a ${this.limits.maxResultBytes}-byte tool output limit. ` +
+                'Ask the resource for a smaller response or a paginated endpoint.',
+          };
+
           let parsed;
           try {
-            parsed = JSON.parse(text);
+            parsed = JSON.parse(body.text);
           } catch {
-            parsed = text;
+            // Also the case of a body cut off mid-read, which cannot parse:
+            // knownTruncated labels the fragment instead of passing it off as an
+            // answer.
+            parsed = body.text;
           }
-          
-          return {
-            content: [{ type: 'text', text: typeof parsed === 'string' ? parsed : JSON.stringify(parsed, null, 2) }],
-          };
+
+          return this.createBoundedResult(parsed, budget);
         } catch (e: any) {
           this.settleReservation(reservationId, !this.paymentCouldNotHaveSettled(e));
           return this.handlePaidCallError(e);
@@ -335,6 +481,30 @@ export class BazaarMcpServer {
 
       throw new Error(`Unknown tool: ${request.params.name}`);
     });
+  }
+
+  /**
+   * Clamp a caller-requested page to the operator's bounds. Zod has already
+   * rejected non-positive or non-integer values; this is the ceiling an agent
+   * may not argue past, mirroring the node's own discovery limits.
+   */
+  private resolvePage(requested: { limit?: number; offset?: number }): { limit: number; offset: number } {
+    const limit =
+      requested.limit !== undefined ? Math.min(requested.limit, this.limits.maxPageLimit) : this.limits.defaultPageLimit;
+    return { limit, offset: requested.offset ?? 0 };
+  }
+
+  /**
+   * Serialize a successful result compactly — indentation is for humans and
+   * costs the agent context — and within `budget`, so no upstream response,
+   * large or hostile, can fill a context window in one call. Truncation is
+   * stated in the payload rather than left to be inferred.
+   */
+  private createBoundedResult(data: unknown, budget: ResultBudget) {
+    const { text } = boundSerialized(data, budget);
+    return {
+      content: [{ type: 'text', text }],
+    };
   }
 
   /**

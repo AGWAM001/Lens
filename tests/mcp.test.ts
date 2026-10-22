@@ -204,7 +204,9 @@ describe('BazaarMcpServer bazaar_search SSRF guard (#407)', () => {
     const response = await handler({ params: { name: 'bazaar_search', arguments: { url: 'https://ok.example' } } });
     expect(response.isError).toBe(true);
     expect(JSON.parse(response.content[0].text).code).toBe('ERR_URL_BLOCKED');
-    expect(calls).toEqual(['https://ok.example/discovery/resources']);
+    // #416: the page the server asks the node for is bounded by default, so the
+    // first hop carries limit/offset.
+    expect(calls).toEqual(['https://ok.example/discovery/resources?limit=50&offset=0']);
   });
 
   it('returns results from a permitted public host', async () => {

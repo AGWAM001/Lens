@@ -10,6 +10,12 @@ export const MCP_ERROR_CODES = {
   ERR_PAIR_NOT_WATCHED: 'ERR_PAIR_NOT_WATCHED',
   ERR_ASSET_ISSUER_MISMATCH: 'ERR_ASSET_ISSUER_MISMATCH',
   ERR_BUDGET_EXCEEDED: 'ERR_BUDGET_EXCEEDED',
+  // A request that succeeded upstream and was still refused: the body came back
+  // too large to hand to an agent without consuming its whole context. Not a
+  // reachability answer (ERR_SERVICE_UNREACHABLE) and not a refusal to ask
+  // (ERR_URL_BLOCKED / ERR_HOST_NOT_ALLOWED) — we did fetch it, we will not dump
+  // it. Carries the cap in `details` so the caller can retry with a smaller page.
+  ERR_RESPONSE_TOO_LARGE: 'ERR_RESPONSE_TOO_LARGE',
   // Refused before any request was made, for two different reasons:
   //   ERR_URL_BLOCKED      the target resolves somewhere we will never fetch
   //                        (private, loopback, link-local, metadata) — #488
