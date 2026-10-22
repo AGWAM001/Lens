@@ -161,10 +161,12 @@ export async function registerRESTRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const { assetA, assetB } = req.params
       const amount = parseFloat(req.query.amount ?? '1000')
+      // Validate amount before the pair check: a malformed request parameter
+      // is a 400 regardless of whether the pair is watched.
+      if (isNaN(amount) || amount <= 0) return reply.status(400).send({ error: 'amount must be a positive number' })
       const network = req.network ?? activeNetwork
       const pair = findPair(assetA, assetB, network)
       if (!pair) return reply.status(404).send({ error: `Pair ${assetA}/${assetB} not watched on ${network}` })
-      if (isNaN(amount) || amount <= 0) return reply.status(400).send({ error: 'amount must be a positive number' })
 
       return getBestRoute(pair.assetA, pair.assetB, pair.pairKey, amount, network)
     }
