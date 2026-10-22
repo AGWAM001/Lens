@@ -2,12 +2,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import Fastify from 'fastify'
 import Ajv from 'ajv'
 
-const { mockQuery, mockGetCachedPrice, mockGetBestRoute, mockGetAggregatedPrice, mockGetDepth } = vi.hoisted(() => ({
+const { mockQuery, mockGetCachedPrice, mockGetBestRoute, mockGetAggregatedPrice, mockGetDepth, mockGetImpact } = vi.hoisted(() => ({
   mockQuery: vi.fn(),
   mockGetCachedPrice: vi.fn(),
   mockGetBestRoute: vi.fn(),
   mockGetAggregatedPrice: vi.fn(),
   mockGetDepth: vi.fn(),
+  mockGetImpact: vi.fn(),
 }))
 
 vi.mock('../db', () => ({
@@ -29,6 +30,7 @@ vi.mock('../aggregator/vwap', () => ({
 
 vi.mock('../pricing/depth', () => ({
   getDepth: mockGetDepth,
+  getImpact: mockGetImpact,
 }))
 
 const { schemaTestPairs } = vi.hoisted(() => ({
@@ -97,6 +99,15 @@ describe('REST response schema validation', () => {
       bids: [],
       source: 'AMM',
     })
+    mockGetImpact.mockResolvedValue({
+      status: 'ok',
+      spotPrice: 0.1,
+      availableLiquidity: 500,
+      smallestSize: 100,
+      ladder: [{ size: 100, output: 9.9, executionPrice: 0.099, slippagePct: 1 }],
+      thresholds: [{ thresholdPct: 1, crossed: true, size: 100 }],
+      source: 'AMM',
+    })
   })
 
   it('returns 200 and a body that matches the declared /price schema', async () => {
@@ -140,5 +151,13 @@ describe('REST response schema validation', () => {
     const res = await app.inject({ method: 'GET', url: '/price/XLM/USDC' })
 
     expect(res.statusCode).toBe(500)
+  })
+
+  it('returns a schema-valid adaptive impact response', async () => {
+    const app = await buildApp()
+    const res = await app.inject({ method: 'GET', url: '/impact/XLM/USDC?thresholds=1' })
+
+    expect(res.statusCode).toBe(200)
+    expect(res.json().thresholds).toEqual([{ thresholdPct: 1, crossed: true, size: 100 }])
   })
 })
