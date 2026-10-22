@@ -223,7 +223,7 @@ describe('bazaar_search', () => {
     // Discovery now goes through ssrfSafeFetch, which passes a fetch init
     // (manual redirect handling) alongside the URL.
     expect(mockFetchWithTimeout).toHaveBeenCalledWith(
-      'https://bazaar.example/discovery/resources',
+      'https://bazaar.example/discovery/resources?limit=50&offset=0',
       expect.objectContaining({ redirect: 'manual' })
     );
     // Discovery must never spend: only paid_call may reach the payment signer.
@@ -245,7 +245,7 @@ describe('bazaar_search', () => {
     });
 
     expect(mockFetchWithTimeout).toHaveBeenCalledWith(
-      'https://bazaar.example/discovery/search?q=XLM%2FUSD%20spot',
+      'https://bazaar.example/discovery/search?q=XLM%2FUSD+spot&limit=50&offset=0',
       expect.objectContaining({ redirect: 'manual' })
     );
     expect(response.isError).toBeFalsy();

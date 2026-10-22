@@ -8,7 +8,6 @@ import {
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -293,6 +292,8 @@ export class BazaarMcpServer {
       fetchImpl: (input, init) => fetchWithTimeout(input, init),
       ...config_.bazaarFetch,
     };
+    this.resources =
+      config_.resources ?? defaultResources({ serverName: SERVER_NAME, serverVersion: SERVER_VERSION });
     this.server = this.createProtocolServer();
   }
 
@@ -302,9 +303,6 @@ export class BazaarMcpServer {
    */
   private createProtocolServer(): Server {
     const server = new Server(
-    this.resources =
-      config_.resources ?? defaultResources({ serverName: SERVER_NAME, serverVersion: SERVER_VERSION });
-    this.server = new Server(
       {
         name: SERVER_NAME,
         version: SERVER_VERSION,
@@ -366,11 +364,10 @@ export class BazaarMcpServer {
       return { tools };
     });
 
-    target.setRequestHandler(CallToolRequestSchema, async (request) => {
     // Listing resolves each resource rather than returning a static catalogue,
     // so the freshness it reports is real. These payloads are small and cheap
     // to produce; a stale or invented `lastModified` would be worse than none.
-    this.server.setRequestHandler(ListResourcesRequestSchema, async () => ({
+    target.setRequestHandler(ListResourcesRequestSchema, async () => ({
       resources: this.resources.map((descriptor) => {
         const snapshot = snapshotResource(descriptor);
         return {
@@ -390,7 +387,7 @@ export class BazaarMcpServer {
       }),
     }));
 
-    this.server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+    target.setRequestHandler(ReadResourceRequestSchema, async (request) => {
       const uri = request.params.uri;
       const descriptor = this.resources.find((d) => d.uri === uri);
       // A refusal to read is a protocol error, not a tool result: unlike a tool
@@ -430,7 +427,7 @@ export class BazaarMcpServer {
       };
     });
 
-    this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    target.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (request.params.name === LENS_PRICE_TOOL_NAME) {
         if (!this.priceQueries) {
           return this.createErrorResponse(
@@ -474,11 +471,6 @@ export class BazaarMcpServer {
         }
 
         const { url, query } = parsed.data;
-
-        try {
-          const endpoint = query
-            ? `${url.replace(/\/$/, '')}/discovery/search?q=${encodeURIComponent(query)}`
-            : `${url.replace(/\/$/, '')}/discovery/resources`;
         const page = this.resolvePage(parsed.data);
 
         try {
@@ -536,9 +528,6 @@ export class BazaarMcpServer {
             return this.createErrorResponse('ERR_NO_RESULTS', 'No resources found');
           }
 
-          return {
-            content: [{ type: 'text', text: JSON.stringify(data, null, 2) }],
-          };
           return this.createBoundedResult(data, {
             maxBytes: this.limits.maxResultBytes,
             maxItems: page.limit,
@@ -576,10 +565,7 @@ export class BazaarMcpServer {
           ...this.budget.snapshot(),
           recordedSpend: this.paymentLedger.totalSpend(),
         };
-        return {
-          content: [{ type: 'text', text: JSON.stringify(reported, null, 2) }],
-        };
-        return this.createBoundedResult(this.budget.snapshot(), {
+        return this.createBoundedResult(reported, {
           maxBytes: this.limits.maxResultBytes,
           maxItems: Number.MAX_SAFE_INTEGER,
           offset: 0,
@@ -648,19 +634,8 @@ export class BazaarMcpServer {
           }
 
           this.settleReservation(reservationId, true);
-          const text = await res.text();
-          let body;
-          try {
-            body = JSON.parse(text);
-          } catch {
-            body = text;
-          }
-          this.paymentLedger.record({ url, method, outcome: 'success', response: res });
-
-          return {
-            content: [{ type: 'text', text: typeof body === 'string' ? body : JSON.stringify(body, null, 2) }],
-          };
           const body = await readBodyCapped(res, this.limits.maxUpstreamBytes);
+          this.paymentLedger.record({ url, method, outcome: 'success', response: res });
 
           const budget: ResultBudget = {
             maxBytes: this.limits.maxResultBytes,
