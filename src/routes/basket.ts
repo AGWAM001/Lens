@@ -64,7 +64,7 @@ const BasketQuerySchema = z
 export async function registerBasketRoutes(app: FastifyInstance) {
   app.get<{
     Querystring: { asset?: string | string[]; weight?: string | string[] }
-  }>('/basket', async (req, reply) => {
+  }>('/basket', { config: { scope: 'read:prices' } }, async (req, reply) => {
     const parsed = BasketQuerySchema.safeParse(req.query)
     if (!parsed.success) {
       return reply.status(400).send(formatValidationError(parsed.error))

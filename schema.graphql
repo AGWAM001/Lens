@@ -27,6 +27,7 @@ type RouteInfo {
   estimatedOutput: Float!
   slippagePct: Float!
   recommendation: String!
+  network: String
 }
 
 type PriceBucket {

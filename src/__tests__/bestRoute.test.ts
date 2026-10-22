@@ -13,19 +13,20 @@ vi.mock('../db', () => ({
 vi.mock('@stellar/stellar-sdk', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@stellar/stellar-sdk')>()
   const callFn = vi.fn()
+  const strictSendPathsFn = vi.fn().mockReturnThis()
   return {
     ...actual,
     Horizon: {
       Server: vi.fn(function() {
         return {
-          strictSendPaths: vi.fn().mockReturnThis(),
+          strictSendPaths: strictSendPathsFn,
           call: callFn
         }
       })
     },
     Asset: Object.assign(
       vi.fn(function(code, issuer) { return { code, issuer } }),
-      { native: vi.fn(() => 'native') }
+      { native: vi.fn(() => ({ code: 'XLM', issuer: null })) }
     ),
     // config.ts's buildNetworkConfig() falls back to these when no
     // NETWORK_PASSPHRASE_* env var is set — needed now that getBestRoute
@@ -34,7 +35,8 @@ vi.mock('@stellar/stellar-sdk', async (importOriginal) => {
       PUBLIC: 'Public Global Stellar Network ; September 2015',
       TESTNET: 'Test SDF Network ; September 2015',
     },
-    __mockCall: callFn
+    __mockCall: callFn,
+    __strictSendPaths: strictSendPathsFn,
   }
 })
 
@@ -45,9 +47,11 @@ describe('getBestRoute', () => {
 
   const mockQuery = vi.mocked(pgPool.query)
   const mockCall = (StellarSdk as any).__mockCall
+  const mockStrictSendPaths = (StellarSdk as any).__strictSendPaths
 
   beforeEach(() => {
     vi.clearAllMocks()
+    mockStrictSendPaths.mockReturnThis()
     // horizonServers is memoised at module scope (see bestRoute.ts) — clear
     // between tests so each one observes fresh Horizon.Server() constructions.
     _resetHorizonServers()
@@ -255,6 +259,184 @@ describe('getBestRoute', () => {
       const r = await getBestRoute(assetA, assetB, pairKey, amount)
       expect(r.route).toBe('SPLIT')
       expect(r.slippagePct).toBe(0)
+    })
+  })
+
+  describe('multi-hop routing', () => {
+    const thinPairAssetA = { code: 'MEME', issuer: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5' }
+    const thinPairAssetB = { code: 'RARE', issuer: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5' }
+    const intermediateXLM = { code: 'XLM', issuer: null }
+    const thinDirectKey = 'MEME:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5/RARE:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5'
+
+    it('selects a two-hop route when intermediate routing yields more output than direct', async () => {
+      // Direct thin pair:
+      // SDEX direct gives only 10 RARE for 100 MEME
+      // AMM direct has no pool
+      // Hop 1 (MEME -> XLM):
+      // SDEX gives 200 XLM for 100 MEME
+      // Hop 2 (XLM -> RARE):
+      // SDEX gives 500 RARE for 200 XLM
+      // Total 2-hop output = 500 RARE vs direct 10 RARE
+      mockStrictSendPaths.mockImplementation((sourceAsset: any, amountStr: string, destArray: any[]) => {
+        const dest = destArray?.[0]
+        const amount = parseFloat(amountStr)
+
+        if (dest?.code === 'RARE' && amount === 100) {
+          mockCall.mockResolvedValueOnce({
+            records: [{ destination_amount: '10' }],
+          })
+        } else if (dest?.code === 'XLM' || (dest === 'native' || !dest?.issuer)) {
+          mockCall.mockResolvedValueOnce({
+            records: [{ destination_amount: String(amount * 2) }], // 100 * 2 = 200 XLM
+          })
+        } else if (dest?.code === 'RARE' && amount === 200) {
+          mockCall.mockResolvedValueOnce({
+            records: [{ destination_amount: '500' }], // 200 XLM -> 500 RARE
+          })
+        } else {
+          mockCall.mockResolvedValueOnce({ records: [] })
+        }
+        return { call: mockCall }
+      })
+
+      mockQuery.mockResolvedValue({ rows: [] } as any) // No AMM pools
+
+      const result = await getBestRoute(
+        thinPairAssetA,
+        thinPairAssetB,
+        thinDirectKey,
+        100,
+        'testnet',
+        {
+          maxHops: 2,
+          intermediates: [intermediateXLM],
+        }
+      )
+
+      expect(result.route).toBe('MULTI_HOP')
+      expect(result.estimatedOutput).toBe(500)
+      expect(result.hops).toBeDefined()
+      expect(result.hops?.length).toBe(2)
+
+      // Hop 1
+      expect(result.hops![0].assetIn.code).toBe('MEME')
+      expect(result.hops![0].assetOut.code).toBe('XLM')
+      expect(result.hops![0].venue).toBe('SDEX')
+      expect(result.hops![0].inputAmount).toBe(100)
+      expect(result.hops![0].outputAmount).toBe(200)
+      expect(result.hops![0].slippagePct).toBe(0)
+
+      // Hop 2
+      expect(result.hops![1].assetIn.code).toBe('XLM')
+      expect(result.hops![1].assetOut.code).toBe('RARE')
+      expect(result.hops![1].venue).toBe('SDEX')
+      expect(result.hops![1].inputAmount).toBe(200)
+      expect(result.hops![1].outputAmount).toBe(500)
+      expect(result.hops![1].slippagePct).toBe(0)
+
+      // Comparison with direct
+      expect(result.comparison).toBeDefined()
+      expect(result.comparison?.direct.estimatedOutput).toBe(10)
+      expect(result.comparison?.direct.route).toBe('SDEX')
+      expect(result.comparison?.multiHop?.estimatedOutput).toBe(500)
+      expect(result.comparison?.multiHop?.hopCount).toBe(2)
+
+      // Provenance
+      expect(result.provenance).toBeDefined()
+      expect(result.provenance?.network).toBe('testnet')
+      expect(result.provenance?.venuesQueried).toEqual(['SDEX', 'AMM'])
+      expect(result.provenance?.sampleCount).toBeGreaterThan(0)
+    })
+
+    it('keeps direct route when direct is better than multi-hop', async () => {
+      // Direct gives 1000
+      // Multi-hop gives only 800
+      mockStrictSendPaths.mockImplementation((sourceAsset: any, amountStr: string, destArray: any[]) => {
+        const dest = destArray?.[0]
+        const amount = parseFloat(amountStr)
+
+        if (dest?.code === 'RARE' && amount === 100) {
+          mockCall.mockResolvedValueOnce({
+            records: [{ destination_amount: '1000' }],
+          })
+        } else if (dest?.code === 'XLM' || (dest === 'native' || !dest?.issuer)) {
+          mockCall.mockResolvedValueOnce({
+            records: [{ destination_amount: String(amount * 2) }],
+          })
+        } else if (dest?.code === 'RARE' && amount === 200) {
+          mockCall.mockResolvedValueOnce({
+            records: [{ destination_amount: '800' }],
+          })
+        } else {
+          mockCall.mockResolvedValueOnce({ records: [] })
+        }
+        return { call: mockCall }
+      })
+
+      mockQuery.mockResolvedValue({ rows: [] } as any)
+
+      const result = await getBestRoute(
+        thinPairAssetA,
+        thinPairAssetB,
+        thinDirectKey,
+        100,
+        'testnet',
+        {
+          maxHops: 2,
+          intermediates: [intermediateXLM],
+        }
+      )
+
+      expect(result.route).toBe('SDEX')
+      expect(result.estimatedOutput).toBe(1000)
+      expect(result.comparison).toBeDefined()
+      expect(result.comparison?.direct.estimatedOutput).toBe(1000)
+      expect(result.comparison?.multiHop?.estimatedOutput).toBe(800)
+      expect(result.hops?.length).toBe(1)
+      expect(result.hops![0].venue).toBe('SDEX')
+    })
+
+    it('respects configurable maxHops depth bound', async () => {
+      // If maxHops = 1, multi-hop should not be considered even if intermediates are passed
+      mockStrictSendPaths.mockImplementation((sourceAsset: any, amountStr: string, destArray: any[]) => {
+        const dest = destArray?.[0]
+        const amount = parseFloat(amountStr)
+
+        if (dest?.code === 'RARE' && amount === 100) {
+          mockCall.mockResolvedValueOnce({
+            records: [{ destination_amount: '10' }],
+          })
+        } else if (dest?.code === 'XLM' || (dest === 'native' || !dest?.issuer)) {
+          mockCall.mockResolvedValueOnce({
+            records: [{ destination_amount: '200' }],
+          })
+        } else if (dest?.code === 'RARE' && amount === 200) {
+          mockCall.mockResolvedValueOnce({
+            records: [{ destination_amount: '500' }],
+          })
+        } else {
+          mockCall.mockResolvedValueOnce({ records: [] })
+        }
+        return { call: mockCall }
+      })
+
+      mockQuery.mockResolvedValue({ rows: [] } as any)
+
+      const result = await getBestRoute(
+        thinPairAssetA,
+        thinPairAssetB,
+        thinDirectKey,
+        100,
+        'testnet',
+        {
+          maxHops: 1, // depth limit 1 hop (direct only)
+          intermediates: [intermediateXLM],
+        }
+      )
+
+      expect(result.route).toBe('SDEX')
+      expect(result.estimatedOutput).toBe(10)
+      expect(result.comparison?.multiHop).toBeNull()
     })
   })
 })

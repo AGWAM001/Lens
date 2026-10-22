@@ -2,3 +2,7 @@ node_modules/
 dist/
 .env
 *.tsbuildinfo
+
+# Soroban build artifacts for the SEP-40 oracle contract (oracle/contract)
+oracle/contract/target/
+oracle/contract/test_snapshots/

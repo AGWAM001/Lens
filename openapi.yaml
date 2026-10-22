@@ -223,6 +223,12 @@ paths:
                 $ref: '#/components/schemas/SnapshotResponse'
         '429':
           $ref: '#/components/responses/TooManyRequests'
+        '500':
+          description: Snapshot aggregation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InternalErrorResponse'
 
   /price/{assetA}/{assetB}:
     get:
@@ -1012,6 +1018,10 @@ paths:
           $ref: '#/components/responses/TooManyRequests'
         '500':
           description: Volume aggregation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InternalErrorResponse'
 
   /spreads/{asset}:
     get:
@@ -1054,6 +1064,10 @@ paths:
           $ref: '#/components/responses/TooManyRequests'
         '500':
           description: Spread aggregation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InternalErrorResponse'
 
   /compare/{asset}:
     get:
@@ -1234,6 +1248,10 @@ paths:
           $ref: '#/components/responses/TooManyRequests'
         '500':
           description: Benchmark computation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InternalErrorResponse'
 
   /basket:
     get:
@@ -1448,6 +1466,27 @@ paths:
     get:
       operationId: getMyUsage
       summary: Get usage and quota for the calling API key
+      security:
+        - apiKeyAuth: []
+      responses:
+        '200':
+          description: Usage summary for the authenticated key
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsageResponse'
+        '401':
+          description: Missing or invalid API key
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /usage:
+    get:
+      operationId: getCallerUsage
+      summary: Get usage and quota for the calling API key (alias for /usage/me)
       security:
         - apiKeyAuth: []
       responses:
@@ -1686,6 +1725,12 @@ components:
                 type: string
               retryAfter:
                 type: string
+    InternalServerError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/InternalErrorResponse'
 
   headers:
     CacheControl:
@@ -1701,6 +1746,21 @@ components:
         example: 'public, max-age=300'
 
   schemas:
+    InternalErrorResponse:
+      type: object
+      required: [code, message, correlationId]
+      properties:
+        code:
+          type: string
+          enum: [internal_error]
+          example: internal_error
+        message:
+          type: string
+          example: An internal server error occurred.
+        correlationId:
+          type: string
+          example: 9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d
+
     DependencyCheck:
       type: object
       description: >-
@@ -2101,12 +2161,97 @@ components:
           type: integer
           nullable: true
 
+    RouteHop:
+      type: object
+      required: [assetIn, assetOut, venue, inputAmount, outputAmount, price, spotPrice, slippagePct]
+      properties:
+        assetIn:
+          $ref: '#/components/schemas/Asset'
+        assetOut:
+          $ref: '#/components/schemas/Asset'
+        venue:
+          type: string
+          enum: [SDEX, AMM]
+        poolId:
+          type: string
+        inputAmount:
+          type: number
+        outputAmount:
+          type: number
+        price:
+          type: number
+        spotPrice:
+          type: number
+        slippagePct:
+          type: number
+
+    RouteOption:
+      type: object
+      required: [hops, hopCount, estimatedOutput, effectivePrice, slippagePct]
+      properties:
+        hops:
+          type: array
+          items:
+            $ref: '#/components/schemas/RouteHop'
+        hopCount:
+          type: integer
+        estimatedOutput:
+          type: number
+        effectivePrice:
+          type: number
+        slippagePct:
+          type: number
+
+    RouteComparison:
+      type: object
+      required: [direct, multiHop]
+      properties:
+        direct:
+          type: object
+          required: [route, sdexPrice, ammPrice, estimatedOutput, slippagePct]
+          properties:
+            route:
+              type: string
+              enum: [SDEX, AMM, SPLIT, UNKNOWN]
+            sdexPrice:
+              type: number
+            ammPrice:
+              type: number
+            estimatedOutput:
+              type: number
+            slippagePct:
+              type: number
+        multiHop:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/RouteOption'
+
+    RouteProvenance:
+      type: object
+      required: [sampledAt, network, venuesQueried, sampleCount, freshnessSeconds]
+      properties:
+        sampledAt:
+          type: string
+          format: date-time
+        network:
+          type: string
+        venuesQueried:
+          type: array
+          items:
+            type: string
+        sampleCount:
+          type: integer
+        freshnessSeconds:
+          type: number
+          nullable: true
+
     RouteInfo:
       type: object
+      required: [route, sdexPrice, ammPrice, estimatedOutput, slippagePct, recommendation]
       properties:
         route:
           type: string
-          enum: [SDEX, AMM, SPLIT, UNKNOWN]
+          enum: [SDEX, AMM, SPLIT, MULTI_HOP, UNKNOWN]
         sdexPrice:
           type: number
         ammPrice:
@@ -2117,6 +2262,17 @@ components:
           type: number
         recommendation:
           type: string
+        network:
+          type: string
+          enum: [testnet, mainnet]
+        hops:
+          type: array
+          items:
+            $ref: '#/components/schemas/RouteHop'
+        comparison:
+          $ref: '#/components/schemas/RouteComparison'
+        provenance:
+          $ref: '#/components/schemas/RouteProvenance'
 
     PriceBucket:
       type: object
@@ -2942,6 +3098,24 @@ components:
           enum: [block, charge_402, allow_overage]
         quotaExceeded:
           type: boolean
+        dailyResetsAt:
+          type: string
+        monthlyResetsAt:
+          type: string
+        resets:
+          type: object
+          properties:
+            daily:
+              type: string
+            monthly:
+              type: string
+        resetsInSeconds:
+          type: object
+          properties:
+            daily:
+              type: integer
+            monthly:
+              type: integer
 
     VerifyRequest:
       type: object

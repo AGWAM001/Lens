@@ -194,7 +194,12 @@ describe('GET /volumes/:asset', () => {
     const app = await buildApp()
     const res = await app.inject({ method: 'GET', url: '/volumes/XLM?window=24h' })
     expect(res.statusCode).toBe(500)
-    expect(res.json().error).toMatch(/Volume aggregation failed/)
+    expect(res.json()).toEqual({
+      code: 'internal_error',
+      message: 'An internal server error occurred.',
+      correlationId: expect.any(String),
+    })
+    expect(res.body).not.toMatch(/db down/)
     await app.close()
   })
 
