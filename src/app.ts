@@ -20,6 +20,7 @@ import { registerFacilitatorRoutes } from './api/facilitator'
 import { registerPriceRoutes } from './routes/price'
 import { registerVolumeRoutes } from './routes/volumes'
 import { registerSpreadsRoutes } from './routes/spreads'
+import { registerRateRoutes } from './routes/rates'
 import { registerBenchmarkRoutes } from './routes/benchmark'
 import { registerOracleRoutes } from './routes/oracle'
 import { registerBasketRoutes } from './routes/basket'
@@ -132,6 +133,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   await registerPriceRoutes(app)
   await registerVolumeRoutes(app)
   await registerSpreadsRoutes(app)
+  await registerRateRoutes(app)
   await registerBenchmarkRoutes(app)
   await registerOracleRoutes(app)
   await registerBasketRoutes(app)
