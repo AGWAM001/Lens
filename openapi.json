@@ -1791,6 +1791,77 @@
         }
       }
     },
+    "/correlation": {
+      "get": {
+        "operationId": "getCorrelation",
+        "summary": "Compute price correlation matrix across a basket of assets over a window",
+        "security": [],
+        "parameters": [
+          {
+            "name": "assets",
+            "in": "query",
+            "required": true,
+            "description": "Comma-separated or repeated asset codes (at least two)",
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ]
+            },
+            "example": "XLM,USDC"
+          },
+          {
+            "name": "window",
+            "in": "query",
+            "required": false,
+            "description": "Lookback window (5m, 15m, 1h, 24h, 7d, 30d). Defaults to 24h.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "5m",
+                "15m",
+                "1h",
+                "24h",
+                "7d",
+                "30d"
+              ],
+              "default": "24h"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/NetworkQuery"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Correlation matrix and pair provenance",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorrelationResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid parameters"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "description": "Correlation computation failed"
+          }
+        }
+      }
+    },
     "/discovery/resources": {
       "get": {
         "operationId": "listDiscoveryResources",
@@ -3935,6 +4006,147 @@
           "computedAt": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      },
+      "CorrelationResponse": {
+        "type": "object",
+        "required": [
+          "network",
+          "window",
+          "startTime",
+          "endTime",
+          "assets",
+          "matrix",
+          "sampleCounts",
+          "pairs"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "network": {
+            "type": "string",
+            "enum": [
+              "testnet",
+              "mainnet"
+            ]
+          },
+          "window": {
+            "type": "string",
+            "enum": [
+              "5m",
+              "15m",
+              "1h",
+              "24h",
+              "7d",
+              "30d"
+            ]
+          },
+          "startTime": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "endTime": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "assets": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "matrix": {
+            "type": "object",
+            "description": "Symmetric correlation matrix keyed by asset pair",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "number",
+                "nullable": true
+              }
+            }
+          },
+          "sampleCounts": {
+            "type": "object",
+            "description": "Overlapping sample count per pair",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "integer"
+              }
+            }
+          },
+          "pairs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CorrelationCell"
+            }
+          }
+        }
+      },
+      "CorrelationCell": {
+        "type": "object",
+        "required": [
+          "assetA",
+          "assetB",
+          "coefficient",
+          "status",
+          "sampleCount",
+          "provenance"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "assetA": {
+            "type": "string"
+          },
+          "assetB": {
+            "type": "string"
+          },
+          "coefficient": {
+            "type": "number",
+            "nullable": true,
+            "description": "Pearson correlation coefficient between -1 and 1, or null if insufficient"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "computed",
+              "insufficient"
+            ]
+          },
+          "sampleCount": {
+            "type": "integer"
+          },
+          "provenance": {
+            "type": "object",
+            "required": [
+              "sampleCount",
+              "venues",
+              "oldestSample",
+              "newestSample"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "sampleCount": {
+                "type": "integer"
+              },
+              "venues": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "oldestSample": {
+                "type": "string",
+                "format": "date-time",
+                "nullable": true
+              },
+              "newestSample": {
+                "type": "string",
+                "format": "date-time",
+                "nullable": true
+              }
+            }
           }
         }
       },
