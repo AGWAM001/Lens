@@ -101,7 +101,14 @@ export async function snapshotPool(
             counterVolume: 0,
             ledger: pool.last_modified_ledger ?? 0,
             timestamp: new Date(),
-            eventId: `amm-snapshot-${pool.id}-${Date.now()}`,
+            // #237: snapshot price points have no trade event to key on, so
+            // the id is derived from the pool's STATE — (pool, ledger) is the
+            // version of the reserves, and two ingesters that read the same
+            // ledger hold the same spot price. A `Date.now()` id here would
+            // mint a fresh identity per attempt, which is exactly the random
+            // key the replay absorbing rejects: retried batches and overlapping
+            // instances would each insert the same observation again.
+            eventId: `amm-snapshot-${pool.id}-${pool.last_modified_ledger ?? 0}`,
           },
         ],
         network

@@ -38,7 +38,13 @@ beforeAll(async () => {
       for (const method of methods) {
         // HEAD is auto-generated from GET and OPTIONS is framework-level;
         // neither needs its own OpenAPI operation.
-        if (method === 'HEAD' || method === 'OPTIONS') continue
+        //
+        // QUERY is the safe, idempotent alternative to POST that Mercurius
+        // registers on /graphql. OpenAPI 3.0 has no `query` operation to
+        // describe it with, and the operation itself is already documented
+        // under POST /graphql — the method is a different transport for the
+        // same thing, not a different endpoint.
+        if (method === 'HEAD' || method === 'OPTIONS' || method === 'QUERY') continue
         registered.push({ method, path: toOpenApiPath(route.url) })
       }
     },

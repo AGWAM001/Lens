@@ -131,7 +131,7 @@ describe('GET /basket', () => {
     await app.close()
   })
 
-  it('returns 404 when an asset has no price data', async () => {
+  it('returns 200 with error and reason when an asset has no price data', async () => {
     mockQuery.mockImplementation(async (_sql: string, params: string[]) => {
       const asset = params[0]
       if (asset === 'USDC') return { rows: [{ vwap: '1.0' }] }
@@ -143,7 +143,12 @@ describe('GET /basket', () => {
       method: 'GET',
       url: '/basket?asset=USDC&weight=1&asset=UNKNOWN&weight=1',
     })
-    expect(res.statusCode).toBe(404)
+    // Changed from 404 to 200 per issue #262: the asset code is valid, the
+    // query succeeded, there is just no data. A 404 would imply the endpoint
+    // or the asset itself doesn't exist.
+    expect(res.statusCode).toBe(200)
     expect(res.json().error).toMatch(/UNKNOWN/)
+    expect(res.json().reason).toBe('missing_price_data')
+    expect(res.json().missingAssets).toContain('UNKNOWN')
   })
 })

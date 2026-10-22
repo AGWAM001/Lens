@@ -87,7 +87,14 @@ export async function registerBasketRoutes(app: FastifyInstance) {
 
     const missingAssets = components.filter((c) => c.price === null).map((c) => c.asset)
     if (missingAssets.length > 0) {
-      return reply.status(404).send({ error: `No price data found for: ${missingAssets.join(', ')}` })
+      // 200 with reason: query was valid but no price data exists (yet).
+      // A 404 would imply the assets themselves are invalid/unwatched.
+      return {
+        error: `No price data found for: ${missingAssets.join(', ')}`,
+        reason: 'missing_price_data',
+        missingAssets,
+        requestedAt: new Date().toISOString(),
+      }
     }
 
     const basketPrice = components.reduce(

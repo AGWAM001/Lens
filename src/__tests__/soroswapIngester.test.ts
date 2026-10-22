@@ -13,12 +13,23 @@ vi.mock('../db', () => ({
   upsertPricePoints: vi.fn().mockResolvedValue(undefined),
 }))
 
+const mockLogger = vi.hoisted(() => ({
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+  debug: vi.fn(),
+  child: vi.fn(),
+}))
+
+vi.mock('../logger', () => ({
+  createLogger: () => mockLogger,
+  logger: mockLogger,
+}))
+
 vi.mock('../webhookDispatcher', () => ({
   dispatchPriceUpdate: vi.fn().mockResolvedValue(undefined),
 }))
 
-// We mock fetchPoolReserves and fetchPoolsFromFactory at module level so
-// ingestPool / ingestPair tests can control RPC responses without a live node.
 vi.mock('../ingesters/soroswap', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../ingesters/soroswap')>()
   return {
@@ -26,6 +37,7 @@ vi.mock('../ingesters/soroswap', async (importOriginal) => {
     fetchPoolReserves: vi.fn(),
     fetchPoolsFromFactory: vi.fn(),
     fetchSoroswapTokenList: vi.fn(),
+    fetchTokenDecimals: vi.fn().mockImplementation(async () => null),
   }
 })
 
@@ -37,11 +49,17 @@ import {
   fetchSoroswapTokenList,
   fetchPoolReserves,
   fetchPoolsFromFactory,
+  fetchTokenDecimals,
+  getCachedTokenDecimals,
+  setCachedTokenDecimals,
+  _resetTokenDecimalsCache,
+  isPricePlausible,
   type PoolEntry,
   type SoroswapToken,
 } from '../ingesters/soroswap'
 import { upsertPricePoints } from '../db'
 import { dispatchPriceUpdate } from '../webhookDispatcher'
+import { price_rejected_total } from '../metrics'
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 const mockPair = {
@@ -89,6 +107,57 @@ describe('calcSpotPrice', () => {
   it('handles 1:1 ratio', () => {
     expect(calcSpotPrice(5000n, 5000n)).toBe(1)
   })
+
+  it('scales reserves correctly when token decimals differ from 7 (#227)', () => {
+    // Token A (USDC) has 6 decimals, Token B (XLM) has 7 decimals
+    // 10 USDC (10 * 10^6 = 10,000,000) and 100 XLM (100 * 10^7 = 1,000,000,000)
+    // Price = 10 USDC / 100 XLM = 0.1 USDC per XLM
+    const priceA = calcSpotPrice(10_000_000n, 1_000_000_000n, 6, 7)
+    expect(priceA).toBeCloseTo(0.1, 5)
+
+    // Token A has 18 decimals, Token B has 7 decimals
+    // 5 * 10^18 A and 10 * 10^7 B -> price = 5 / 10 = 0.5
+    const priceB = calcSpotPrice(5_000_000_000_000_000_000n, 100_000_000n, 18, 7)
+    expect(priceB).toBeCloseTo(0.5, 5)
+
+    // Token A has 7 decimals, Token B has 6 decimals
+    // 20 * 10^7 A and 10 * 10^6 B -> price = 20 / 10 = 2.0
+    const priceC = calcSpotPrice(200_000_000n, 10_000_000n, 7, 6)
+    expect(priceC).toBeCloseTo(2.0, 5)
+  })
+})
+
+// ── Token Decimals Cache ──────────────────────────────────────────────────────
+describe('Token Decimals Cache (#227)', () => {
+  beforeEach(() => {
+    _resetTokenDecimalsCache()
+  })
+
+  it('stores and retrieves cached decimals', () => {
+    expect(getCachedTokenDecimals('CTOKEN1')).toBeUndefined()
+    setCachedTokenDecimals('CTOKEN1', 6)
+    expect(getCachedTokenDecimals('CTOKEN1')).toBe(6)
+
+    _resetTokenDecimalsCache()
+    expect(getCachedTokenDecimals('CTOKEN1')).toBeUndefined()
+  })
+})
+
+// ── Plausibility Check ────────────────────────────────────────────────────────
+describe('Price Plausibility Sanity Check (#227)', () => {
+  it('accepts prices within plausible range', () => {
+    expect(isPricePlausible(1.0, 0.0001, 10000)).toBe(true)
+    expect(isPricePlausible(0.0001, 0.0001, 10000)).toBe(true)
+    expect(isPricePlausible(10000, 0.0001, 10000)).toBe(true)
+  })
+
+  it('rejects prices below or above plausible range or NaN/Infinite', () => {
+    expect(isPricePlausible(0.00001, 0.0001, 10000)).toBe(false)
+    expect(isPricePlausible(20000, 0.0001, 10000)).toBe(false)
+    expect(isPricePlausible(NaN, 0.0001, 10000)).toBe(false)
+    expect(isPricePlausible(Infinity, 0.0001, 10000)).toBe(false)
+    expect(isPricePlausible(-1.0, 0.0001, 10000)).toBe(false)
+  })
 })
 
 // ── ingestPool ────────────────────────────────────────────────────────────────
@@ -101,6 +170,7 @@ describe('ingestPool', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    ;(upsertPricePoints as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   })
 
   it('stores a price point when reserves are non-zero', async () => {
@@ -147,6 +217,50 @@ describe('ingestPool', () => {
     ;(upsertPricePoints as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('DB error'))
 
     await expect(ingestPool(mockPoolEntry, mockPair as any, mockFetch)).resolves.toBeUndefined()
+  })
+
+  it('correctly reads and scales for tokens with decimals other than 7 (#227)', async () => {
+    // 10_000_000 raw tokenA (with 6 decimals = 10 units)
+    // 1_000_000_000 raw tokenB (with 7 decimals = 100 units)
+    // spotPrice = 10 / 100 = 0.1
+    const mockFetch = vi.fn().mockResolvedValue([10_000_000n, 1_000_000_000n])
+    const mockDecimals = vi.fn().mockImplementation(async (addr: string) => {
+      if (addr === mockPoolEntry.tokenA.address) return 6
+      if (addr === mockPoolEntry.tokenB.address) return 7
+      return 7
+    })
+
+    await ingestPool(mockPoolEntry, mockPair as any, mockFetch, 'mainnet', mockDecimals)
+
+    expect(mockDecimals).toHaveBeenCalledWith(mockPoolEntry.tokenA.address, 'mainnet')
+    expect(mockDecimals).toHaveBeenCalledWith(mockPoolEntry.tokenB.address, 'mainnet')
+    expect(upsertPricePoints).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({
+          source: 'soroswap_amm',
+          price: expect.closeTo(0.1, 5),
+          poolId: mockPoolEntry.poolAddress,
+        }),
+      ]),
+      'mainnet'
+    )
+  })
+
+  it('rejects derived price outside plausible sanity range and increments metric (#227)', async () => {
+    // Extremely small price (1n / 100_000_000_000_000n = 1e-14 < 1e-10 min)
+    const mockFetch = vi.fn().mockResolvedValue([1n, 100_000_000_000_000n])
+
+    await ingestPool(mockPoolEntry, mockPair as any, mockFetch, 'testnet')
+
+    expect(upsertPricePoints).not.toHaveBeenCalled()
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ spotPrice: expect.any(Number) }),
+      expect.stringContaining('outside plausible range')
+    )
+
+    const metric = await price_rejected_total.get()
+    const rejectedEntry = metric.values.find((v) => v.labels.pair === mockPair.pairKey)
+    expect(rejectedEntry?.value).toBeGreaterThanOrEqual(1)
   })
 })
 

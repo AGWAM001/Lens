@@ -9,6 +9,22 @@ datasource db {
   directUrl = env("DIRECT_DATABASE_URL")
 }
 
+/// A single observed price — a trade, or a snapshot of a pool's state.
+///
+/// Identity (#237): a retried ingest batch, or two ingester instances
+/// overlapping during a deploy, must not store the same observation twice —
+/// duplicated trades inflate volume and skew the volume-weighted VWAP. The
+/// unique index below makes a duplicate impossible rather than unlikely.
+///
+/// eventId is nullable, and Postgres treats NULLs as distinct in a unique
+/// index, so the constraint only binds "where eventId exists". That is why
+/// upsertPricePoints (src/db.ts) never stores a null: venues that hand back a
+/// natural id (SDEX/AMM trade TOIDs, Horizon trade ids) keep it verbatim, and
+/// sources with none — AMM/Soroswap pool snapshots, Aquarius, anything added
+/// later — get a key synthesized deterministically from the row's content,
+/// never from a clock. See synthesizeEventId in src/db.ts and
+/// scripts/migrations/2026-10-17-price-point-identity.sql, which removes rows
+/// already duplicated on this identity before the index is created.
 model PricePoint {
   id            String   @default(uuid())
   network       String   @default("testnet")
@@ -25,6 +41,7 @@ model PricePoint {
   eventId       String?  @map("event_id")
 
   @@id([id, timestamp])
+  @@unique([network, source, eventId], map: "price_point_identity")
   @@index([network, pairKey, timestamp(sort: Desc)])
   @@index([network, pairKey, source, timestamp(sort: Desc)])
   @@map("price_points")
@@ -254,6 +271,23 @@ model Webhook {
 
   @@index([network, assetA, assetB])
   @@map("webhooks")
+}
+
+/// Permanent webhook failures are retained for 30-day diagnosis only; replay is
+/// not automatic because a delayed alert may no longer describe the current price.
+model WebhookDeliveryFailure {
+  id             String   @id @default(uuid())
+  endpoint       String
+  payload        Json
+  attemptCount   Int      @map("attempt_count")
+  lastStatus     Int?     @map("last_status")
+  errorCategory  String   @map("error_category")
+  firstAttemptAt DateTime @map("first_attempt_at")
+  lastAttemptAt  DateTime @map("last_attempt_at")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt(sort: Desc)])
+  @@map("webhook_delivery_failures")
 }
 
 model ApiKey {
