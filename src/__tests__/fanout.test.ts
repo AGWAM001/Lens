@@ -179,7 +179,7 @@ describe('FanOutManager', () => {
     )).toHaveLength(1)
   })
 
-  it('destroy cleans up all state', async () => {
+  it('destroy cleans up all state idempotently', async () => {
     const mockSocket = {
       id: 'client-cleanup',
       send: vi.fn(),
@@ -188,7 +188,33 @@ describe('FanOutManager', () => {
 
     fanOutManager.register('XLM/USDC', mockSocket)
     await fanOutManager.destroy()
-    await fanOutManager.destroy()
+    await fanOutManager.destroy() // Idempotent second call
+    expect(mockSocket.close).toHaveBeenCalledWith(1001, 'Server shutting down')
+  })
+
+  it('sends deliberate close code 1001 to all connected clients on shutdown (#347)', async () => {
+    const socketA = { id: 'client-a', send: vi.fn(), close: vi.fn() }
+    const socketB = { id: 'client-b', send: vi.fn(), close: vi.fn() }
+
+    fanOutManager.register('XLM/USDC', socketA)
+    fanOutManager.register('BTC/USDC', socketB)
+
+    await fanOutManager.destroy(1001, 'Server shutting down')
+
+    expect(socketA.close).toHaveBeenCalledWith(1001, 'Server shutting down')
+    expect(socketB.close).toHaveBeenCalledWith(1001, 'Server shutting down')
+  })
+
+  it('respects flush window during shutdown before closing clients (#347)', async () => {
+    const socket = { id: 'flush-client', send: vi.fn(), close: vi.fn() }
+    fanOutManager.register('XLM/USDC', socket)
+
+    const start = Date.now()
+    await fanOutManager.destroy(1001, 'Server shutting down', 50)
+    const elapsed = Date.now() - start
+
+    expect(elapsed).toBeGreaterThanOrEqual(40)
+    expect(socket.close).toHaveBeenCalledWith(1001, 'Server shutting down')
   })
 })
 
