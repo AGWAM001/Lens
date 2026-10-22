@@ -464,6 +464,7 @@ Or interactively at [http://localhost:3002/graphiql](http://localhost:3002/graph
 
 ## Documentation
 Detailed system design and data flow diagrams can be found in the [Architecture Overview](docs/architecture.md).
+Lens also *publishes* prices: [`docs/sep40-oracle-publisher.md`](docs/sep40-oracle-publisher.md) covers the SEP-40 contract in `oracle/contract/`, the deviation-and-interval publication policy in `src/publish/`, deployment, and key handling.
 The API specification is available in [OpenAPI 3.0 format](openapi.yaml) and is auto-published to GitHub Pages at https://miracle656.github.io/lens/openapi.json.
 
 Operators: start with the [Operations runbook](docs/RUNBOOK.md) — what runs, how each external dependency degrades, how to check ingestion health via `/status` and `/metrics`, the known failure modes with their symptoms, and deploy/rollback procedures.
