@@ -7,8 +7,14 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { BazaarMcpServer, type McpHttpServerHandle } from '../src/mcp/server';
-import { resolveMcpTransportConfig } from '../src/mcp/config';
+import {
+  DEFAULT_MCP_METRIC_NETWORKS,
+  DEFAULT_MCP_METRICS_PATH,
+  parseMetricLabelAllowList,
+  resolveMcpTransportConfig,
+} from '../src/mcp/config';
 import { SpendBudget } from '../src/mcp/budget';
+import { PaymentLedger } from '../src/mcp/ledger';
 import { MCP_ERROR_CODES } from '../src/mcp/codes';
 
 const { mockFetchWithTimeout } = vi.hoisted(() => ({
@@ -44,11 +50,13 @@ function mcpUrl(handle: McpHttpServerHandle, path = '/mcp'): string {
 
 async function startHttp(
   fetchWithPayment: Mock = vi.fn(),
-  budget?: SpendBudget
+  budget?: SpendBudget,
+  paymentLedger?: PaymentLedger
 ): Promise<McpHttpServerHandle> {
   const server = new BazaarMcpServer({
     fetchWithPayment: fetchWithPayment as unknown as typeof fetch,
     ...(budget ? { budget } : {}),
+    ...(paymentLedger ? { paymentLedger } : {}),
   });
   const handle = await server.runHttp({
     host: '127.0.0.1',
@@ -171,6 +179,28 @@ describe('MCP transport configuration', () => {
     const base = { MCP_TRANSPORT: 'http', MCP_HTTP_AUTH_TOKEN: TEST_AUTH_TOKEN };
     expect(() => resolveMcpTransportConfig({ ...base, MCP_HTTP_PORT: '70000' })).toThrow(/MCP_HTTP_PORT/);
     expect(() => resolveMcpTransportConfig({ ...base, MCP_HTTP_PORT: 'not-a-port' })).toThrow(/MCP_HTTP_PORT/);
+  });
+
+  describe('Prometheus label allow-lists', () => {
+    it('takes the default domain when the variable is unset', () => {
+      expect(parseMetricLabelAllowList(undefined, DEFAULT_MCP_METRIC_NETWORKS)).toEqual([
+        'stellar:testnet',
+        'stellar:pubnet',
+      ]);
+      expect(parseMetricLabelAllowList(undefined, [])).toEqual([]);
+    });
+
+    it('treats an explicitly empty value as allowing nothing', () => {
+      expect(parseMetricLabelAllowList('', DEFAULT_MCP_METRIC_NETWORKS)).toEqual([]);
+      expect(parseMetricLabelAllowList('   ', DEFAULT_MCP_METRIC_NETWORKS)).toEqual([]);
+    });
+
+    it('trims entries and drops blanks', () => {
+      expect(parseMetricLabelAllowList(' bazaar.example ,, price.feed ', [])).toEqual([
+        'bazaar.example',
+        'price.feed',
+      ]);
+    });
   });
 
   it('never echoes the auth token into a configuration error', () => {
@@ -401,5 +431,93 @@ describe('MCP HTTP transport parity', () => {
     expect(listed.status).toBe(200);
     const body = await listed.json();
     expect(body.result.tools.map((tool: any) => tool.name)).toEqual(['bazaar_search', 'paid_call']);
+  });
+});
+
+/**
+ * The spend PaymentLedger records only becomes an operational signal once some
+ * process can read it. `npm run mcp:server` starts no API server, so without
+ * this endpoint the counters exist in a registry nothing scrapes.
+ */
+describe('MCP spend metrics endpoint', () => {
+  const SPEND_HOST = 'spend-export.test';
+  const PAID_SPEND_URL = `https://${SPEND_HOST}/api/v1/price`;
+
+  /** A seller that accepted the payment and echoed its price and network. */
+  function settledResponse() {
+    const settlement = { success: true, network: 'stellar:testnet', amount: '$0.10' };
+    return new Response(JSON.stringify({ asset: 'XLM', price: '0.15' }), {
+      status: 200,
+      headers: {
+        'content-type': 'application/json',
+        'payment-response': Buffer.from(JSON.stringify(settlement)).toString('base64'),
+      },
+    });
+  }
+
+  function scrape(handle: McpHttpServerHandle, headers: Record<string, string> = {}) {
+    return fetch(mcpUrl(handle, DEFAULT_MCP_METRICS_PATH), { headers });
+  }
+
+  it('exports settled spend as counters labelled by host and network', async () => {
+    const ledger = new PaymentLedger({ metricHosts: [SPEND_HOST], metricNetworks: ['stellar:testnet'] });
+    const fetchWithPayment = vi
+      .fn()
+      .mockResolvedValueOnce(settledResponse())
+      .mockResolvedValue(new Response('Payment Required', { status: 402 }));
+    const handle = await startHttp(fetchWithPayment, undefined, ledger);
+    const client = await connectClient(handle);
+
+    await client.callTool({ name: 'paid_call', arguments: { url: PAID_SPEND_URL } });
+    // A rejected payment is an attempt that spent nothing, and the two series
+    // must say exactly that: counted under outcome="failure", absent from the sum.
+    await client.callTool({ name: 'paid_call', arguments: { url: PAID_SPEND_URL } });
+    // A host outside the allow-list may never become a series of its own.
+    await client.callTool({ name: 'paid_call', arguments: { url: 'https://unbounded-label-check.test/api/v1/price' } });
+    await client.close();
+
+    const res = await scrape(handle, { authorization: `Bearer ${TEST_AUTH_TOKEN}` });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('text/plain');
+    const body = await res.text();
+
+    expect(body).toMatch(/mcp_payment_attempts_total\{[^}]*host="spend-export\.test"[^}]*network="stellar:testnet"[^}]*outcome="success"[^}]*\} 1/);
+    expect(body).toMatch(/mcp_payment_attempts_total\{[^}]*host="spend-export\.test"[^}]*outcome="failure"[^}]*\} 1/);
+    expect(body).toMatch(/mcp_payment_amount_usd_total\{[^}]*host="spend-export\.test"[^}]*network="stellar:testnet"[^}]*\} 0\.1/);
+    expect(body).not.toContain('unbounded-label-check.test');
+    // The bearer token that guards this endpoint is not a label, a help string
+    // or anything else the registry has a reason to echo.
+    expect(body).not.toContain(TEST_AUTH_TOKEN);
+  });
+
+  it('refuses an unauthenticated scrape of what the agent spent', async () => {
+    const handle = await startHttp();
+
+    const res = await scrape(handle);
+
+    expect(res.status).toBe(401);
+    expect(res.headers.get('www-authenticate')).toBe('Bearer realm="lens-mcp"');
+    expect(await res.text()).not.toContain('mcp_payment_attempts_total');
+  });
+
+  it('answers a POST to the metrics path with 405 instead of treating it as MCP', async () => {
+    const handle = await startHttp();
+
+    const res = await fetch(mcpUrl(handle, DEFAULT_MCP_METRICS_PATH), {
+      method: 'POST',
+      headers: { authorization: `Bearer ${TEST_AUTH_TOKEN}`, 'content-type': 'application/json' },
+      body: JSON.stringify(initializeMessage(1)),
+    });
+
+    expect(res.status).toBe(405);
+    expect(res.headers.get('allow')).toBe('GET');
+  });
+
+  it('refuses to start when the MCP endpoint would sit on the metrics path', async () => {
+    const server = new BazaarMcpServer({ fetchWithPayment: vi.fn() as unknown as typeof fetch });
+
+    await expect(
+      server.runHttp({ host: '127.0.0.1', port: 0, path: DEFAULT_MCP_METRICS_PATH, authToken: TEST_AUTH_TOKEN })
+    ).rejects.toThrow(/Prometheus registry/);
   });
 });

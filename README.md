@@ -96,6 +96,9 @@ query {
 ## Observability
 
 Prometheus metrics are exposed on `GET /metrics` (public, no API key required).
+The MCP server is a separate process with its own `GET /metrics` on its own
+port, and that one does require its bearer token — see
+[MCP server](#mcp-server).
 
 Alongside the ingestion and database metrics, Lens exports the three HTTP
 signals needed to answer "is the API healthy":
@@ -433,6 +436,40 @@ Notes for this transport:
 - The daily spend ceiling is shared across everything this process serves, so
   one HTTP client cannot spend past a budget another one already used up.
 
+#### Payment spend metrics
+
+What the agent spent is scrapeable from the same listener, at `GET /metrics`,
+guarded by the same bearer token — it is operator data about a key that moves
+money, so there is no anonymous scrape:
+
+```bash
+curl -sS http://127.0.0.1:3003/metrics \
+  -H "Authorization: Bearer $MCP_HTTP_AUTH_TOKEN"
+```
+
+| Metric | Type | Labels |
+| --- | --- | --- |
+| `mcp_payment_attempts_total` | Counter | `host`, `network`, `outcome` |
+| `mcp_payment_amount_usd_total` | Counter | `host`, `network` |
+| `mcp_payment_unquantified_total` | Counter | `host`, `network` |
+
+A refused payment is an attempt (`outcome="failure"`) and adds nothing to
+`mcp_payment_amount_usd_total`. `host` may only be a value from
+`MCP_METRIC_HOSTS` and `network` only one from `MCP_METRIC_NETWORKS` (default
+`stellar:testnet,stellar:pubnet` — the networks this server signs for):
+Prometheus series are permanent, so anything outside an allow-list is reported
+as `unknown` instead of letting one caller mint a time series per URL an agent
+tries. Amounts that are not a USD money string cannot join the USD sum, so they
+are counted in `mcp_payment_unquantified_total` rather than dropped silently.
+Per-payment detail — full URL, transaction hash, asset, error code — is in the
+`MCP_PAYMENT_LEDGER_FILE` audit trail, which keeps the real host whatever the
+allow-list says.
+
+`MCP_HTTP_PATH` cannot be `/metrics`; the process exits at boot rather than
+answering MCP and Prometheus on one path. Under **stdio** there is no listener
+to scrape, so read the running total from the `payment_budget` tool or the
+audit file.
+
 ## Documentation
 Detailed system design and data flow diagrams can be found in the [Architecture Overview](docs/architecture.md).
 The API specification is available in [OpenAPI 3.0 format](openapi.yaml) and is auto-published to GitHub Pages at https://miracle656.github.io/lens/openapi.json.
@@ -633,6 +670,7 @@ curl -s http://localhost:3002/price/XLM/USDC | jq '{price, ammPrice, lastUpdated
 | `MCP_SPEND_STATE_FILE` | Where the daily running total is kept | platform default | No |
 | `MCP_PAYMENT_LEDGER_FILE` | Where the payment audit trail is appended | platform default | No |
 | `MCP_METRIC_HOSTS` | Hosts allowed to become a Prometheus `host` label; others report as `unknown` | - | No |
+| `MCP_METRIC_NETWORKS` | Network ids allowed to become a Prometheus `network` label; others report as `unknown` | `stellar:testnet,stellar:pubnet` | No |
 
 *\*Required if enabling x402 payment gating.*
 

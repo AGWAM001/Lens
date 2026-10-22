@@ -10,9 +10,10 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { MCP_ERROR_CODES, McpErrorCode } from './codes.js';
-import { DEFAULT_MCP_HTTP_HOST, DEFAULT_MCP_HTTP_PORT, DEFAULT_MCP_HTTP_PATH, normalizeMcpHttpPath } from './config.js';
+import { DEFAULT_MCP_HTTP_HOST, DEFAULT_MCP_HTTP_PORT, DEFAULT_MCP_HTTP_PATH, DEFAULT_MCP_METRICS_PATH, normalizeMcpHttpPath } from './config.js';
 import { SpendBudget } from './budget.js';
 import { PaymentLedger } from './ledger.js';
+import { getMetrics, register } from '../metrics.js';
 import { fetchWithTimeout } from '../fetch.js';
 
 export interface McpServerConfig {
@@ -487,6 +488,8 @@ export class BazaarMcpServer {
    * Serve the same tools over Streamable HTTP. Bindings default to loopback and
    * a non-empty bearer token is mandatory: this transport exposes paid_call to
    * anywhere on the network, so it must never start unauthenticated.
+   * `GET /metrics` answers on the same listener and the same token, which is how
+   * the spend PaymentLedger records leaves this process.
    */
   async runHttp(options: McpHttpServerOptions): Promise<McpHttpServerHandle> {
     const authToken = options.authToken?.trim();
@@ -500,6 +503,14 @@ export class BazaarMcpServer {
       throw new Error(`MCP HTTP port must be an integer between 0 and 65535 (received "${port}")`);
     }
     const path = normalizeMcpHttpPath(options.path ?? DEFAULT_MCP_HTTP_PATH);
+    // The registry is scraped from a fixed path on this same listener. A server
+    // that answers MCP on that path could not tell a scraper from a client, so
+    // the collision stops the process at boot rather than breaking one of them.
+    if (path === DEFAULT_MCP_METRICS_PATH) {
+      throw new Error(
+        `The MCP endpoint cannot be served on ${DEFAULT_MCP_METRICS_PATH}; that path is the Prometheus registry. Set MCP_HTTP_PATH to another path.`
+      );
+    }
 
     const httpServer = createServer((req, res) => {
       void this.handleHttpRequest(req, res, { authToken, path }).catch(() => {
@@ -552,6 +563,21 @@ export class BazaarMcpServer {
     }
 
     if (pathname !== config.path) {
+      if (pathname === DEFAULT_MCP_METRICS_PATH) {
+        if (req.method !== 'GET') {
+          sendJsonRpcError(
+            res,
+            405,
+            RPC_ERROR_CODES.METHOD_NOT_ALLOWED,
+            'Method not allowed; read the metrics endpoint with GET',
+            undefined,
+            { allow: 'GET' }
+          );
+          return;
+        }
+        await this.writeMetricsResponse(res);
+        return;
+      }
       sendJsonRpcError(res, 404, RPC_ERROR_CODES.NOT_FOUND, 'Not found');
       return;
     }
@@ -598,5 +624,18 @@ export class BazaarMcpServer {
     } finally {
       await server.close().catch(() => {});
     }
+  }
+
+  /**
+   * Renders the Prometheus registry, which is where the spend recorded by
+   * {@link PaymentLedger} becomes visible from outside this process. It answers
+   * only to the same bearer token as the tools: what an agent bought, on which
+   * host and for how much is operator data about a key that moves money, not a
+   * public endpoint.
+   */
+  private async writeMetricsResponse(res: ServerResponse): Promise<void> {
+    const body = await getMetrics();
+    res.writeHead(200, { 'content-type': register.contentType });
+    res.end(body);
   }
 }
