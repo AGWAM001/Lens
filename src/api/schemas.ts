@@ -82,6 +82,24 @@ export const statusResponseSchema = {
     // Seconds since the last ingester write for this network, null before the
     // first one. Lets `/status` reveal a stalled ingester on its own.
     ingestLagSeconds: { type: ['integer', 'null'] },
+    // Ingesters that have crashed at least once on this network, newest first,
+    // and empty when none have. Present so a crash-looping ingester that keeps
+    // restarting is visible here rather than only in the logs. `message` only
+    // — never a stack, since this is served over HTTP.
+    crashes: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['name', 'network', 'message', 'at'],
+        additionalProperties: false,
+        properties: {
+          name: { type: 'string' },
+          network: { type: 'string', enum: ['testnet', 'mainnet'] },
+          message: { type: 'string' },
+          at: { type: 'string' },
+        },
+      },
+    },
   },
 } as const
 
@@ -332,6 +350,50 @@ export const bookResponseSchema = {
         sampleCount: { type: 'integer' },
       },
     },
+  },
+} as const
+
+/** GET /impact/:assetA/:assetB */
+export const impactResponseSchema = {
+  type: 'object',
+  required: ['assetA', 'assetB', 'pairKey', 'status', 'spotPrice', 'availableLiquidity', 'smallestSize', 'ladder', 'thresholds', 'source'],
+  additionalProperties: false,
+  properties: {
+    assetA: { type: 'string' },
+    assetB: { type: 'string' },
+    pairKey: { type: 'string' },
+    status: { type: 'string', enum: ['ok', 'insufficient_liquidity'] },
+    spotPrice: { type: 'number' },
+    availableLiquidity: { type: 'number' },
+    smallestSize: { type: 'number' },
+    ladder: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['size', 'output', 'executionPrice', 'slippagePct'],
+        additionalProperties: false,
+        properties: {
+          size: { type: 'number' },
+          output: { type: 'number' },
+          executionPrice: { type: 'number' },
+          slippagePct: { type: 'number' },
+        },
+      },
+    },
+    thresholds: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['thresholdPct', 'crossed', 'size'],
+        additionalProperties: false,
+        properties: {
+          thresholdPct: { type: 'number' },
+          crossed: { type: 'boolean' },
+          size: { type: ['number', 'null'] },
+        },
+      },
+    },
+    source: { type: 'string', enum: ['AMM'] },
   },
 } as const
 

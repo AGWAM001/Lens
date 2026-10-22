@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { config } from '../config.js';
 
 /**
  * Supported HTTP methods for the `paid_call` tool.
@@ -24,6 +25,23 @@ export const BAZAAR_SEARCH_ARGUMENTS_SCHEMA = z.object({
     .min(1, 'url cannot be empty')
     .describe('The base URL of the Bazaar API'),
   query: z.string().optional().describe('Optional search query'),
+  // #416: results are a bounded page, so paging has to be something the agent
+  // can ask for. The ceiling is operator configuration and is enforced again on
+  // the server side — an ask over it is clamped, not honoured.
+  limit: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe(
+      `Maximum number of resources to return (default ${config.mcp.defaultPageLimit}, capped at ${config.mcp.maxPageLimit})`,
+    ),
+  offset: z
+    .number()
+    .int()
+    .min(0)
+    .optional()
+    .describe('Number of resources to skip, to page past a truncated result (default 0)'),
 });
 
 export type BazaarSearchArguments = z.infer<typeof BAZAAR_SEARCH_ARGUMENTS_SCHEMA>;

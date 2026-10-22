@@ -1,0 +1,45 @@
+name: Live service spec validation
+
+# Scheduled validation of the live Lens deployment against its published OpenAPI spec.
+# Calls every documented endpoint, verifies responses against OpenAPI schemas, and
+# updates a single tracking issue with results. Reports rather than fails the build.
+on:
+  schedule:
+    # 05:00 UTC daily — off-peak, running after nightly db-backup (03:00) and load test (04:00)
+    - cron: '0 5 * * *'
+  workflow_dispatch:
+    inputs:
+      live_url:
+        description: 'Target live service URL (e.g. https://lens.stellar.org)'
+        required: false
+        default: 'https://lens.stellar.org'
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: live-spec-validation
+  cancel-in-progress: false
+
+jobs:
+  validate-spec:
+    name: Check live service vs OpenAPI spec
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci || npm install
+
+      - name: Validate live endpoints against OpenAPI schema
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LIVE_API_URL: ${{ inputs.live_url || vars.LIVE_API_URL || 'https://lens.stellar.org' }}
+        run: |
+          npm run spec:validate-live

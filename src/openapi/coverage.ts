@@ -42,6 +42,7 @@ export const INTERNAL_ROUTES: readonly string[] = [
   // Operator-only usage/quota reporting for minted keys.
   '/admin/usage',
   '/admin/usage/{keyId}',
+  '/admin/webhook-delivery-failures',
 ] as const
 
 /**

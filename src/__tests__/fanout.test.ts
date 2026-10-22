@@ -25,6 +25,18 @@ vi.mock('../redis', () => ({
   },
 }))
 
+// `fanout.ts` reads `config.pairs` once at module load to build the bounded
+// label domain. The test environment configures no pairs, so stub one here —
+// otherwise the watched-pair branch is unreachable and the assertion below
+// would pass for the wrong reason.
+vi.mock('../config', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../config')>()
+  return {
+    ...actual,
+    config: { ...actual.config, pairs: [{ pairKey: 'XLM/USDC' }] },
+  }
+})
+
 vi.mock('../events', () => ({
   priceEmitter: {
     on: vi.fn(),
@@ -66,6 +78,12 @@ vi.mock('prom-client', () => {
 })
 
 import { fanOutManager } from '../ws/fanout'
+
+// The pair this deployment "watches" for the purposes of these tests. A real
+// deployment gets this from configuration; the test environment configures no
+// pairs at all, so without a stub the watched-pair branch below would never be
+// exercised and would silently rot.
+const WATCHED_PAIR = 'XLM/USDC'
 
 describe('FanOutManager', () => {
   beforeEach(() => {
@@ -169,6 +187,26 @@ describe('FanOutManager', () => {
     expect(clientLabels.filter(value => value === '*')).toHaveLength(100)
 
     unsubscribers.forEach(unsubscribe => unsubscribe())
+  })
+
+  it('keeps a watched pair as its own label, so per-pair subscribers stay visible', () => {
+    // `config.pairs` is operator-defined and fixed for the process, so it is a
+    // bounded label domain. Collapsing it into `other` would be safe but would
+    // make "which pair has subscribers" unanswerable on the dashboard.
+    const unsubscribe = fanOutManager.register(WATCHED_PAIR, {
+      id: 'watched-pair-client',
+      send: vi.fn(),
+      close: vi.fn(),
+    })
+
+    const clientLabels = metricLabelValues
+      .filter(({ metric }) => metric === 'ws_clients_total')
+      .map(({ value }) => value)
+
+    expect(clientLabels).toContain(WATCHED_PAIR)
+    expect(clientLabels).not.toContain('other')
+
+    unsubscribe()
   })
 
   it('counts a wildcard subscriber once in the aggregate series', () => {
