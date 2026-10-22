@@ -93,6 +93,7 @@ export const schema = `
     estimatedOutput: Float!
     slippagePct: Float!
     recommendation: String!
+    network: String
   }
 
   type PriceBucket {

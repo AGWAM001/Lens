@@ -155,7 +155,7 @@ export async function registerRESTRoutes(app: FastifyInstance) {
   // GET /price/:assetA/:assetB/route?amount=1000
   app.get<{
     Params: { assetA: string; assetB: string }
-    Querystring: { amount?: string }
+    Querystring: { amount?: string; network?: string }
   }>(
     '/price/:assetA/:assetB/route',
     { schema: { response: { 200: routeResponseSchema } } },

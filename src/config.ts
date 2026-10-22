@@ -61,6 +61,12 @@ export interface NetworkConfig {
   }
   /** Watched asset pairs for this network. */
   pairs: WatchedPair[]
+  routing: {
+    /** Maximum hop depth for multi-hop routing (default: 3) */
+    maxHops: number
+    /** Configured intermediate assets for multi-hop routing */
+    intermediates: AssetId[]
+  }
   facilitator: {
     /** Secret key for the facilitator's fee-paying account */
     secretKey?: string
@@ -129,6 +135,17 @@ function clampInt(raw: string | undefined, fallback: number, min: number, max: n
 
 const MAINNET_DEFAULT_PAIRS =
   'USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN/XLM'
+
+const TESTNET_DEFAULT_INTERMEDIATES =
+  'XLM:native,USDC:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5'
+
+const MAINNET_DEFAULT_INTERMEDIATES =
+  'XLM:native,USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN'
+
+function parseIntermediateAssets(raw: string): AssetId[] {
+  if (!raw.trim()) return []
+  return raw.split(',').map(a => parseAsset(a.trim()))
+}
 
 function parseWatchedPairs(raw: string): WatchedPair[] {
   if (!raw.trim()) return []
@@ -293,6 +310,21 @@ function buildNetworkConfig(network: NetworkName): NetworkConfig {
     (network === 'testnet' ? process.env.WATCHED_PAIRS : undefined) ||
     (network === 'mainnet' ? MAINNET_DEFAULT_PAIRS : '')
 
+  // ── Multi-hop Routing ───────────────────────────────────────────────────
+  const maxHopsRaw =
+    process.env[`ROUTING_MAX_HOPS_${suffix}`] ||
+    (network === 'testnet' ? process.env.ROUTING_MAX_HOPS : undefined) ||
+    '3'
+  const maxHops = Math.max(1, parseInt(maxHopsRaw, 10) || 3)
+
+  const defaultIntermediates =
+    network === 'mainnet' ? MAINNET_DEFAULT_INTERMEDIATES : TESTNET_DEFAULT_INTERMEDIATES
+  const rawIntermediates =
+    process.env[`ROUTING_INTERMEDIATES_${suffix}`] ||
+    (network === 'testnet' ? process.env.ROUTING_INTERMEDIATES : undefined) ||
+    defaultIntermediates
+  const intermediates = parseIntermediateAssets(rawIntermediates)
+
   // ── Facilitator ───────────────────────────────────────────────────────────
   const facilitatorSecretKey =
     process.env[`FACILITATOR_SECRET_KEY_${suffix}`] ||
@@ -326,6 +358,7 @@ function buildNetworkConfig(network: NetworkName): NetworkConfig {
       secretKey: sep40SecretKey,
     },
     pairs: parseWatchedPairs(rawPairs),
+    routing: { maxHops, intermediates },
     facilitator: { secretKey: facilitatorSecretKey, feeStroops: facilitatorFeeStroops },
   }
 }
@@ -482,6 +515,7 @@ export const config = {
   get aquarius() { return resolveNetwork(activeNetwork).aquarius },
   get oracle()   { return resolveNetwork(activeNetwork).oracle },
   get pairs()    { return resolveNetwork(activeNetwork).pairs },
+  get routing()  { return resolveNetwork(activeNetwork).routing },
   get facilitator() { return resolveNetwork(activeNetwork).facilitator },
 
   // ── Global / network-agnostic ──────────────────────────────────────────────
