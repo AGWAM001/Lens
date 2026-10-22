@@ -1077,6 +1077,37 @@ paths:
         '500':
           description: Internal server error
 
+  /movers:
+    get:
+      operationId: getMovers
+      summary: Get biggest gainers, biggest losers, and volume movers
+      description: >-
+        Returns the top gainers, losers, and volume movers for the specified lookback window,
+        annotated with venue provenance, sample counts, and single-venue move labelling.
+      security: []
+      parameters:
+        - name: window
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [1h, 24h, 7d]
+            default: 24h
+        - $ref: '#/components/parameters/NetworkQuery'
+      responses:
+        '200':
+          description: Market movers
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MoversResponse'
+        '400':
+          description: Invalid window or network
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          description: Internal server error
+
   /benchmark/{asset}:
     get:
       operationId: getBenchmark
@@ -2360,6 +2391,76 @@ components:
         total:
           type: integer
           nullable: true
+
+    MoverItem:
+      type: object
+      required: [pairKey, assetA, assetB, priceChangePct, startPrice, endPrice, currentVolume, previousVolume, volumeChangePct, venues, isSingleVenue, sampleCount, lastUpdated]
+      additionalProperties: false
+      properties:
+        pairKey:
+          type: string
+        assetA:
+          type: string
+        assetB:
+          type: string
+        priceChangePct:
+          type: number
+          nullable: true
+        startPrice:
+          type: number
+          nullable: true
+        endPrice:
+          type: number
+          nullable: true
+        currentVolume:
+          type: number
+        previousVolume:
+          type: number
+        volumeChangePct:
+          type: number
+          nullable: true
+        venues:
+          type: array
+          items:
+            type: string
+        isSingleVenue:
+          type: boolean
+        sampleCount:
+          type: integer
+        lastUpdated:
+          type: string
+          format: date-time
+          nullable: true
+
+    MoversResponse:
+      type: object
+      required: [network, window, startTime, endTime, gainers, losers, volumeMovers]
+      additionalProperties: false
+      properties:
+        network:
+          type: string
+          enum: [testnet, mainnet]
+        window:
+          type: string
+          enum: [1h, 24h, 7d]
+        startTime:
+          type: string
+          format: date-time
+        endTime:
+          type: string
+          format: date-time
+        gainers:
+          type: array
+          items:
+            $ref: '#/components/schemas/MoverItem'
+        losers:
+          type: array
+          items:
+            $ref: '#/components/schemas/MoverItem'
+        volumeMovers:
+          type: array
+          items:
+            $ref: '#/components/schemas/MoverItem'
 
     BenchmarkResponse:
       type: object
