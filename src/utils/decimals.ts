@@ -37,14 +37,16 @@ export function resolveDecimalFormat(req: FastifyRequest): DecimalFormat {
 
   const accept = req.headers['accept']
   if (typeof accept === 'string') {
-    const lower = accept.toLowerCase()
-    if (
-      lower.includes('decimals=strings') ||
-      lower.includes('decimals=string') ||
-      lower.includes('decimal=string') ||
-      lower.includes('decimal=strings')
-    ) {
-      return 'string'
+    // Parse MIME types and parameters: e.g. "application/json; decimals=strings"
+    const mediaTypes = accept.split(',')
+    for (const mediaType of mediaTypes) {
+      const parts = mediaType.split(';').map(p => p.trim().toLowerCase())
+      for (let i = 1; i < parts.length; i++) {
+        const [k, v] = parts[i].split('=').map(s => s.trim())
+        if ((k === 'decimals' || k === 'decimal') && (v === 'string' || v === 'strings')) {
+          return 'string'
+        }
+      }
     }
   }
 

@@ -371,4 +371,60 @@ describe('Issue #248: Decimal values cross API boundary as JSON numbers', () => 
     expect(typeof routeRes.json().estimatedOutput).toBe('string')
     expect(typeof routeRes.json().slippagePct).toBe('string')
   })
+
+  it('preserves 18-decimal precision on volume24h and priceChange24h without IEEE-754 loss', async () => {
+    mockQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM price_points') && sql.includes('AS vwap')) {
+        return { rows: [{ vwap: EIGHTEEN_DECIMAL_PRICE }] }
+      }
+      if (sql.includes('AVG(spot_price::numeric) AS amm_price')) {
+        return { rows: [{ amm_price: '0.000000000000000000' }] }
+      }
+      if (sql.includes('MAX(timestamp) as last_trade')) {
+        return { rows: [{ last_trade: new Date() }] }
+      }
+      if (sql.includes('GROUP BY source')) {
+        return {
+          rows: [
+            { source: 'SDEX', vol: '500.123456789012345678' },
+            { source: 'AMM', vol: '100.000000000000000001' },
+          ],
+        }
+      }
+      if (sql.includes('price_24h_ago')) {
+        return {
+          rows: [
+            {
+              price_24h_ago: '100.000000000000000000',
+              price_now: '150.123456789012345678',
+            },
+          ],
+        }
+      }
+      if (sql.includes('COUNT(DISTINCT COALESCE(pool_id')) {
+        return { rows: [{ sources: '2' }] }
+      }
+      return { rows: [] }
+    })
+
+    const app = await buildApp()
+    const res = await app.inject({
+      method: 'GET',
+      url: '/price/XLM/USDC',
+      headers: {
+        'x-decimal-format': 'string',
+      },
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(res.headers['x-decimal-format']).toBe('string')
+    const body = res.json()
+    expect(body.sdexVolume24h).toBe('500.123456789012345678')
+    expect(body.ammVolume24h).toBe('100.000000000000000001')
+    // Exact 18-decimal sum with 0 floating-point loss:
+    expect(body.volume24h).toBe('600.123456789012345679')
+    // Exact 18-decimal percentage change:
+    expect(body.priceChange24h).toBe('50.123456789012345678')
+  })
 })
+

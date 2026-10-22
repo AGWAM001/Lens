@@ -18,6 +18,7 @@ import {
 } from './schemas'
 import { getDepth, getImpact } from '../pricing/depth'
 import { listCrashes } from '../ingester/restart'
+import { resolveDecimalFormat, formatDecimal } from '../utils/decimals'
 
 function makePairKey(a: string, b: string): string {
   return [a, b].sort().join('/')
@@ -255,8 +256,12 @@ export async function registerRESTRoutes(app: FastifyInstance) {
   // each step), then one LIMIT 1 index probe per pool fetches its newest row.
   // Cost is O(pools x log n); the old DISTINCT ON sorted every row of every
   // network. A quiet pool is kept with its real `timestamp`, never dropped.
-  app.get('/pools', { config: { scope: 'read:prices' }, schema: { response: { 200: poolsResponseSchema } } }, async (req) => {
+  app.get('/pools', { config: { scope: 'read:prices' }, schema: { response: { 200: poolsResponseSchema } } }, async (req, reply) => {
     const network = req.network ?? activeNetwork
+    const decimalFormat = resolveDecimalFormat(req)
+    if (decimalFormat === 'string') {
+      reply.header('x-decimal-format', 'string')
+    }
     const result = await pgPool.query(
       `WITH RECURSIVE ids AS (
          (SELECT pool_id FROM pool_snapshots WHERE network = $1 ORDER BY pool_id LIMIT 1)
