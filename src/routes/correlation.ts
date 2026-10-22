@@ -1,7 +1,10 @@
+import { createLogger } from '../logger'
 import type { FastifyInstance } from 'fastify'
 import { pgPool } from '../db'
 import { activeNetwork, type NetworkName } from '../config'
 import '../middleware/network'
+
+const log = createLogger('correlation')
 
 /**
  * Supported correlation windows and their duration in minutes.
@@ -387,7 +390,7 @@ export async function registerCorrelationRoutes(app: FastifyInstance) {
         pairs: cells,
       }
     } catch (err) {
-      console.error('[correlation] computation failed:', (err as Error).message)
+      log.error({ err }, 'correlation computation failed')
       return reply.status(500).send({ error: 'Correlation computation failed' })
     }
   })

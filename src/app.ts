@@ -8,6 +8,7 @@ import { registerWebhookRoutes } from './routes/webhooks'
 import { registerCandleRoutes } from './routes/candles'
 import { registerPairsRoutes } from './routes/pairs'
 import { registerScreenerRoutes } from './routes/screener'
+import { registerMoversRoutes } from './routes/movers'
 import { registerHistoryRoutes } from './api/history'
 import { registerX402 } from './middleware/x402'
 import { registerNetworkSelector } from './middleware/network'
@@ -172,6 +173,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   await registerCandleRoutes(app)
   await registerPairsRoutes(app)
   await registerScreenerRoutes(app)
+  await registerMoversRoutes(app)
   await registerHistoryRoutes(app)
   await registerPriceRoutes(app)
   await registerVolumeRoutes(app)
