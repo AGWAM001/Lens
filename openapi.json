@@ -285,6 +285,16 @@
           },
           "429": {
             "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "description": "Snapshot aggregation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InternalErrorResponse"
+                }
+              }
+            }
           }
         }
       }
@@ -1503,7 +1513,14 @@
             "$ref": "#/components/responses/TooManyRequests"
           },
           "500": {
-            "description": "Volume aggregation failed"
+            "description": "Volume aggregation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InternalErrorResponse"
+                }
+              }
+            }
           }
         }
       }
@@ -1566,7 +1583,14 @@
             "$ref": "#/components/responses/TooManyRequests"
           },
           "500": {
-            "description": "Spread aggregation failed"
+            "description": "Spread aggregation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InternalErrorResponse"
+                }
+              }
+            }
           }
         }
       }
@@ -1843,7 +1867,14 @@
             "$ref": "#/components/responses/TooManyRequests"
           },
           "500": {
-            "description": "Benchmark computation failed"
+            "description": "Benchmark computation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InternalErrorResponse"
+                }
+              }
+            }
           }
         }
       }
@@ -2564,6 +2595,16 @@
             }
           }
         }
+      },
+      "InternalServerError": {
+        "description": "Internal server error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/InternalErrorResponse"
+            }
+          }
+        }
       }
     },
     "headers": {
@@ -2576,6 +2617,31 @@
       }
     },
     "schemas": {
+      "InternalErrorResponse": {
+        "type": "object",
+        "required": [
+          "code",
+          "message",
+          "correlationId"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "enum": [
+              "internal_error"
+            ],
+            "example": "internal_error"
+          },
+          "message": {
+            "type": "string",
+            "example": "An internal server error occurred."
+          },
+          "correlationId": {
+            "type": "string",
+            "example": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d"
+          }
+        }
+      },
       "DependencyCheck": {
         "type": "object",
         "description": "Result of one dependency probe. `reason` is a fixed phrase, never the raw error: connection errors carry the host and port and this is a public endpoint.",

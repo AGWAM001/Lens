@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 import { pgPool } from '../db'
 import { activeNetwork, type NetworkName } from '../config'
+import { sendInternalError } from '../errors'
 
 // Supported windows → lookback in hours.
 const WINDOW_HOURS = {
@@ -139,9 +140,7 @@ export async function registerVolumeRoutes(app: FastifyInstance) {
         },
       }
     } catch (err) {
-      return reply
-        .status(500)
-        .send({ error: `Volume aggregation failed: ${(err as Error).message}` })
+      return sendInternalError(reply, req, err, 'Volume aggregation failed')
     }
   })
 }
