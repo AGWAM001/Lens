@@ -109,7 +109,18 @@ describe('FanOutManager', () => {
     unsubscribe()
   })
 
-  it('handles client disconnection gracefully and cleans up both internal maps', () => {
+  it('handles client disconnection gracefully', () => {
+    const mockSocket = {
+      id: 'client-3',
+      send: vi.fn(),
+      close: vi.fn(),
+    }
+
+    const unsubscribe = fanOutManager.register('XLM/USDC', mockSocket)
+    unsubscribe()
+  })
+
+  it('cleans up both internal maps on unregister', () => {
     const mockSocket = {
       id: 'client-3',
       send: vi.fn(),
