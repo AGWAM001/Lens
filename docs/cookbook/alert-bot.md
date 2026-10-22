@@ -183,6 +183,15 @@ Delete it with `DELETE /webhooks/:id`. Use the **bot** when you want local
 control/custom logic, and **webhooks** when you want Lens to hold the
 subscription.
 
+If delivery permanently fails, Lens stores the endpoint host, alert
+payload, attempt count, final HTTP status (when available), failure category,
+and first/last attempt times. URL credentials, paths, query parameters,
+fragments, and the HMAC secret are excluded from the stored endpoint/record. Recent failures are
+available to operators at `GET /admin/webhook-delivery-failures` with an
+`X-Admin-Token` header; `limit` defaults to 25 and is capped at 100. Records are
+retained for 30 days. They are diagnostic only and are not replayed
+automatically, since a delayed threshold alert can be stale.
+
 ## Live demo
 
 - **Interactive API explorer (GraphiQL):** run Lens locally and open

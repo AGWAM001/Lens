@@ -29,6 +29,25 @@ interface CreateKeyBody {
  * them; they enforce their own `ADMIN_TOKEN` check instead.
  */
 export async function registerAdminRoutes(app: FastifyInstance) {
+  app.get<{ Querystring: { limit?: string } }>(
+    '/admin/webhook-delivery-failures',
+    { config: { public: true } },
+    async (req, reply) => {
+      if (!isAdminAuthorized(req)) {
+        return reply.status(401).send({ error: 'Unauthorized', message: 'Provide a valid X-Admin-Token header.' })
+      }
+      const requestedLimit = Number(req.query.limit ?? 25)
+      if (!Number.isInteger(requestedLimit) || requestedLimit < 1) {
+        return reply.status(400).send({ error: 'limit must be a positive integer' })
+      }
+      const failures = await prisma.webhookDeliveryFailure.findMany({
+        orderBy: { createdAt: 'desc' },
+        take: Math.min(requestedLimit, 100),
+      })
+      return reply.send({ failures })
+    },
+  )
+
   app.post<{ Body: CreateKeyBody }>(
     '/admin/keys',
     { config: { public: true } },

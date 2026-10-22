@@ -84,6 +84,17 @@ function parseAllowedHosts(raw: string): string[] {
   return Array.from(seen)
 }
 
+/**
+ * Parse a positive integer env var, clamped into [min, max]. Unset, unparsable
+ * or out-of-range values fall back to `fallback` rather than silently removing
+ * a bound: an operator typo should not turn a limit off altogether.
+ */
+function clampInt(raw: string | undefined, fallback: number, min: number, max: number): number {
+  const parsed = parseInt(raw ?? '', 10)
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback
+  return Math.min(Math.max(parsed, min), max)
+}
+
 const MAINNET_DEFAULT_PAIRS =
   'USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN/XLM'
 
@@ -275,6 +286,10 @@ const globalConfig = {
     // per-request scan, but callers must never be shown a minutes-old market.
     snapshotTtl: parseInt(process.env.SNAPSHOT_CACHE_TTL ?? '15', 10),
   },
+  plausibility: {
+    minPrice: parseFloat(process.env.PRICE_MIN_PLAUSIBLE ?? '0.0000000001'),
+    maxPrice: parseFloat(process.env.PRICE_MAX_PLAUSIBLE ?? '10000000000'),
+  },
   http: {
     timeoutMs: parseInt(process.env.HTTP_TIMEOUT_MS ?? '10000', 10),
   },
@@ -285,6 +300,17 @@ const globalConfig = {
     // hostnames. It never re-opens a private/link-local/metadata address — that
     // block is unconditional (see net/ssrf.ts).
     allowedHosts: parseAllowedHosts(process.env.OUTBOUND_ALLOWED_HOSTS ?? ''),
+  },
+  mcp: {
+    // Tool results land directly in an agent's context window, so both the body
+    // read from a node and the text handed back are capped (#416).
+    maxResultBytes: clampInt(process.env.MCP_MAX_RESULT_BYTES, 16_384, 1_024, 1_048_576),
+    maxUpstreamBytes: clampInt(process.env.MCP_MAX_UPSTREAM_BYTES, 262_144, 4_096, 8_388_608),
+    // Page size for collection results, mirroring the /discovery limits: a
+    // request without an explicit limit gets this many items, and an over-large
+    // ask is clamped rather than honoured.
+    defaultPageLimit: clampInt(process.env.MCP_DEFAULT_PAGE_LIMIT, 50, 1, 200),
+    maxPageLimit: clampInt(process.env.MCP_MAX_PAGE_LIMIT, 200, 1, 1000),
   },
 } as const
 
@@ -365,6 +391,8 @@ export const config = {
   api:     globalConfig.api,
   indexer: globalConfig.indexer,
   cache:   globalConfig.cache,
+  plausibility: globalConfig.plausibility,
   http:    globalConfig.http,
   outbound: globalConfig.outbound,
+  mcp: globalConfig.mcp,
 }

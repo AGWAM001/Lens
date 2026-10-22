@@ -19,7 +19,8 @@ import {
   scValToNative,
   Account,
 } from '@stellar/stellar-sdk'
-import { activeNetwork, getNetworkConfig, type NetworkName } from '../../config'
+import { config, activeNetwork, getNetworkConfig, type NetworkName } from '../../config'
+import { price_rejected_total } from '../../metrics'
 import { getRpcServer } from '../../network/clients'
 import { upsertPricePoints } from '../../db'
 import { markIngestSuccess } from '../../metrics'
@@ -185,19 +186,112 @@ export async function fetchPoolReserves(
   }
 }
 
+// ── Token decimals reading & caching ──────────────────────────────────────────
+
+const tokenDecimalsCache = new Map<string, number>()
+
+export function _resetTokenDecimalsCache(): void {
+  tokenDecimalsCache.clear()
+}
+
+export function getCachedTokenDecimals(tokenAddress: string): number | undefined {
+  return tokenDecimalsCache.get(tokenAddress)
+}
+
+export function setCachedTokenDecimals(tokenAddress: string, decimals: number): void {
+  tokenDecimalsCache.set(tokenAddress, decimals)
+}
+
+/**
+ * Read a token's decimals via Soroban RPC simulation, with caching.
+ * A token's decimals never change on-chain.
+ */
+export async function fetchTokenDecimals(
+  tokenAddress: string,
+  network: NetworkName = activeNetwork
+): Promise<number | null> {
+  const cached = getCachedTokenDecimals(tokenAddress)
+  if (cached !== undefined) return cached
+
+  try {
+    if (typeof getRpcServer !== 'function') return null
+    const rpc = getRpcServer(network)
+    if (!rpc) return null
+    const token = new Contract(tokenAddress)
+    const account = new Account(FEE_PAYER_KEYPAIR.publicKey(), '0')
+    const networkPassphrase =
+      getNetworkConfig(network).network.passphrase ?? Networks.PUBLIC
+
+    const tx = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase,
+    })
+      .addOperation(token.call('decimals'))
+      .setTimeout(30)
+      .build()
+
+    const sim = await rpc.simulateTransaction(tx)
+
+    if (SorobanRpc.Api.isSimulationError(sim)) {
+      log.debug(
+        { token: tokenAddress, error: sim.error },
+        'decimals simulation error'
+      )
+      return null
+    }
+
+    if (!sim.result?.retval) return null
+
+    const decimalsVal = scValToNative(sim.result.retval)
+    const decimals = typeof decimalsVal === 'number' ? decimalsVal : Number(decimalsVal)
+    if (!Number.isInteger(decimals) || decimals < 0 || decimals > 18) {
+      return null
+    }
+
+    setCachedTokenDecimals(tokenAddress, decimals)
+    return decimals
+  } catch (err) {
+    log.debug(
+      { token: tokenAddress, err },
+      'fetchTokenDecimals error'
+    )
+    return null
+  }
+}
+
 // ── Spot price ────────────────────────────────────────────────────────────────
 
 /**
- * Pure function: calculate spot price from constant-product reserves.
+ * Pure function: calculate spot price from constant-product reserves scaled by token decimals.
  * Returns 0 if either reserve is zero (empty pool guard).
  *
- * price = reserveA / reserveB
+ * price = (reserveA / 10^decimalsA) / (reserveB / 10^decimalsB)
+ *       = (reserveA / reserveB) * 10^(decimalsB - decimalsA)
  * (price of assetB denominated in assetA)
  */
-export function calcSpotPrice(reserveA: bigint, reserveB: bigint): number {
+export function calcSpotPrice(
+  reserveA: bigint,
+  reserveB: bigint,
+  decimalsA: number = 7,
+  decimalsB: number = 7
+): number {
   if (reserveA === 0n || reserveB === 0n) return 0
-  // Use Number division; reserves are i128 scaled to 7 decimal places
-  return Number(reserveA) / Number(reserveB)
+  if (decimalsA === decimalsB) {
+    return Number(reserveA) / Number(reserveB)
+  }
+  const scale = Math.pow(10, decimalsB - decimalsA)
+  return (Number(reserveA) / Number(reserveB)) * scale
+}
+
+/**
+ * Checks whether a derived spot price falls within the configurable sanity range.
+ */
+export function isPricePlausible(
+  price: number,
+  min: number = config.plausibility.minPrice,
+  max: number = config.plausibility.maxPrice
+): boolean {
+  return price >= min && price <= max && Number.isFinite(price) && !Number.isNaN(price)
 }
 
 // ── Per-pool ingestion ────────────────────────────────────────────────────────
@@ -210,17 +304,42 @@ export async function ingestPool(
   poolEntry: PoolEntry,
   pair: WatchedPair,
   _fetchReserves: (poolAddress: string, network?: NetworkName) => Promise<[bigint, bigint] | null> = fetchPoolReserves,
-  network: NetworkName = activeNetwork
+  network: NetworkName = activeNetwork,
+  _fetchDecimals: (tokenAddress: string, network?: NetworkName) => Promise<number | null> = fetchTokenDecimals
 ): Promise<void> {
   try {
     const reserves = await _fetchReserves(poolEntry.poolAddress, network)
     if (!reserves) return
 
     const [reserveA, reserveB] = reserves
-    const spotPrice = calcSpotPrice(reserveA, reserveB)
+
+    const decimalsA =
+      (await _fetchDecimals(poolEntry.tokenA.address, network)) ??
+      poolEntry.tokenA.decimals ??
+      7
+    const decimalsB =
+      (await _fetchDecimals(poolEntry.tokenB.address, network)) ??
+      poolEntry.tokenB.decimals ??
+      7
+
+    const spotPrice = calcSpotPrice(reserveA, reserveB, decimalsA, decimalsB)
 
     if (spotPrice === 0) {
       log.debug({ pool: poolEntry.poolAddress, pair: pair.pairKey }, 'skipping empty pool')
+      return
+    }
+
+    if (!isPricePlausible(spotPrice)) {
+      log.warn(
+        { pair: pair.pairKey, pool: poolEntry.poolAddress, spotPrice },
+        `Derived price ${spotPrice} for ${pair.pairKey} (${poolEntry.poolAddress}) outside plausible range [${config.plausibility.minPrice}, ${config.plausibility.maxPrice}] — rejecting`
+      )
+      price_rejected_total.inc({
+        pair: pair.pairKey,
+        network,
+        venue: 'soroswap',
+        reason: 'out_of_bounds',
+      })
       return
     }
 
@@ -237,7 +356,13 @@ export async function ingestPool(
           counterVolume: 0,
           ledger: 0,
           timestamp: new Date(),
-          eventId: `soroswap-${poolEntry.poolAddress}-${Date.now()}`,
+          // #237: Soroswap snapshots are read via RPC simulation, so there is
+          // no trade id to key on. The reserves ARE the pool state — identical
+          // reserves yield the identical price, so deriving the id from them
+          // makes a replayed batch (or an overlapping second instance reading
+          // the same state) collide on the unique index instead of inserting
+          // a duplicate. Must never be Date.now()/random.
+          eventId: `soroswap-${poolEntry.poolAddress}-${reserveA}-${reserveB}`,
         },
       ],
       network
@@ -360,8 +485,27 @@ export const soroswapAdapter: VenueAdapter<PoolEntry, [bigint, bigint]> = {
 
   derive(raw: [bigint, bigint], target: PoolEntry, pair: WatchedPair, _network: NetworkName): VenuePricePoint[] {
     const [reserveA, reserveB] = raw
-    const spotPrice = calcSpotPrice(reserveA, reserveB)
+    const spotPrice = calcSpotPrice(
+      reserveA,
+      reserveB,
+      target.tokenA.decimals ?? 7,
+      target.tokenB.decimals ?? 7
+    )
     if (spotPrice === 0) return []
+
+    if (!isPricePlausible(spotPrice)) {
+      log.warn(
+        { pair: pair.pairKey, pool: target.poolAddress, spotPrice },
+        `Derived price ${spotPrice} for ${pair.pairKey} (${target.poolAddress}) outside plausible range [${config.plausibility.minPrice}, ${config.plausibility.maxPrice}] — rejecting`
+      )
+      price_rejected_total.inc({
+        pair: pair.pairKey,
+        network: _network,
+        venue: 'soroswap',
+        reason: 'out_of_bounds',
+      })
+      return []
+    }
 
     return [
       {
@@ -375,7 +519,9 @@ export const soroswapAdapter: VenueAdapter<PoolEntry, [bigint, bigint]> = {
         counterVolume: 0,
         ledger: 0,
         timestamp: new Date(),
-        eventId: `soroswap-${target.poolAddress}-${Date.now()}`,
+        // Same content-derived key as ingestPool above (#237): reserves, not
+        // the clock, so the adapter path and the legacy path agree on identity.
+        eventId: `soroswap-${target.poolAddress}-${reserveA}-${reserveB}`,
       },
     ]
   },
