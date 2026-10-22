@@ -28,11 +28,13 @@ spec-compliant clients read as "no server-initiated stream" rather than an
 error. Bodies are capped at 1 MiB and must be `application/json`, so a caller
 cannot make the payment path stream an unbounded request.
 
-Both transports register the same tools from the same code path. State is
-deliberately not shared across requests: the SDK's stateless Streamable HTTP
-transport is single-use — a second request on one instance throws, because
-message ids from different clients would collide — so each `POST` gets its own
-protocol server and transport, built from the identical tool list stdio serves.
+Both transports register the same tools from the same code path, and share
+one spend budget and payment ledger per process, so a remote client cannot spend
+past a ceiling a local one already used. State is deliberately not shared
+across requests: the SDK's stateless Streamable HTTP transport is single-use — a
+second request on one instance throws, because message ids from different
+clients would collide — so each `POST` gets its own protocol server and
+transport.
 
 stdio remains the default: with `MCP_TRANSPORT` unset, or set to `stdio`, the
 server talks to stdin and stdout exactly as before. An unrecognised value throws

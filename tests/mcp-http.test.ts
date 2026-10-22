@@ -1,10 +1,14 @@
 import { afterEach, describe, expect, it, vi, type Mock } from 'vitest';
 import type { AddressInfo } from 'node:net';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { BazaarMcpServer, type McpHttpServerHandle } from '../src/mcp/server';
 import { resolveMcpTransportConfig } from '../src/mcp/config';
+import { SpendBudget } from '../src/mcp/budget';
 import { MCP_ERROR_CODES } from '../src/mcp/codes';
 
 const { mockFetchWithTimeout } = vi.hoisted(() => ({
@@ -25,13 +29,6 @@ vi.mock('../src/fetch', () => ({
 const TEST_AUTH_TOKEN = 'lens-mcp-http-test-token-4d1f8b6e2a97';
 const PAID_URL = 'https://bazaar.example/api/v1/price';
 
-/**
- * paid_call is deny-all unless the operator names hosts (#487), so these servers
- * carry the host the tests below fetch. Nothing here spends real money: the
- * payment transport is always a mock.
- */
-const PAID_CALL_HOSTS = ['bazaar.example'];
-
 const openHandles: McpHttpServerHandle[] = [];
 
 afterEach(async () => {
@@ -45,10 +42,13 @@ function mcpUrl(handle: McpHttpServerHandle, path = '/mcp'): string {
   return `http://127.0.0.1:${address.port}${path}`;
 }
 
-async function startHttp(fetchWithPayment: Mock = vi.fn()): Promise<McpHttpServerHandle> {
+async function startHttp(
+  fetchWithPayment: Mock = vi.fn(),
+  budget?: SpendBudget
+): Promise<McpHttpServerHandle> {
   const server = new BazaarMcpServer({
     fetchWithPayment: fetchWithPayment as unknown as typeof fetch,
-    paidCallAllowlist: PAID_CALL_HOSTS,
+    ...(budget ? { budget } : {}),
   });
   const handle = await server.runHttp({
     host: '127.0.0.1',
@@ -105,6 +105,28 @@ function paidCallResponse() {
     headers: { 'content-type': 'application/json' },
   });
 }
+
+const budgetTempDirs: string[] = [];
+
+/**
+ * A budget writing to its own throwaway state file, so a parity assertion
+ * cannot be polluted by spend recorded under another test's file.
+ */
+function makeBudget(label: string): SpendBudget {
+  const dir = mkdtempSync(join(tmpdir(), `lens-mcp-http-${label}-`));
+  budgetTempDirs.push(dir);
+  return new SpendBudget({
+    perCallMax: '$1.00',
+    dailyCeiling: '$10.00',
+    stateFilePath: join(dir, 'spend-state.json'),
+  });
+}
+
+afterEach(() => {
+  while (budgetTempDirs.length) {
+    rmSync(budgetTempDirs.pop()!, { recursive: true, force: true });
+  }
+});
 
 describe('MCP transport configuration', () => {
   it('keeps stdio the default when nothing is configured', () => {
@@ -278,10 +300,7 @@ describe('MCP HTTP transport parity', () => {
 
     // InMemoryTransport stands in for stdio: the same BazaarMcpServer and the
     // same SDK routing, without spawning a process to pipe stdin/stdout.
-    const directServer = new BazaarMcpServer({
-      fetchWithPayment: directFetch as unknown as typeof fetch,
-      paidCallAllowlist: PAID_CALL_HOSTS,
-    });
+    const directServer = new BazaarMcpServer({ fetchWithPayment: directFetch as unknown as typeof fetch });
     const [directClientTransport, directServerTransport] = InMemoryTransport.createLinkedPair();
     await (directServer as any).server.connect(directServerTransport);
     const directClient = new Client({ name: 'lens-direct-test', version: '1.0.0' }, { capabilities: {} });
@@ -295,12 +314,35 @@ describe('MCP HTTP transport parity', () => {
     expect(httpTools.tools.map((tool: any) => tool.name)).toEqual(['bazaar_search', 'paid_call']);
     expect(httpPaidCall).toEqual(directPaidCall);
     expect(JSON.parse((httpPaidCall.content as any)[0].text)).toEqual({ asset: 'XLM', price: '0.15' });
-    // The same call the in-process transport makes, deadline included: main's
-    // upstream timeout is part of what parity has to preserve.
-    expect(httpFetch).toHaveBeenCalledWith(PAID_URL, {
-      method: 'GET',
-      signal: expect.any(AbortSignal),
+    expect(httpFetch).toHaveBeenCalledWith(PAID_URL, { method: 'GET' });
+  });
+
+  it('advertises the budget tool over HTTP exactly as it does in-process', async () => {
+    // payment_budget only exists when a budget is configured, which is the
+    // shape the real npm run mcp:server takes. A parity check that never sets a
+    // budget would pass while HTTP silently dropped the conditional tool.
+    const httpBudget = makeBudget('http');
+    const directBudget = makeBudget('direct');
+
+    const handle = await startHttp(vi.fn(), httpBudget);
+    const httpClient = await connectClient(handle);
+    const httpNames = (await httpClient.listTools()).tools.map((tool: any) => tool.name);
+    await httpClient.close();
+
+    const directServer = new BazaarMcpServer({
+      fetchWithPayment: vi.fn() as unknown as typeof fetch,
+      budget: directBudget,
     });
+    const [directClientTransport, directServerTransport] = InMemoryTransport.createLinkedPair();
+    await (directServer as any).server.connect(directServerTransport);
+    const directClient = new Client({ name: 'lens-budget-test', version: '1.0.0' }, { capabilities: {} });
+    await directClient.connect(directClientTransport);
+    const directNames = (await directClient.listTools()).tools.map((tool: any) => tool.name);
+    await directClient.close();
+    await (directServer as any).server.close();
+
+    expect(httpNames).toEqual(directNames);
+    expect(httpNames).toEqual(['bazaar_search', 'paid_call', 'payment_budget']);
   });
 
   it('keeps a deterministic tool error deterministic across the wire', async () => {

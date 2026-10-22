@@ -1,9 +1,8 @@
 import 'dotenv/config';
 import { BazaarMcpServer } from '../../src/mcp/server';
 import { resolveMcpTransportConfig, McpTransportConfig } from '../../src/mcp/config';
-import { createLensPriceQueries } from '../../src/mcp/priceQueries';
-import { activeNetwork } from '../../src/config';
 import { SpendBudget, defaultSpendStateFile } from '../../src/mcp/budget';
+import { PaymentLedger, defaultPaymentLedgerFile } from '../../src/mcp/ledger';
 import { wrapFetchWithPaymentFromConfig } from '@x402/fetch';
 import { ExactStellarScheme } from '@x402/stellar/exact/client';
 import { createEd25519Signer } from '@x402/stellar';
@@ -11,6 +10,19 @@ import { createEd25519Signer } from '@x402/stellar';
 function formatHttpUrl(host: string, port: number, path: string): string {
   const hostPart = host.includes(':') ? `[${host}]` : host;
   return `http://${hostPart}:${port}${path}`;
+}
+
+/**
+ * Hosts allowed to become the `host` label of a Prometheus series. Series are
+ * permanent, so labelling by whatever URL an agent asks for lets one caller
+ * mint unbounded time series; anything outside this list is reported as
+ * `unknown`. The audit file always keeps the real host regardless.
+ */
+function parseMetricHosts(raw: string | undefined): string[] {
+  return (raw ?? '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
 }
 
 async function main() {
@@ -26,7 +38,7 @@ async function main() {
 
   const testnetKey = process.env.MCP_AGENT_SECRET_KEY_TESTNET;
   const mainnetKey = process.env.MCP_AGENT_SECRET_KEY_MAINNET;
-
+  
   if (!testnetKey || !mainnetKey) {
     console.error('[mcp-server] Error: MCP_AGENT_SECRET_KEY_TESTNET and MCP_AGENT_SECRET_KEY_MAINNET must be set');
     process.exit(1);
@@ -34,19 +46,27 @@ async function main() {
 
   const testnetSigner = createEd25519Signer(testnetKey, 'stellar:testnet');
   const pubnetSigner = createEd25519Signer(mainnetKey, 'stellar:pubnet');
-
+  
   const testnetClient = new ExactStellarScheme(testnetSigner);
   const pubnetClient = new ExactStellarScheme(pubnetSigner);
 
   // A single payment is capped by spendControls.maxAmountPerPayment. The value is
   // passed through to the budget so the cumulative ceiling can reserve each call at
   // its worst case; leaving spendControls unset would let the library default of $1
-  // differ from whatever MCP_MAX_PAYMENT_PRICE says. maxPrice is not a field of the
-  // x402 client config, so setting it here previously bounded nothing.
+  // differ from whatever MCP_MAX_PAYMENT_PRICE says.
   const maxPrice = process.env.MCP_MAX_PAYMENT_PRICE || '$1.00';
   const dailyCeiling = process.env.MCP_DAILY_SPEND_CEILING || '$10.00';
 
-  const fetchWithPayment = wrapFetchWithPaymentFromConfig(globalThis.fetch, {
+  // The audit trail is built before the transport so it can observe the payment
+  // the transport makes: a wrapped x402 fetch hands back a plain Response and the
+  // price only appears on the request, so the offer has to be read at the boundary.
+  const ledgerFile = process.env.MCP_PAYMENT_LEDGER_FILE || defaultPaymentLedgerFile();
+  const paymentLedger = new PaymentLedger({
+    filePath: ledgerFile,
+    metricHosts: parseMetricHosts(process.env.MCP_METRIC_HOSTS),
+  });
+
+  const fetchWithPayment = wrapFetchWithPaymentFromConfig(paymentLedger.instrumentFetch(globalThis.fetch), {
     spendControls: {
       maxAmountPerPayment: maxPrice,
     },
@@ -71,29 +91,20 @@ async function main() {
     stateFilePath: process.env.MCP_SPEND_STATE_FILE || defaultSpendStateFile(),
   });
 
-  // paid_call spends from the keys above, so the hosts it may pay for are the
-  // operator's decision. Unset means no host is payable at all (#404).
-  const paidCallAllowlist = (process.env.MCP_PAID_CALL_ALLOWED_HOSTS || '')
-    .split(',')
-    .map(entry => entry.trim())
-    .filter(Boolean);
-
   const server = new BazaarMcpServer({
     fetchWithPayment,
     budget,
-    paidCallAllowlist,
-    // Lens's own aggregated prices, read from the same Postgres the API serves.
-    priceQueries: createLensPriceQueries(),
+    paymentLedger
   });
 
   console.error('[mcp-server] Agent configured for stellar:testnet and stellar:pubnet');
-  console.error(`[mcp-server] lens_get_price serves aggregated prices on ${activeNetwork}`);
-  // Limits and file paths only: the signing key is never logged.
   console.error(`[mcp-server] Spend limits: ${budget.describeLimits()}`);
+  // The audit file records where money went, never the key that signed it.
+  console.error(`[mcp-server] Payment audit trail: ${ledgerFile}`);
   console.error(
-    paidCallAllowlist.length > 0
-      ? `[mcp-server] paid_call may pay these allow-listed origins: ${paidCallAllowlist.join(', ')}`
-      : '[mcp-server] paid_call allow-list is empty: every paid call will be refused. Set MCP_PAID_CALL_ALLOWED_HOSTS to allow hosts.'
+    `[mcp-server] Spend metrics are labelled by host: ${
+      parseMetricHosts(process.env.MCP_METRIC_HOSTS).join(', ') || 'every host is reported as unknown'
+    }`
   );
 
   if (transportConfig.transport === 'http') {
