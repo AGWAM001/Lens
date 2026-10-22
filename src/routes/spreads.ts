@@ -17,7 +17,7 @@ type SpreadWindow = keyof typeof WINDOW_MINUTES
 const WINDOWS = Object.keys(WINDOW_MINUTES) as SpreadWindow[]
 
 /** A venue needs at least this many observations before its spread means anything. */
-const MIN_OBSERVATIONS = 2
+export const MIN_OBSERVATIONS = 2
 
 interface VenueSpread {
   venue: string

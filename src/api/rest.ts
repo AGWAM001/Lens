@@ -16,10 +16,14 @@ import {
   installResponseValidation,
 } from './schemas'
 import { getDepth } from '../pricing/depth'
+import { listCrashes } from '../ingester/restart'
 
 function makePairKey(a: string, b: string): string {
   return [a, b].sort().join('/')
 }
+
+export const HISTORY_DEFAULT_LIMIT = 100
+export const HISTORY_MAX_LIMIT = 1000
 
 /**
  * Resolve a requested pair against the ones this network watches.
@@ -92,6 +96,17 @@ export async function registerRESTRoutes(app: FastifyInstance) {
       ingestLagSeconds: lastProcessedAt
         ? Math.max(0, Math.round((Date.now() - new Date(lastProcessedAt).getTime()) / 1000))
         : null,
+      // Ingesters that have crashed at least once on this network, newest
+      // first. An ingester that crash-loops but restarts successfully is
+      // otherwise invisible here: the process is up and the port answers.
+      // Empty when nothing has crashed. Messages only — never a stack, since
+      // this is served over HTTP.
+      crashes: listCrashes(network).map(c => ({
+        name: c.name,
+        network: c.network,
+        message: c.message,
+        at: c.at.toISOString(),
+      })),
     }
   })
 
@@ -165,8 +180,9 @@ export async function registerRESTRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const { assetA, assetB } = req.params
       const window = req.query.window ?? '1h'
-      const limit = Math.min(parseInt(req.query.limit ?? '100', 10), 1000)
+      const limit = Math.min(parseInt(req.query.limit ?? String(HISTORY_DEFAULT_LIMIT), 10), HISTORY_MAX_LIMIT)
       const pairKey = makePairKey(assetA, assetB)
+      const network = req.network ?? activeNetwork
 
       if (!['1m', '5m', '1h', '24h'].includes(window)) {
         return reply.status(400).send({ error: 'window must be one of: 1m, 5m, 1h, 24h' })
@@ -177,14 +193,15 @@ export async function registerRESTRoutes(app: FastifyInstance) {
                 volume::float, trade_count, open_price::float, close_price::float,
                 high_price::float, low_price::float
          FROM price_aggregates
-         WHERE pair_key = $1 AND window = $2
+         WHERE pair_key = $1 AND window = $2 AND network = $3
          ORDER BY bucket DESC
-         LIMIT $3`,
-        [pairKey, window, limit]
+         LIMIT $4`,
+        [pairKey, window, network, limit]
       )
 
       return {
         pairKey,
+        network,
         window,
         buckets: result.rows.map(r => ({
           bucket: r.bucket,
@@ -253,8 +270,7 @@ export async function registerRESTRoutes(app: FastifyInstance) {
       if (!pair) return reply.status(404).send({ error: `Pair ${assetA}/${assetB} not watched on ${network}` })
       if (isNaN(amount) || amount <= 0) return reply.status(400).send({ error: 'amount must be a positive number' })
 
-      // NOTE: getDepth reads order-book data with no network column yet — see L048.
-      const depthResult = await getDepth(pair.pairKey, amount)
+      const depthResult = await getDepth(pair.pairKey, amount, network)
       
       return {
         assetA: pair.assetA.code,

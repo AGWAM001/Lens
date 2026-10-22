@@ -19,6 +19,16 @@ register.setDefaultLabels({
 // Do NOT add `issuer` or a raw pool id here — the cardinality notes in that
 // doc explain why those labels do not belong on these metrics.
 
+export const ingesterRestarts = new Counter({
+  name: 'ingester_restarts_total',
+  help: 'Times an ingester crashed and was restarted, by ingester and network',
+  // Bounded: one series per (venue, network) pair the process actually runs,
+  // the same shape as the metrics below. A crash message is deliberately NOT a
+  // label — it is unbounded and arrives from upstream.
+  labelNames: ['ingester', 'network'],
+  registers: [register]
+})
+
 export const trades_ingested_total = new Counter({
   name: 'trades_ingested_total',
   help: 'Total number of trades ingested from SDEX/AMM',
@@ -46,6 +56,32 @@ export const price_requests_total = new Counter({
   registers: [register]
 })
 
+export const api_key_auth_failures_total = new Counter({
+  name: 'api_key_auth_failures_total',
+  help: 'Total number of API key authentication failures, by bounded reason',
+  labelNames: ['reason'],
+  registers: [register]
+})
+
+export const admin_auth_failures_total = new Counter({
+  name: 'admin_auth_failures_total',
+  help: 'Total number of admin authentication failures',
+  registers: [register]
+})
+
+export const rate_limit_rejections_total = new Counter({
+  name: 'rate_limit_rejections_total',
+  help: 'Total number of requests rejected by the per-key or fallback IP rate limiter',
+  labelNames: ['scope'],
+  registers: [register]
+})
+
+export const global_shed_requests_total = new Counter({
+  name: 'global_shed_requests_total',
+  help: 'Total number of requests shed by the per-instance global request ceiling',
+  registers: [register]
+})
+
 export const x402_payments_received_total = new Counter({
   name: 'x402_payments_received_total',
   help: 'Total number of valid x402 payments received',
@@ -58,6 +94,38 @@ export const last_trade_timestamp = new Gauge({
   labelNames: ['pair', 'network'],
   registers: [register]
 })
+
+// Ingestion health is labelled only by the finite adapter registry and the
+// two supported networks. Do not add pair or pool identifiers here: they make
+// the series count grow with user configuration and on-chain pool creation.
+export const ingest_last_success_timestamp = new Gauge({
+  name: 'ingest_last_success_timestamp',
+  help: 'Unix timestamp of the last successful price write by venue and network',
+  labelNames: ['venue', 'network'],
+  registers: [register],
+})
+
+export const ingest_cycle_duration_seconds = new Histogram({
+  name: 'ingest_cycle_duration_seconds',
+  help: 'Duration of a venue ingestion cycle in seconds',
+  labelNames: ['venue', 'network'],
+  // Venue polls are mostly sub-second, but Horizon and Soroswap requests can
+  // take several seconds. These buckets expose normal cycles and slow calls.
+  buckets: [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60],
+  registers: [register],
+})
+
+export const ingest_errors_total = new Counter({
+  name: 'ingest_errors_total',
+  help: 'Ingestion cycle errors by venue, network and bounded error category',
+  labelNames: ['venue', 'network', 'category'],
+  registers: [register],
+})
+
+/** Record a successful persisted price write without high-cardinality labels. */
+export function markIngestSuccess(venue: string, network: string): void {
+  ingest_last_success_timestamp.set({ venue, network }, Math.floor(Date.now() / 1000))
+}
 
 export const http_requests_total = new Counter({
   name: 'http_requests_total',

@@ -159,34 +159,56 @@ describe('TWAP/VWAP Input Validation', () => {
     const app = await buildApp()
     const res1 = await app.inject({ method: 'GET', url: '/price/twap/XLM/USDC?window=abc' })
     expect(res1.statusCode).toBe(400)
+    expect(res1.json().code).toBe('VALIDATION_ERROR')
     const res2 = await app.inject({ method: 'GET', url: '/price/twap/XLM/USDC?window=0' })
     expect(res2.statusCode).toBe(400)
+    expect(res2.json().code).toBe('VALIDATION_ERROR')
     const res3 = await app.inject({ method: 'GET', url: '/price/twap/XLM/USDC?window=99999' })
     expect(res3.statusCode).toBe(400)
+    expect(res3.json().code).toBe('VALIDATION_ERROR')
   })
 
   it('rejects TWAP with invalid sampleInterval', async () => {
     const app = await buildApp()
     const res1 = await app.inject({ method: 'GET', url: '/price/twap/XLM/USDC?sampleInterval=abc' })
     expect(res1.statusCode).toBe(400)
+    expect(res1.json().code).toBe('VALIDATION_ERROR')
   })
 
   it('rejects TWAP with invalid method', async () => {
     const app = await buildApp()
     const res1 = await app.inject({ method: 'GET', url: '/price/twap/XLM/USDC?method=bogus' })
     expect(res1.statusCode).toBe(400)
+    const body = res1.json()
+    expect(body.code).toBe('VALIDATION_ERROR')
+    expect(body.error).toMatch(/Invalid method/)
   })
 
   it('rejects VWAP with invalid method', async () => {
     const app = await buildApp()
     const res = await app.inject({ method: 'GET', url: '/price/vwap/XLM/USDC?method=bogus' })
     expect(res.statusCode).toBe(400)
+    expect(res.json().code).toBe('VALIDATION_ERROR')
   })
 
   it('rejects VWAP with invalid window', async () => {
     const app = await buildApp()
     const res = await app.inject({ method: 'GET', url: '/price/vwap/XLM/USDC?window=abc' })
     expect(res.statusCode).toBe(400)
+    expect(res.json().code).toBe('VALIDATION_ERROR')
+  })
+
+  it('accepts boundary window values 1 and 1440', async () => {
+    mockQuery.mockResolvedValue({ rows: [] })
+    const app = await buildApp()
+    // window=1 and window=1440 are the schema bounds; both must pass validation
+    // (computeTWAP is reached — it returns empty rows, which is fine here).
+    for (const window of [1, 1440]) {
+      const res = await app.inject({ method: 'GET', url: `/price/twap/XLM/USDC?window=${window}` })
+      // 200 with empty data or 500 from empty computation — but never 400
+      expect(res.statusCode).not.toBe(400)
+    }
+    await app.close()
   })
 })
 
