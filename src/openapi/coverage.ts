@@ -34,10 +34,11 @@ export const INTERNAL_ROUTES: readonly string[] = [
   // protocol; the equivalent GraphQL subscription is documented instead.
   '/ws',
 
-  // Operator-only API-key issuance and revocation. Authenticated with a shared
+  // Operator-only API-key issuance, rotation, and revocation. Authenticated with a shared
   // ADMIN_TOKEN rather than a client API key (see src/api/admin.ts).
   '/admin/keys',
   '/admin/keys/{id}',
+  '/admin/keys/{id}/rotate',
 
   // Operator-only usage/quota reporting for minted keys.
   '/admin/usage',
