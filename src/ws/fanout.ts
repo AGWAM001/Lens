@@ -1,5 +1,5 @@
 import { redis } from '../redis'
-import { activeNetwork } from '../config'
+import { activeNetwork, config } from '../config'
 import { priceEmitter, PRICE_UPDATE, PriceUpdateEvent } from '../events'
 import { Gauge, Counter } from 'prom-client'
 import { register } from '../metrics'
@@ -67,12 +67,24 @@ const BUFFER_SWEEP_INTERVAL_MS = envInt('WS_BUFFER_SWEEP_INTERVAL_MS', 5000)
 const LIMITS = resolveBackpressureLimits()
 
 /**
- * Pair names can contain arbitrary asset codes and issuer identifiers supplied
- * by websocket clients. Keep them out of Prometheus labels: `other` is the
- * bounded bucket for pair-specific subscriptions and `*` remains the aggregate.
+ * Pair names carry asset codes and issuer identifiers supplied by websocket
+ * clients, so they cannot become Prometheus labels as they arrive: a client
+ * subscribing to randomly generated pairs would mint a permanent series each
+ * time, and `/metrics` would grow until it is too slow to scrape.
+ *
+ * The bounded domain is `config.pairs` — the pairs this deployment actually
+ * watches, set by the operator and fixed for the lifetime of the process. A
+ * subscription to one of those keeps its own label, so "which pair has
+ * subscribers" stays answerable on the dashboard. Anything else collapses into
+ * `other`, which is the whole unbounded space in one series.
+ *
+ * `null` means "record only the `*` aggregate for this one".
  */
-function pairMetricLabel(pairKey: string): 'other' | null {
-  return pairKey === '*' ? null : 'other'
+const WATCHED_PAIR_KEYS: ReadonlySet<string> = new Set(config.pairs.map(p => p.pairKey))
+
+function pairMetricLabel(pairKey: string): string | null {
+  if (pairKey === '*') return null
+  return WATCHED_PAIR_KEYS.has(pairKey) ? pairKey : 'other'
 }
 
 // ─── Client wrapper with backpressure & coalescing ────────────────────────────
