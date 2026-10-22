@@ -5,7 +5,68 @@
 [![Stellar](https://img.shields.io/badge/Stellar-SDEX%20%2B%20AMM-black)](https://stellar.org)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-Aggregates price data from Stellar's Classic Order Book (SDEX) and AMM Liquidity Pools into a single, unified API.
+## Quickstart
+
+### REST
+
+```bash
+curl http://localhost:3002/status
+# {
+#   "ok": true,
+#   "network": "testnet",
+#   "watchedPairs": ["XLM:native/USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"],
+#   "lastIndexedLedger": 53842917,  // illustrative — actual value depends on when /status is queried
+#   "lastProcessedAt": "2026-05-07T18:45:11.220Z",  // illustrative — actual value depends on when /status is queried
+#   "ingestLagSeconds": 4  // illustrative — actual value depends on when /status is queried
+# }
+#
+# /status answers for one network — pass ?network=mainnet (or the
+# x-network header) to check the mainnet indexer instead. ingestLagSeconds is
+# null until that network has ingested, and lastIndexedLedger is null until
+# its SDEX ingester has recorded a trade.
+```
+
+### GraphQL
+
+```bash
+curl -X POST http://localhost:3002/graphql \
+  -H "Content-Type: application/json" \
+  -d '{"query":"{ getPrice(assetA:\"XLM\", assetB:\"USDC\") { price assetA assetB pairKey bestRoute lastUpdated } }"}'
+# {
+#   "data": {
+#     "getPrice": {
+#       "price": 0.1245,
+#       "assetA": "XLM",
+#       "assetB": "USDC",
+#       "pairKey": "XLM:native/USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+#       "bestRoute": "amm",
+#       "lastUpdated": "2026-05-07T18:46:02.114Z"
+#     }
+#   }
+# }
+```
+
+### MCP
+
+```bash
+# The MCP server speaks MCP over stdin and stdout — it does not listen
+# on a port. Port 3002 is the HTTP API, which knows nothing about MCP.
+npm run mcp:server
+
+# To drive it interactively, point the inspector at that command:
+npx @modelcontextprotocol/inspector npm run mcp:server
+# Tools and the keys it needs: examples/mcp-server/README.md
+# [
+#   {
+#     "name": "bazaar_search",
+#     "description": "Search for resources in a Stellar Bazaar node"
+#   },
+#   {
+#     "name": "paid_call",
+#     "description": "Make a paid API call to a Bazaar resource"
+#   }
+# ]
+```
 
 **What Horizon doesn't do:** Horizon's `/trade_aggregations` only covers SDEX. AMM pool prices (derived from reserve ratios) are not aggregated anywhere. Lens fills this gap.
 
@@ -17,6 +78,7 @@ Aggregates price data from Stellar's Classic Order Book (SDEX) and AMM Liquidity
 | GET | `/price/:assetA/:assetB` | Current VWAP, 24h volume, best route |
 | GET | `/price/:assetA/:assetB/route?amount=1000` | Best execution route for a given amount |
 | GET | `/price/:assetA/:assetB/depth?amount=1000` | Simulated order-book depth and execution slippage |
+| GET | `/impact/:assetA/:assetB?thresholds=1,5,10` | Adaptive slippage ladder and threshold crossing sizes |
 | GET | `/book/:assetA/:assetB?depth=0.1&step=0.01&network=testnet` | Aggregated SDEX book and synthetic AMM price ladder with cumulative size and venue provenance |
 | GET | `/price/:assetA/:assetB/history?window=1h` | OHLCV history (`1m`, `5m`, `1h`, `24h`) |
 | GET | `/price/twap/:assetA/:assetB?window=60&sampleInterval=60&method=iqr` | Manipulation-resistant time-weighted average price |
@@ -25,7 +87,7 @@ Aggregates price data from Stellar's Classic Order Book (SDEX) and AMM Liquidity
 | GET | `/prices/history?pair=XLM/USDC&from=…&to=…&interval=1m` | Historical 1-minute price snapshots, optionally aggregated (`1m`, `5m`, `1h`); honours `?network=`; `?format=csv` serves the points as `text/csv` (`ts,price,volume`); ~30-day retention |
 | GET | `/pools` | Active AMM pools being watched |
 | GET | `/pairs` | Watched trading pairs |
-| GET | `/volumes/:asset?window=24h` | Cross-venue traded volume (`24h`, `7d`, `30d`) with a per-venue breakdown |
+| GET | `/volumes/:asset?window=24h&network=testnet` | Cross-venue volume and trade-size concentration (`24h`, `7d`, `30d`) with per-venue breakdown |
 | GET | `/spreads/:asset?window=5m` | Per-venue bid/ask spread, tightest first (`5m`, `15m`, `1h`, `24h`) |
 | GET | `/compare/:asset` | Lens vs configured oracle prices, with per-oracle deviation and availability |
 | GET | `/screener?sortBy=volume&order=desc&limit=20` | Screen pairs by volume, 24h change, liquidity and price |
@@ -42,13 +104,15 @@ Aggregates price data from Stellar's Classic Order Book (SDEX) and AMM Liquidity
 | POST | `/settle` | Settle an x402 payment (idempotent — retries replay the stored result) |
 | POST | `/webhooks` | Subscribe to a price-threshold webhook |
 | DELETE | `/webhooks/:id` | Delete a webhook subscription |
+| GET | `/admin/webhook-delivery-failures?limit=25` | Recent permanent webhook failures (requires `X-Admin-Token`) |
 | GET/POST | `/graphql` | GraphQL query/mutation endpoint (GraphiQL IDE at `/graphiql`, docs: [`docs/graphql.md`](docs/graphql.md)) |
 
 Every non-internal route above has a matching entry in [`openapi.yaml`](openapi.yaml);
 `tests/openapi.test.ts` boots the server and fails if a registered route is
 missing from the spec. Operator-only and non-HTTP routes (`/admin/keys*`,
-`/admin/usage*`, `/metrics`, `/ws`, `/graphiql*`) are deliberately excluded via
+`/admin/usage*`, `/admin/webhook-delivery-failures`, `/metrics`, `/ws`, `/graphiql*`) are deliberately excluded via
 the commented allow-list in [`src/openapi/coverage.ts`](src/openapi/coverage.ts).
+In addition, live service responses are verified against their published schemas on a daily schedule (`05:00 UTC`) via `npm run spec:validate-live` — see [docs/live-spec-validation.md](docs/live-spec-validation.md).
 
 The `?network=testnet\|mainnet` query param (or `x-network` header) selects the
 Stellar network. It is validated on every request — an unrecognised value gets a
@@ -62,6 +126,16 @@ best-route reads), `/price/:assetA/:assetB/route`, `/price/:assetA/:assetB/depth
 `/volumes/:asset`, `/status`, and the x402 payment `network`/`payTo`. That list
 is the same one `openapi.yaml` declares a `network` parameter on — if they ever
 disagree, the spec is the thing to fix.
+
+`GET /volumes/:asset` also reports the trade count, median trade size, largest
+trade's volume share, and `volumeConcentration`. Concentration is the HHI: the
+sum of squared individual trade volume shares (0 to 1; 1 means one trade
+accounted for all volume). The `provenance` object gives the venues and
+positive-volume sample count used and the total observed sample count
+(including zero-volume rows), plus the latest trade time and its age at the
+response's `endTime`.
+When the window has no trades, or its samples have no positive volume, derived
+size and concentration metrics are `null` and `status` explains why.
 
 Still reading across both networks, and ignoring the parameter:
 `/candles/:assetA/:assetB`, `/price/twap/*`, and `/price/vwap/*`.
@@ -325,7 +399,7 @@ curl -H "X-PAYMENT: $(cat payment.b64)" \
 # {
 #   "assetA": "XLM",
 #   "assetB": "USDC",
-#   "pairKey": "XLM:native/USDC:GA5...",
+#   "pairKey": "XLM:native/USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
 #   "vwap1m": "0.12450000",
 #   "vwap1h": "0.12410000",
 #   "volume24h": "1284390.5500",
@@ -390,9 +464,13 @@ Or interactively at [http://localhost:3002/graphiql](http://localhost:3002/graph
 
 ## Documentation
 Detailed system design and data flow diagrams can be found in the [Architecture Overview](docs/architecture.md).
+Lens also *publishes* prices: [`docs/sep40-oracle-publisher.md`](docs/sep40-oracle-publisher.md) covers the SEP-40 contract in `oracle/contract/`, the deviation-and-interval publication policy in `src/publish/`, deployment, and key handling.
 The API specification is available in [OpenAPI 3.0 format](openapi.yaml) and is auto-published to GitHub Pages at https://miracle656.github.io/lens/openapi.json.
 
+Operators: start with the [Operations runbook](docs/RUNBOOK.md) — what runs, how each external dependency degrades, how to check ingestion health via `/status` and `/metrics`, the known failure modes with their symptoms, and deploy/rollback procedures.
+
 Operational docs: [HTTP metrics](docs/http-metrics.md), [ingest metrics](docs/ingest-metrics.md), [websocket backpressure](docs/websocket-backpressure.md), [health probes](docs/health.md), [GraphQL](docs/graphql.md).
+The MCP server also advertises read-only [resources](docs/mcp-resources.md) — the watched pairs, venues, this OpenAPI document, and service status — each with a stable URI and freshness an agent can cache against.
 
 ## Examples
 
@@ -550,6 +628,33 @@ curl -s http://localhost:3002/price/XLM/USDC | jq '{price, ammPrice, lastUpdated
 ```
 
 *(Note: timestamp values above reflect the dynamic hourly anchor at seed execution time and request time).*
+
+
+## Rate Limiting & 429 Handling
+
+Lens enforces rate limits per client IP or authenticated API key to protect system throughput:
+
+| Tier / Endpoint | Window | Limit |
+| :--- | :--- | :--- |
+| **Public Unauthenticated (by IP)** | 1 minute | `100 requests` (`RATE_LIMITS.ipDefault`) |
+| **Authenticated API Keys** | 1 minute | `1,000 requests` (`RATE_LIMITS.authenticatedDefault`) |
+| **Public Health/Monitoring (`/status`)** | 1 minute | `1,000 requests` (`RATE_LIMITS.monitoring`) |
+
+### Handling 429 (Too Many Requests)
+When a client exceeds their allowance, Lens replies with HTTP status `429 Too Many Requests`.
+
+1. **`Retry-After` Header:** Specifies the number of seconds to wait before retrying (e.g., `Retry-After: 42`).
+2. **Standardized Error Body:**
+   ```json
+   {
+     "statusCode": 429,
+     "error": "Too Many Requests",
+     "code": "rate_limited",
+     "message": "Rate limit exceeded, retry in 42 seconds",
+     "retryAfter": 42
+   }
+   ```
+Callers should parse the `Retry-After` header or `retryAfter` field and apply exponential backoff.
 
 
 ## Environment Variables

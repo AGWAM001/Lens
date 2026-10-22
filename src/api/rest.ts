@@ -13,10 +13,11 @@ import {
   historyResponseSchema,
   poolsResponseSchema,
   depthResponseSchema,
+  impactResponseSchema,
   installResponseValidation,
 } from './schemas'
-import { getDepth } from '../pricing/depth'
-import { resolveDecimalFormat, formatDecimal } from '../utils/decimals'
+import { getDepth, getImpact } from '../pricing/depth'
+import { listCrashes } from '../ingester/restart'
 
 function makePairKey(a: string, b: string): string {
   return [a, b].sort().join('/')
@@ -96,6 +97,17 @@ export async function registerRESTRoutes(app: FastifyInstance) {
       ingestLagSeconds: lastProcessedAt
         ? Math.max(0, Math.round((Date.now() - new Date(lastProcessedAt).getTime()) / 1000))
         : null,
+      // Ingesters that have crashed at least once on this network, newest
+      // first. An ingester that crash-loops but restarts successfully is
+      // otherwise invisible here: the process is up and the port answers.
+      // Empty when nothing has crashed. Messages only — never a stack, since
+      // this is served over HTTP.
+      crashes: listCrashes(network).map(c => ({
+        name: c.name,
+        network: c.network,
+        message: c.message,
+        at: c.at.toISOString(),
+      })),
     }
   })
 
@@ -106,7 +118,7 @@ export async function registerRESTRoutes(app: FastifyInstance) {
     Querystring: { decimals?: string; decimalFormat?: string }
   }>(
     '/price/:assetA/:assetB',
-    { schema: { response: { 200: priceResponseSchema } } },
+    { config: { scope: 'read:prices' }, schema: { response: { 200: priceResponseSchema } } },
     async (req, reply) => {
       price_requests_total.inc()
       const { assetA, assetB } = req.params
@@ -152,17 +164,19 @@ export async function registerRESTRoutes(app: FastifyInstance) {
   // GET /price/:assetA/:assetB/route?amount=1000
   app.get<{
     Params: { assetA: string; assetB: string }
-    Querystring: { amount?: string; decimals?: string; decimalFormat?: string }
+    Querystring: { amount?: string; network?: string }
   }>(
     '/price/:assetA/:assetB/route',
-    { schema: { response: { 200: routeResponseSchema } } },
+    { config: { scope: 'read:prices' }, schema: { response: { 200: routeResponseSchema } } },
     async (req, reply) => {
       const { assetA, assetB } = req.params
       const amount = parseFloat(req.query.amount ?? '1000')
+      // Validate amount before the pair check: a malformed request parameter
+      // is a 400 regardless of whether the pair is watched.
+      if (isNaN(amount) || amount <= 0) return reply.status(400).send({ error: 'amount must be a positive number' })
       const network = req.network ?? activeNetwork
       const pair = findPair(assetA, assetB, network)
       if (!pair) return reply.status(404).send({ error: `Pair ${assetA}/${assetB} not watched on ${network}` })
-      if (isNaN(amount) || amount <= 0) return reply.status(400).send({ error: 'amount must be a positive number' })
 
       const decimalFormat = resolveDecimalFormat(req)
       const routeInfo = await getBestRoute(pair.assetA, pair.assetB, pair.pairKey, amount, network)
@@ -186,7 +200,7 @@ export async function registerRESTRoutes(app: FastifyInstance) {
     Querystring: { window?: string; limit?: string; decimals?: string; decimalFormat?: string }
   }>(
     '/price/:assetA/:assetB/history',
-    { schema: { response: { 200: historyResponseSchema } } },
+    { config: { scope: 'read:history' }, schema: { response: { 200: historyResponseSchema } } },
     async (req, reply) => {
       const { assetA, assetB } = req.params
       const window = req.query.window ?? '1h'
@@ -241,17 +255,10 @@ export async function registerRESTRoutes(app: FastifyInstance) {
   // each step), then one LIMIT 1 index probe per pool fetches its newest row.
   // Cost is O(pools x log n); the old DISTINCT ON sorted every row of every
   // network. A quiet pool is kept with its real `timestamp`, never dropped.
-  app.get<{ Querystring: { decimals?: string; decimalFormat?: string } }>(
-    '/pools',
-    { schema: { response: { 200: poolsResponseSchema } } },
-    async (req, reply) => {
-      const network = req.network ?? activeNetwork
-      const decimalFormat = resolveDecimalFormat(req)
-      if (decimalFormat === 'string') {
-        reply.header('x-decimal-format', 'string')
-      }
-      const result = await pgPool.query(
-        `WITH RECURSIVE ids AS (
+  app.get('/pools', { config: { scope: 'read:prices' }, schema: { response: { 200: poolsResponseSchema } } }, async (req) => {
+    const network = req.network ?? activeNetwork
+    const result = await pgPool.query(
+      `WITH RECURSIVE ids AS (
          (SELECT pool_id FROM pool_snapshots WHERE network = $1 ORDER BY pool_id LIMIT 1)
          UNION ALL
          SELECT (SELECT s.pool_id FROM pool_snapshots s
@@ -293,7 +300,7 @@ export async function registerRESTRoutes(app: FastifyInstance) {
     Querystring: { amount?: string; decimals?: string; decimalFormat?: string }
   }>(
     '/price/:assetA/:assetB/depth',
-    { schema: { response: { 200: depthResponseSchema } } },
+    { config: { scope: 'read:prices' }, schema: { response: { 200: depthResponseSchema } } },
     async (req, reply) => {
       const { assetA, assetB } = req.params
       const amount = parseFloat(req.query.amount ?? '1000')
@@ -311,6 +318,39 @@ export async function registerRESTRoutes(app: FastifyInstance) {
         pairKey: pair.pairKey,
         ...depthResult,
       }
+    }
+  )
+
+  // GET /impact/:assetA/:assetB?thresholds=1,5,10
+  app.get<{
+    Params: { assetA: string; assetB: string }
+    Querystring: { thresholds?: string; liquidityFraction?: string }
+  }>(
+    '/impact/:assetA/:assetB',
+    { schema: { response: { 200: impactResponseSchema } } },
+    async (req, reply) => {
+      const { assetA, assetB } = req.params
+      const network = req.network ?? activeNetwork
+      const pair = findPair(assetA, assetB, network)
+      if (!pair) return reply.status(404).send({ error: `Pair ${assetA}/${assetB} not watched on ${network}` })
+
+      const thresholds = req.query.thresholds
+        ? req.query.thresholds.split(',').map(Number)
+        : [1, 5, 10]
+      const liquidityFraction = req.query.liquidityFraction === undefined
+        ? 0.5
+        : Number(req.query.liquidityFraction)
+      if (
+        thresholds.length === 0 ||
+        thresholds.some(value => !Number.isFinite(value) || value <= 0) ||
+        !Number.isFinite(liquidityFraction) || liquidityFraction <= 0 || liquidityFraction > 1
+      ) {
+        return reply.status(400).send({ error: 'thresholds must be positive numbers and liquidityFraction must be between 0 and 1' })
+      }
+
+      const impact = await getImpact(pair.pairKey, { thresholds, liquidityFraction }, network)
+      if (!impact) return reply.status(404).send({ error: `No AMM liquidity available for ${assetA}/${assetB}` })
+      return { assetA: pair.assetA.code, assetB: pair.assetB.code, pairKey: pair.pairKey, ...impact }
     }
   )
 }

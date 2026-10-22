@@ -11,8 +11,9 @@ import {
   calculateAMMOutput,
   calculateAMMPrice,
   calculateAMMSpotPrice,
-  calculateSlippage,
   generateAMMDepthLevels,
+  calculateImpact,
+  calculateSlippage,
   getDepth,
 } from '../pricing/depth'
 
@@ -141,6 +142,36 @@ describe('Depth and slippage calculations (#84)', () => {
       
       expect(asks.length).toBe(5)
       expect(bids.length).toBe(5)
+    })
+  })
+
+  describe('calculateImpact', () => {
+    it('returns standard sizes plus a liquidity-adaptive cap', () => {
+      const result = calculateImpact(10_000, 5_000, 30)
+
+      expect(result.status).toBe('ok')
+      expect(result.ladder.map(point => point.size)).toEqual([100, 1_000, 5_000])
+      expect(result.ladder[1].slippagePct).toBeGreaterThan(result.ladder[0].slippagePct)
+      expect(result.thresholds.map(threshold => threshold.thresholdPct)).toEqual([1, 5, 10])
+      expect(result.thresholds.every(threshold => threshold.crossed)).toBe(true)
+      expect(result.thresholds[0].size).toBeLessThan(result.thresholds[1].size!)
+    })
+
+    it('reports a thin pair instead of fabricating a full-slippage point', () => {
+      const result = calculateImpact(100, 200, 30)
+
+      expect(result.status).toBe('insufficient_liquidity')
+      expect(result.availableLiquidity).toBe(50)
+      expect(result.ladder).toEqual([])
+      expect(result.thresholds.every(threshold => !threshold.crossed && threshold.size === null)).toBe(true)
+    })
+
+    it('accepts caller-configured threshold levels', () => {
+      const result = calculateImpact(10_000, 5_000, 30, { thresholds: [2, 100] })
+
+      expect(result.thresholds.map(threshold => threshold.thresholdPct)).toEqual([2, 100])
+      expect(result.thresholds[0].crossed).toBe(true)
+      expect(result.thresholds[1].crossed).toBe(false)
     })
   })
 

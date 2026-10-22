@@ -119,7 +119,7 @@ export async function queryHistory(
 export async function registerHistoryRoutes(app: FastifyInstance) {
   app.get<{
     Querystring: { pair?: string; from?: string; to?: string; interval?: string; format?: string }
-  }>('/prices/history', async (req, reply) => {
+  }>('/prices/history', { config: { scope: 'read:history' } }, async (req, reply) => {
     const { pair } = req.query
     if (!pair) {
       return reply.status(400).send({ error: 'pair query parameter is required' })

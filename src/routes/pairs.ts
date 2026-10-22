@@ -17,7 +17,7 @@ export async function registerPairsRoutes(app: FastifyInstance) {
   // the probe still finds its last print, and the response carries that print's
   // real `lastUpdated`, so a caller can see it is old. A pair with no rows on
   // this network at all comes back with null price and timestamp.
-  app.get('/pairs', async (req) => {
+  app.get('/pairs', { config: { scope: 'read:prices' } }, async (req) => {
     const activePairs = getActivePairs()
     const network = req.network ?? activeNetwork
 
