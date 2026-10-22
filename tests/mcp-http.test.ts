@@ -35,6 +35,14 @@ vi.mock('../src/fetch', () => ({
 const TEST_AUTH_TOKEN = 'lens-mcp-http-test-token-4d1f8b6e2a97';
 const PAID_URL = 'https://bazaar.example/api/v1/price';
 
+/**
+ * `paid_call` pays only for hosts the operator allow-listed (#404), and in these
+ * tests the harness is the operator. The spend-metrics case below deliberately
+ * calls a host that is NOT here, to prove an unlisted host can never become a
+ * metric series of its own.
+ */
+const PAID_CALL_ALLOWLIST = ['bazaar.example', 'spend-export.test'];
+
 const openHandles: McpHttpServerHandle[] = [];
 
 afterEach(async () => {
@@ -55,6 +63,7 @@ async function startHttp(
 ): Promise<McpHttpServerHandle> {
   const server = new BazaarMcpServer({
     fetchWithPayment: fetchWithPayment as unknown as typeof fetch,
+    paidCallAllowlist: PAID_CALL_ALLOWLIST,
     ...(budget ? { budget } : {}),
     ...(paymentLedger ? { paymentLedger } : {}),
   });
@@ -330,7 +339,10 @@ describe('MCP HTTP transport parity', () => {
 
     // InMemoryTransport stands in for stdio: the same BazaarMcpServer and the
     // same SDK routing, without spawning a process to pipe stdin/stdout.
-    const directServer = new BazaarMcpServer({ fetchWithPayment: directFetch as unknown as typeof fetch });
+    const directServer = new BazaarMcpServer({
+      fetchWithPayment: directFetch as unknown as typeof fetch,
+      paidCallAllowlist: PAID_CALL_ALLOWLIST,
+    });
     const [directClientTransport, directServerTransport] = InMemoryTransport.createLinkedPair();
     await (directServer as any).server.connect(directServerTransport);
     const directClient = new Client({ name: 'lens-direct-test', version: '1.0.0' }, { capabilities: {} });
@@ -344,7 +356,9 @@ describe('MCP HTTP transport parity', () => {
     expect(httpTools.tools.map((tool: any) => tool.name)).toEqual(['bazaar_search', 'paid_call']);
     expect(httpPaidCall).toEqual(directPaidCall);
     expect(JSON.parse((httpPaidCall.content as any)[0].text)).toEqual({ asset: 'XLM', price: '0.15' });
-    expect(httpFetch).toHaveBeenCalledWith(PAID_URL, { method: 'GET' });
+    // objectContaining, not an exact match: the request also carries an
+    // AbortSignal deadline.
+    expect(httpFetch).toHaveBeenCalledWith(PAID_URL, expect.objectContaining({ method: 'GET' }));
   });
 
   it('advertises the budget tool over HTTP exactly as it does in-process', async () => {

@@ -5,7 +5,70 @@
 [![Stellar](https://img.shields.io/badge/Stellar-SDEX%20%2B%20AMM-black)](https://stellar.org)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-Aggregates price data from Stellar's Classic Order Book (SDEX) and AMM Liquidity Pools into a single, unified API.
+## Quickstart
+
+### REST
+
+```bash
+curl http://localhost:3002/status
+# {
+#   "ok": true,
+#   "network": "testnet",
+#   "watchedPairs": ["XLM:native/USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"],
+#   "lastIndexedLedger": 53842917,  // illustrative — actual value depends on when /status is queried
+#   "lastProcessedAt": "2026-05-07T18:45:11.220Z",  // illustrative — actual value depends on when /status is queried
+#   "ingestLagSeconds": 4  // illustrative — actual value depends on when /status is queried
+# }
+#
+# /status answers for one network — pass ?network=mainnet (or the
+# x-network header) to check the mainnet indexer instead. ingestLagSeconds is
+# null until that network has ingested, and lastIndexedLedger is null until
+# its SDEX ingester has recorded a trade.
+```
+
+### GraphQL
+
+```bash
+curl -X POST http://localhost:3002/graphql \
+  -H "Content-Type: application/json" \
+  -d '{"query":"{ getPrice(assetA:\"XLM\", assetB:\"USDC\") { price assetA assetB pairKey bestRoute lastUpdated } }"}'
+# {
+#   "data": {
+#     "getPrice": {
+#       "price": 0.1245,
+#       "assetA": "XLM",
+#       "assetB": "USDC",
+#       "pairKey": "XLM:native/USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+#       "bestRoute": "amm",
+#       "lastUpdated": "2026-05-07T18:46:02.114Z"
+#     }
+#   }
+# }
+```
+
+### MCP
+
+```bash
+# By default the MCP server speaks over stdin and stdout and listens on no
+# port; MCP_TRANSPORT=http serves Streamable HTTP on MCP_HTTP_PORT instead
+# (see "MCP server" below). Port 3002 is the HTTP API, which knows nothing
+# about MCP either way.
+npm run mcp:server
+
+# To drive it interactively, point the inspector at that command:
+npx @modelcontextprotocol/inspector npm run mcp:server
+# Tools and the keys it needs: examples/mcp-server/README.md
+# [
+#   {
+#     "name": "bazaar_search",
+#     "description": "Search for resources in a Stellar Bazaar node"
+#   },
+#   {
+#     "name": "paid_call",
+#     "description": "Make a paid API call to a Bazaar resource"
+#   }
+# ]
+```
 
 **What Horizon doesn't do:** Horizon's `/trade_aggregations` only covers SDEX. AMM pool prices (derived from reserve ratios) are not aggregated anywhere. Lens fills this gap.
 
@@ -17,6 +80,7 @@ Aggregates price data from Stellar's Classic Order Book (SDEX) and AMM Liquidity
 | GET | `/price/:assetA/:assetB` | Current VWAP, 24h volume, best route |
 | GET | `/price/:assetA/:assetB/route?amount=1000` | Best execution route for a given amount |
 | GET | `/price/:assetA/:assetB/depth?amount=1000` | Simulated order-book depth and execution slippage |
+| GET | `/impact/:assetA/:assetB?thresholds=1,5,10` | Adaptive slippage ladder and threshold crossing sizes |
 | GET | `/book/:assetA/:assetB?depth=0.1&step=0.01&network=testnet` | Aggregated SDEX book and synthetic AMM price ladder with cumulative size and venue provenance |
 | GET | `/price/:assetA/:assetB/history?window=1h` | OHLCV history (`1m`, `5m`, `1h`, `24h`) |
 | GET | `/price/twap/:assetA/:assetB?window=60&sampleInterval=60&method=iqr` | Manipulation-resistant time-weighted average price |
@@ -25,13 +89,16 @@ Aggregates price data from Stellar's Classic Order Book (SDEX) and AMM Liquidity
 | GET | `/prices/history?pair=XLM/USDC&from=…&to=…&interval=1m` | Historical 1-minute price snapshots, optionally aggregated (`1m`, `5m`, `1h`); honours `?network=`; `?format=csv` serves the points as `text/csv` (`ts,price,volume`); ~30-day retention |
 | GET | `/pools` | Active AMM pools being watched |
 | GET | `/pairs` | Watched trading pairs |
-| GET | `/volumes/:asset?window=24h` | Cross-venue traded volume (`24h`, `7d`, `30d`) with a per-venue breakdown |
+| GET | `/volumes/:asset?window=24h&network=testnet` | Cross-venue volume and trade-size concentration (`24h`, `7d`, `30d`) with per-venue breakdown |
 | GET | `/spreads/:asset?window=5m` | Per-venue bid/ask spread, tightest first (`5m`, `15m`, `1h`, `24h`) |
 | GET | `/compare/:asset` | Lens vs configured oracle prices, with per-oracle deviation and availability |
 | GET | `/screener?sortBy=volume&order=desc&limit=20` | Screen pairs by volume, 24h change, liquidity and price |
 | GET | `/benchmark/:asset?target=USD` | Peg-deviation statistics versus a target |
 | GET | `/basket?asset=XLM&asset=USDC&weight=0.6&weight=0.4` | Weighted price of a basket of assets |
 | GET | `/status` | Indexer health |
+| GET | `/snapshot?network=testnet\|mainnet` | Whole-network snapshot: venues, TVL, 24h volume, top pairs, peg readings and data freshness in one cached, timestamped object |
+| GET | `/live` | Liveness probe — no dependency checks (see [`docs/health.md`](docs/health.md)) |
+| GET | `/ready` | Readiness probe — boot complete + dependencies reachable |
 | GET | `/discovery/resources?type=&payTo=&network=&extensions=&limit=&offset=` | Bazaar catalog of x402-discoverable resources (spec: [`bazaar`](https://github.com/x402-foundation/x402/blob/main/specs/extensions/bazaar.md)) |
 | GET | `/usage/me` | Usage and quota for the calling API key (requires `Authorization: Bearer <key>`) |
 | GET | `/supported` | Payment kinds and extensions this facilitator supports |
@@ -39,13 +106,15 @@ Aggregates price data from Stellar's Classic Order Book (SDEX) and AMM Liquidity
 | POST | `/settle` | Settle an x402 payment (idempotent — retries replay the stored result) |
 | POST | `/webhooks` | Subscribe to a price-threshold webhook |
 | DELETE | `/webhooks/:id` | Delete a webhook subscription |
+| GET | `/admin/webhook-delivery-failures?limit=25` | Recent permanent webhook failures (requires `X-Admin-Token`) |
 | GET/POST | `/graphql` | GraphQL query/mutation endpoint (GraphiQL IDE at `/graphiql`, docs: [`docs/graphql.md`](docs/graphql.md)) |
 
 Every non-internal route above has a matching entry in [`openapi.yaml`](openapi.yaml);
 `tests/openapi.test.ts` boots the server and fails if a registered route is
 missing from the spec. Operator-only and non-HTTP routes (`/admin/keys*`,
-`/admin/usage*`, `/metrics`, `/ws`, `/graphiql*`) are deliberately excluded via
+`/admin/usage*`, `/admin/webhook-delivery-failures`, `/metrics`, `/ws`, `/graphiql*`) are deliberately excluded via
 the commented allow-list in [`src/openapi/coverage.ts`](src/openapi/coverage.ts).
+In addition, live service responses are verified against their published schemas on a daily schedule (`05:00 UTC`) via `npm run spec:validate-live` — see [docs/live-spec-validation.md](docs/live-spec-validation.md).
 
 The `?network=testnet\|mainnet` query param (or `x-network` header) selects the
 Stellar network. It is validated on every request — an unrecognised value gets a
@@ -60,12 +129,43 @@ best-route reads), `/price/:assetA/:assetB/route`, `/price/:assetA/:assetB/depth
 is the same one `openapi.yaml` declares a `network` parameter on — if they ever
 disagree, the spec is the thing to fix.
 
+`GET /volumes/:asset` also reports the trade count, median trade size, largest
+trade's volume share, and `volumeConcentration`. Concentration is the HHI: the
+sum of squared individual trade volume shares (0 to 1; 1 means one trade
+accounted for all volume). The `provenance` object gives the venues and
+positive-volume sample count used and the total observed sample count
+(including zero-volume rows), plus the latest trade time and its age at the
+response's `endTime`.
+When the window has no trades, or its samples have no positive volume, derived
+size and concentration metrics are `null` and `status` explains why.
+
 Still reading across both networks, and ignoring the parameter:
 `/candles/:assetA/:assetB`, `/price/twap/*`, and `/price/vwap/*`.
+
+### API key authentication errors
+
+API-key authentication failures return HTTP 401 with a machine-readable `code`:
+
+| Code | Meaning |
+|---|---|
+| `missing` | No Authorization header was supplied. |
+| `malformed` | The Authorization header is not a valid Bearer header. |
+| `unknown` | The key was not recognized; never-issued and unknown keys have the same response. |
+| `revoked` | The recognized key has been revoked. |
+| `expired` | The recognized key has passed its expiry time. |
+
+Unknown keys always receive the same response, regardless of whether the key
+ever existed. Admin-token failures use `admin_unauthorized`.
+
+Admin key creation accepts an optional future ISO date-time in `expiresAt`.
+Omitting it creates a key without an expiry.
 
 ```bash
 curl "https://api.example.com/price/XLM/USDC?network=mainnet"
 ```
+
+### Data Quality Guarantees
+For formal guarantees on pricing freshness (including the 300s staleness threshold), completeness (venue diversity and outlier filtering), precision (PostgreSQL Decimal(36,18) and negotiated decimal strings), venue inclusion across SDEX and AMMs, and deterministic violation semantics, see [`docs/data-quality.md`](docs/data-quality.md).
 
 ### GraphQL
 Available at `/graphql` with GraphiQL IDE at `/graphiql`. Real-time price
@@ -93,6 +193,17 @@ query {
 }
 ```
 
+#### Schema Definition & SDL Artifact
+The GraphQL schema is exported as a canonical Schema Definition Language (SDL) artifact committed at [`schema.graphql`](schema.graphql).
+
+- **Location**: [`schema.graphql`](schema.graphql)
+- **Regenerate / Refresh**:
+  ```bash
+  npm run graphql:schema:gen
+  ```
+- **Drift Guard & Validation**: CI runs `src/__tests__/graphqlSchemaDrift.test.ts` to assert that `schema.graphql` matches the code-defined schema in `src/api/graphql.ts`, guarantees deterministic output, validates SDL syntax for client generators, and detects breaking schema changes.
+
+
 ## Observability
 
 Prometheus metrics are exposed on `GET /metrics` (public, no API key required).
@@ -100,13 +211,17 @@ The MCP server is a separate process with its own `GET /metrics` on its own
 port, and that one does require its bearer token — see
 [MCP server](#mcp-server).
 
-Alongside the ingestion and database metrics, Lens exports the three HTTP
-signals needed to answer "is the API healthy":
+Alongside the ingestion and database metrics, Lens exports HTTP request,
+latency, authentication and rate-limit signals:
 
 | Metric | Type | Labels |
 |---|---|---|
 | `http_requests_total` | Counter | `method`, `route`, `status_class` |
 | `http_request_duration_seconds` | Histogram | `method`, `route` |
+| `api_key_auth_failures_total` | Counter | `reason` |
+| `admin_auth_failures_total` | Counter | — |
+| `rate_limit_rejections_total` | Counter | `scope` |
+| `global_shed_requests_total` | Counter | — |
 
 `route` is the matched route **template** (`/price/:assetA/:assetB`), never the
 resolved URL, so the number of time series stays bounded no matter how many
@@ -128,6 +243,11 @@ histogram_quantile(0.95,
 
 See [`docs/http-metrics.md`](docs/http-metrics.md) for the full label reference,
 the bucket rationale and suggested alerting rules.
+
+The websocket stream carries its own signals — `ws_clients_total`,
+`ws_messages_sent_total`, `ws_messages_dropped_total`, `ws_clients_dropped_total`
+and `ws_buffered_bytes` — which exist to make slow subscribers visible instead
+of silent. See [`docs/websocket-backpressure.md`](docs/websocket-backpressure.md).
 
 The ingestion metrics are labelled by `network` as well, so a dual-network
 deployment reports each network separately:
@@ -206,125 +326,6 @@ const unsubscribe = client.subscribe(
 > the exact keys being indexed. Only the pair you subscribe to is delivered;
 > updates for other pairs are filtered out server-side. For full protocol handshake details and a raw WebSocket implementation, see [`docs/graphql.md`](docs/graphql.md#live-price-subscriptions-graphql-transport-ws).
 
-## Usage Examples
-
-Lens gates `/price`, `/pools`, and `/candles` behind x402 micropayments on Stellar (testnet by default). The `/status` endpoint is free.
-
-### 1. Free health check (no payment)
-
-```bash
-curl http://localhost:3002/status
-# {
-#   "ok": true,
-#   "network": "testnet",
-#   "watchedPairs": ["XLM:native/USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"],
-#   "lastIndexedLedger": 53842917,
-#   "lastProcessedAt": "2026-05-07T18:45:11.220Z",
-#   "ingestLagSeconds": 4
-# }
-```
-
-`/status` answers for one network — pass `?network=mainnet` (or the
-`x-network` header) to check the mainnet indexer instead. `ingestLagSeconds` is
-`null` until that network has ingested, and `lastIndexedLedger` is `null` until
-its SDEX ingester has recorded a trade.
-
-### 2. Paid request without `X-PAYMENT` → `402` with payment requirements
-
-```bash
-curl -i http://localhost:3002/price/XLM/USDC
-# HTTP/1.1 402 Payment Required
-# content-type: application/json
-#
-# {
-#   "x402Version": 1,
-#   "accepts": [
-#     {
-#       "scheme": "exact",
-#       "price": "$0.10",
-#       "network": "stellar:testnet",
-#       "payTo": "G...your-oracle-address..."
-#     }
-#   ],
-#   "error": "Payment required",
-#   "description": "Unified SDEX+AMM price with VWAP and best route"
-# }
-```
-
-The `accepts[]` array lists every payment requirement the server will honor. Sign one of them, encode as JSON, base64-encode, and resend with the `X-PAYMENT` header.
-
-### 3. Paid request with `X-PAYMENT` → `200` with price data
-
-```bash
-# X-PAYMENT is base64(JSON(signed payment payload — see @x402/stellar))
-curl -H "X-PAYMENT: $(cat payment.b64)" \
-     http://localhost:3002/price/XLM/USDC
-# {
-#   "assetA": "XLM",
-#   "assetB": "USDC",
-#   "pairKey": "XLM:native/USDC:GA5...",
-#   "vwap1m": "0.12450000",
-#   "vwap1h": "0.12410000",
-#   "volume24h": "1284390.5500",
-#   "priceChange24h": "0.32",
-#   "bestRoute": "amm",
-#   "lastUpdated": "2026-05-07T18:46:02.114Z"
-# }
-```
-
-### 4. Node.js — automatic payment with `@x402/fetch` + `@x402/stellar`
-
-`@x402/fetch` wraps the native `fetch` so a `402` is intercepted, signed, and retried automatically — your application code looks like a normal request.
-
-```bash
-npm install @x402/fetch @x402/stellar
-```
-
-```typescript
-import { wrapFetchWithPaymentFromConfig } from "@x402/fetch";
-import { ExactStellarScheme } from "@x402/stellar/exact/client";
-import { createEd25519Signer } from "@x402/stellar";
-
-// 1. Sign with a Stellar testnet secret (S...). Fund via friendbot first.
-const signer = createEd25519Signer(
-  process.env.STELLAR_SECRET!, // e.g. "SBN...FUNDED..."
-  "stellar:testnet",
-);
-
-// 2. Wrap fetch — `stellar:*` matches both pubnet and testnet.
-const fetchWithPayment = wrapFetchWithPaymentFromConfig(fetch, {
-  schemes: [
-    {
-      network: "stellar:*",
-      client: new ExactStellarScheme(signer),
-    },
-  ],
-});
-
-// 3. Call the gated endpoint. The 402 → sign → 200 dance is automatic.
-const res = await fetchWithPayment("http://localhost:3002/price/XLM/USDC");
-const data = await res.json();
-console.log(`XLM/USDC VWAP-1h: ${data.vwap1h}`);
-```
-
-> **Mainnet:** swap `STELLAR_NETWORK=mainnet` on the server, point the
-> client at `stellar:pubnet`, and supply a custom Soroban RPC URL via
-> `new ExactStellarScheme(signer, { url: "https://your-rpc..." })`.
-> Stellar payments use *ledger-based* expiration (~12 ledgers ≈ 60s),
-> not timestamps.
-
-### 5. GraphQL price query
-
-```bash
-curl -X POST http://localhost:3002/graphql \
-  -H "Content-Type: application/json" \
-  -d '{"query":"{ getPrice(assetA:\"XLM\", assetB:\"USDC\") { price vwap1h volume24h priceChange24h } }"}'
-```
-
-Or interactively at [http://localhost:3002/graphiql](http://localhost:3002/graphiql).
-
-> **Note:** the current `GATED_ROUTES` map in [`src/middleware/x402.ts`](src/middleware/x402.ts) gates `/price`, `/pools`, and `/candles` only — `/graphql` is not gated. If you intend price data from GraphQL to require the same payment as REST, extend `GATED_ROUTES` (or add a per-resolver guard).
-
 ## MCP server
 
 `npm run mcp:server` starts the Bazaar MCP server ([src/mcp/server.ts](src/mcp/server.ts), wired up in [examples/mcp-server/run.ts](examples/mcp-server/run.ts)). It advertises:
@@ -334,8 +335,12 @@ Or interactively at [http://localhost:3002/graphiql](http://localhost:3002/graph
 | `bazaar_search` | Reads a Bazaar base URL's `/discovery/resources` or `/discovery/search?q=` and lists what is available. | No |
 | `paid_call` | Fetches an x402-gated URL and handles the `402 → sign → retry` loop. | **Yes — it signs with a real Stellar key** |
 | `payment_budget` | Reports the configured limits and what is left of today's budget. | No |
+| `lens_get_price` | Reads Lens's own aggregated price for a watched pair. | No |
 
-`payment_budget` appears whenever a spend budget is configured, which the example always sets. Every one of them is served over **either** transport, and the tool list, schemas and error codes are identical whichever you pick. Which transport runs is selected by configuration; **stdio is the default**, so an existing setup needs no changes.
+`payment_budget` appears whenever a spend budget is configured, which the example always sets, and `lens_get_price` only where the server can reach Lens's own price data. Every one of them is served over **either** transport, and the tool list, schemas and error codes are identical whichever you pick. Which transport runs is selected by configuration; **stdio is the default**, so an existing setup needs no changes.
+
+**⚠️ Warning:** the mainnet key signs with real XLM. Read the configuration,
+spending warning, and worked example before running.
 
 The server signs with a real Stellar key, so it needs `MCP_AGENT_SECRET_KEY_TESTNET`
 and `MCP_AGENT_SECRET_KEY_MAINNET` in the environment — keep them in `.env`
@@ -345,6 +350,8 @@ controls: `MCP_MAX_PAYMENT_PRICE` (per call, default `$1.00`),
 `MCP_DAILY_SPEND_CEILING` (default `$10.00`) and `MCP_SPEND_STATE_FILE` — the
 running total survives a restart, because a restart does not refund what the
 previous process spent.
+
+Full documentation: [examples/mcp-server/README.md](examples/mcp-server/README.md)
 
 ### stdio (default)
 
@@ -470,10 +477,143 @@ answering MCP and Prometheus on one path. Under **stdio** there is no listener
 to scrape, so read the running total from the `payment_budget` tool or the
 audit file.
 
+### WebSocket backpressure
+
+`/ws` counts a message as sent only once the socket reports the write completed,
+and bounds what a client that stops reading can cost: past 256 KiB of queued
+bytes updates are coalesced to the newest one, past 1 MiB — or congested for 30s
+— the client is closed with `1013` and counted. A truncated feed is visible in
+`ws_messages_dropped_total` rather than silent, and one slow client cannot affect
+any other. See [`docs/websocket-backpressure.md`](docs/websocket-backpressure.md).
+
+## Usage Examples
+
+Lens gates `/price`, `/pools`, and `/candles` behind x402 micropayments on Stellar (testnet by default). The `/status` endpoint is free.
+
+### 1. Free health check (no payment)
+
+```bash
+curl http://localhost:3002/status
+# {
+#   "ok": true,
+#   "network": "testnet",
+#   "watchedPairs": ["XLM:native/USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"],
+#   "lastIndexedLedger": 53842917,
+#   "lastProcessedAt": "2026-05-07T18:45:11.220Z",
+#   "ingestLagSeconds": 4
+# }
+```
+
+`/status` answers for one network — pass `?network=mainnet` (or the
+`x-network` header) to check the mainnet indexer instead. `ingestLagSeconds` is
+`null` until that network has ingested, and `lastIndexedLedger` is `null` until
+its SDEX ingester has recorded a trade.
+
+### 2. Paid request without `X-PAYMENT` → `402` with payment requirements
+
+```bash
+curl -i http://localhost:3002/price/XLM/USDC
+# HTTP/1.1 402 Payment Required
+# content-type: application/json
+#
+# {
+#   "x402Version": 1,
+#   "accepts": [
+#     {
+#       "scheme": "exact",
+#       "price": "$0.10",
+#       "network": "stellar:testnet",
+#       "payTo": "G...your-oracle-address..."
+#     }
+#   ],
+#   "error": "Payment required",
+#   "description": "Unified SDEX+AMM price with VWAP and best route"
+# }
+```
+
+The `accepts[]` array lists every payment requirement the server will honor. Sign one of them, encode as JSON, base64-encode, and resend with the `X-PAYMENT` header.
+
+### 3. Paid request with `X-PAYMENT` → `200` with price data
+
+```bash
+# X-PAYMENT is base64(JSON(signed payment payload — see @x402/stellar))
+curl -H "X-PAYMENT: $(cat payment.b64)" \
+     http://localhost:3002/price/XLM/USDC
+# {
+#   "assetA": "XLM",
+#   "assetB": "USDC",
+#   "pairKey": "XLM:native/USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+#   "vwap1m": "0.12450000",
+#   "vwap1h": "0.12410000",
+#   "volume24h": "1284390.5500",
+#   "priceChange24h": "0.32",
+#   "bestRoute": "amm",
+#   "lastUpdated": "2026-05-07T18:46:02.114Z"
+# }
+```
+
+### 4. Node.js — automatic payment with `@x402/fetch` + `@x402/stellar`
+
+`@x402/fetch` wraps the native `fetch` so a `402` is intercepted, signed, and retried automatically — your application code looks like a normal request.
+
+```bash
+npm install @x402/fetch @x402/stellar
+```
+
+```typescript
+import { wrapFetchWithPaymentFromConfig } from "@x402/fetch";
+import { ExactStellarScheme } from "@x402/stellar/exact/client";
+import { createEd25519Signer } from "@x402/stellar";
+
+// 1. Sign with a Stellar testnet secret (S...). Fund via friendbot first.
+const signer = createEd25519Signer(
+  process.env.STELLAR_SECRET!, // e.g. "SBN...FUNDED..."
+  "stellar:testnet",
+);
+
+// 2. Wrap fetch — `stellar:*` matches both pubnet and testnet.
+const fetchWithPayment = wrapFetchWithPaymentFromConfig(fetch, {
+  schemes: [
+    {
+      network: "stellar:*",
+      client: new ExactStellarScheme(signer),
+    },
+  ],
+});
+
+// 3. Call the gated endpoint. The 402 → sign → 200 dance is automatic.
+const res = await fetchWithPayment("http://localhost:3002/price/XLM/USDC");
+const data = await res.json();
+console.log(`XLM/USDC VWAP-1h: ${data.vwap1h}`);
+```
+
+> **Mainnet:** swap `STELLAR_NETWORK=mainnet` on the server, point the
+> client at `stellar:pubnet`, and supply a custom Soroban RPC URL via
+> `new ExactStellarScheme(signer, { url: "https://your-rpc..." })`.
+> Stellar payments use *ledger-based* expiration (~12 ledgers ≈ 60s),
+> not timestamps.
+
+### 5. GraphQL price query
+
+```bash
+curl -X POST http://localhost:3002/graphql \
+  -H "Content-Type: application/json" \
+  -d '{"query":"{ getPrice(assetA:\"XLM\", assetB:\"USDC\") { price vwap1h volume24h priceChange24h } }"}'
+```
+
+Or interactively at [http://localhost:3002/graphiql](http://localhost:3002/graphiql).
+
+> **Note:** the current `GATED_ROUTES` map in [`src/middleware/x402.ts`](src/middleware/x402.ts) gates `/price`, `/pools`, and `/candles` only — `/graphql` is not gated. If you intend price data from GraphQL to require the same payment as REST, extend `GATED_ROUTES` (or add a per-resolver guard).
+
 ## Documentation
 Detailed system design and data flow diagrams can be found in the [Architecture Overview](docs/architecture.md).
 Lens also *publishes* prices: [`docs/sep40-oracle-publisher.md`](docs/sep40-oracle-publisher.md) covers the SEP-40 contract in `oracle/contract/`, the deviation-and-interval publication policy in `src/publish/`, deployment, and key handling.
 The API specification is available in [OpenAPI 3.0 format](openapi.yaml) and is auto-published to GitHub Pages at https://miracle656.github.io/lens/openapi.json.
+
+Operators: start with the [Operations runbook](docs/RUNBOOK.md) — what runs, how each external dependency degrades, how to check ingestion health via `/status` and `/metrics`, the known failure modes with their symptoms, and deploy/rollback procedures.
+
+Operational docs: [HTTP metrics](docs/http-metrics.md), [ingest metrics](docs/ingest-metrics.md), [websocket backpressure](docs/websocket-backpressure.md), [health probes](docs/health.md), [GraphQL](docs/graphql.md).
+The MCP server also advertises read-only [resources](docs/mcp-resources.md) — the watched pairs, venues, this OpenAPI document, and service status — each with a stable URI and freshness an agent can cache against.
 
 ## Examples
 
@@ -633,6 +773,33 @@ curl -s http://localhost:3002/price/XLM/USDC | jq '{price, ammPrice, lastUpdated
 *(Note: timestamp values above reflect the dynamic hourly anchor at seed execution time and request time).*
 
 
+## Rate Limiting & 429 Handling
+
+Lens enforces rate limits per client IP or authenticated API key to protect system throughput:
+
+| Tier / Endpoint | Window | Limit |
+| :--- | :--- | :--- |
+| **Public Unauthenticated (by IP)** | 1 minute | `100 requests` (`RATE_LIMITS.ipDefault`) |
+| **Authenticated API Keys** | 1 minute | `1,000 requests` (`RATE_LIMITS.authenticatedDefault`) |
+| **Public Health/Monitoring (`/status`)** | 1 minute | `1,000 requests` (`RATE_LIMITS.monitoring`) |
+
+### Handling 429 (Too Many Requests)
+When a client exceeds their allowance, Lens replies with HTTP status `429 Too Many Requests`.
+
+1. **`Retry-After` Header:** Specifies the number of seconds to wait before retrying (e.g., `Retry-After: 42`).
+2. **Standardized Error Body:**
+   ```json
+   {
+     "statusCode": 429,
+     "error": "Too Many Requests",
+     "code": "rate_limited",
+     "message": "Rate limit exceeded, retry in 42 seconds",
+     "retryAfter": 42
+   }
+   ```
+Callers should parse the `Retry-After` header or `retryAfter` field and apply exponential backoff.
+
+
 ## Environment Variables
 
 | Variable | Description | Default | Required |
@@ -640,6 +807,7 @@ curl -s http://localhost:3002/price/XLM/USDC | jq '{price, ammPrice, lastUpdated
 | `NODE_ENV` | Environment mode (`development`, `test`, `production`) | `development` | No |
 | `PORT` | API server port | `3002` | No |
 | `HOST` | API server host | `0.0.0.0` | No |
+| `GLOBAL_RATE_LIMIT_MAX` | Maximum accepted non-health requests per rolling minute per instance | `1000` | No |
 | `DATABASE_URL` | PostgreSQL connection string | - | **Yes** |
 | `REDIS_URL` | Redis connection string | - | **Yes** |
 | `PRICE_CACHE_TTL` | Cache duration for price data (seconds) | `10` | No |
@@ -656,23 +824,6 @@ curl -s http://localhost:3002/price/XLM/USDC | jq '{price, ammPrice, lastUpdated
 | `ORACLE_PAYMENT_ADDRESS_TESTNET` / `ORACLE_PAYMENT_ADDRESS_MAINNET` | Per-network override for the address above | - | No |
 | `X402_FACILITATOR_URL` | x402 facilitator service URL | - | No |
 
-### MCP server
-
-| Variable | Description | Default | Required |
-|---|---|---|---|
-| `MCP_AGENT_SECRET_KEY_TESTNET` / `MCP_AGENT_SECRET_KEY_MAINNET` | The keys `paid_call` signs payments with, per network | - | **Yes** |
-| `MCP_TRANSPORT` | `stdio` or `http` | `stdio` | No |
-| `MCP_HTTP_AUTH_TOKEN` | Bearer token every HTTP request must present | - | **Yes, if `MCP_TRANSPORT=http`** |
-| `MCP_HTTP_HOST` | HTTP bind address | `127.0.0.1` | No |
-| `MCP_HTTP_PORT` | HTTP port | `3003` | No |
-| `MCP_HTTP_PATH` | MCP endpoint path | `/mcp` | No |
-| `MCP_MAX_PAYMENT_PRICE` | Ceiling for a single `paid_call` | `$1.00` | No |
-| `MCP_DAILY_SPEND_CEILING` | Cumulative ceiling per day, persisted across restarts | `$10.00` | No |
-| `MCP_SPEND_STATE_FILE` | Where the daily running total is kept | platform default | No |
-| `MCP_PAYMENT_LEDGER_FILE` | Where the payment audit trail is appended | platform default | No |
-| `MCP_METRIC_HOSTS` | Hosts allowed to become a Prometheus `host` label; others report as `unknown` | - | No |
-| `MCP_METRIC_NETWORKS` | Network ids allowed to become a Prometheus `network` label; others report as `unknown` | `stellar:testnet,stellar:pubnet` | No |
-
 *\*Required if enabling x402 payment gating.*
 
 ## Stack
@@ -682,3 +833,27 @@ curl -s http://localhost:3002/price/XLM/USDC | jq '{price, ammPrice, lastUpdated
 - **Cache:** Redis
 - **Queue:** BullMQ
 - **Stellar:** @stellar/stellar-sdk
+
+
+### Deployed smoke check
+
+Run against a real running instance (local, staging or production):
+
+```bash
+SMOKE_MAX_AGE_SECONDS=120 SMOKE_TIMEOUT_MS=8000 npm run smoke -- http://localhost:3002
+```
+
+Validate the smoke checker itself with `npm run test:smoke`.
+
+The check requires public `/status`, `/live` and `/ready`, plus `/price/XLM/USDC`. It uses a
+`graphql-transport-ws` live price subscription at `/graphql`. Both probes must be
+present and healthy — a missing `/ready` fails the run rather than being skipped,
+since a smoke check that silently tolerates an absent probe is how a deployment
+ends up unmonitored while still green. It checks
+indexer and trade freshness, validates price shape, and waits for a real
+subscription event. It fails non-zero, naming the failing check, on timeout,
+stale data, a missing message, or HTTP errors. No synthetic price events are
+generated. On installations where x402 payment gates the price endpoint,
+a normal unauthenticated call receives HTTP 402 and the smoke check fails;
+it never bypasses payment requirements. A quiet pair without any new trades
+will likewise fail the live-message requirement.
