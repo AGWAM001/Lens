@@ -40,20 +40,22 @@ export async function registerUsageRoutes(app: FastifyInstance) {
     }
   )
 
-  app.get(
-    '/usage/me',
-    async (req, reply) => {
-      const apiKey = (req as any).apiKey as { id: string } | undefined
-      if (!apiKey) {
-        api_key_auth_failures_total.inc({ reason: 'missing' })
-        return reply.status(401).send({
-          error: 'Unauthorized',
-          code: 'missing',
-          message: 'Missing API key. Provide an Authorization: Bearer <key> header.',
-        })
-      }
-      const summary = await getUsageSummary(apiKey.id)
-      return reply.send(summary)
+  const handleCallerUsage = async (req: any, reply: FastifyReply) => {
+    reply.header('Cache-Control', 'no-store')
+    const apiKey = req.apiKey as { id: string } | undefined
+    if (!apiKey) {
+      api_key_auth_failures_total.inc({ reason: 'missing' })
+      return reply.status(401).send({
+        error: 'Unauthorized',
+        code: 'missing',
+        message: 'Missing API key. Provide an Authorization: Bearer <key> header.',
+      })
     }
-  )
+    // The key presented determines the answer — never a parameter.
+    const summary = await getUsageSummary(apiKey.id)
+    return reply.send(summary)
+  }
+
+  app.get('/usage/me', handleCallerUsage)
+  app.get('/usage', handleCallerUsage)
 }

@@ -23,6 +23,16 @@ export interface UsageSummary {
   monthlyRemainingCents: number
   overagePolicy: OveragePolicy
   quotaExceeded: boolean
+  dailyResetsAt: string
+  monthlyResetsAt: string
+  resets: {
+    daily: string
+    monthly: string
+  }
+  resetsInSeconds: {
+    daily: number
+    monthly: number
+  }
 }
 
 function getDailyBase(keyId: string): string {
@@ -107,6 +117,11 @@ async function getUsageSummaryInternal(keyId: string, config: QuotaConfig): Prom
   const monthlyCents = parseInt(monthlyCentsRaw ?? '0', 10)
 
   const quotaExceeded = dailyCents >= config.dailyQuotaCents || monthlyCents >= config.monthlyQuotaCents
+  const now = new Date()
+  const dailyResetDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1))
+  const monthlyResetDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1))
+  const dailyResetsAt = dailyResetDate.toISOString()
+  const monthlyResetsAt = monthlyResetDate.toISOString()
 
   return {
     keyId,
@@ -120,6 +135,16 @@ async function getUsageSummaryInternal(keyId: string, config: QuotaConfig): Prom
     monthlyRemainingCents: Math.max(0, config.monthlyQuotaCents - monthlyCents),
     overagePolicy: config.overagePolicy,
     quotaExceeded,
+    dailyResetsAt,
+    monthlyResetsAt,
+    resets: {
+      daily: dailyResetsAt,
+      monthly: monthlyResetsAt,
+    },
+    resetsInSeconds: {
+      daily: secondsUntilEndOfDay(),
+      monthly: secondsUntilEndOfMonth(),
+    },
   }
 }
 

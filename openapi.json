@@ -2203,6 +2203,40 @@
         }
       }
     },
+    "/usage": {
+      "get": {
+        "operationId": "getCallerUsage",
+        "summary": "Get usage and quota for the calling API key (alias for /usage/me)",
+        "security": [
+          {
+            "apiKeyAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Usage summary for the authenticated key",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
     "/supported": {
       "get": {
         "operationId": "getSupported",
@@ -4609,6 +4643,34 @@
           },
           "quotaExceeded": {
             "type": "boolean"
+          },
+          "dailyResetsAt": {
+            "type": "string"
+          },
+          "monthlyResetsAt": {
+            "type": "string"
+          },
+          "resets": {
+            "type": "object",
+            "properties": {
+              "daily": {
+                "type": "string"
+              },
+              "monthly": {
+                "type": "string"
+              }
+            }
+          },
+          "resetsInSeconds": {
+            "type": "object",
+            "properties": {
+              "daily": {
+                "type": "integer"
+              },
+              "monthly": {
+                "type": "integer"
+              }
+            }
           }
         }
       },
