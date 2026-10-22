@@ -33,6 +33,7 @@ import { registerVenueRoutes } from './routes/venues'
 import { registerSettleRoute } from './routes/facilitator'
 import { registerHealthRoutes } from './routes/health'
 import { registerCachePolicy } from './middleware/cachePolicy'
+import { registerFiatRoutes } from './routes/fiat'
 import { registerGlobalRateLimit, parseGlobalRateLimit } from './middleware/globalRateLimit'
 import { getMetrics, rate_limit_rejections_total } from './metrics'
 import { loggerOptions, createDestination } from './logger'
@@ -186,6 +187,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   await registerDiscoveryRoutes(app)
   await registerSnapshotRoutes(app)
   await registerVenueRoutes(app)
+  await registerFiatRoutes(app)
   await registerSettleRoute(app)
   await registerHealthRoutes(app)
   await registerGraphQL(app)

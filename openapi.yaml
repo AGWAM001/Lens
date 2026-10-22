@@ -300,6 +300,36 @@ paths:
         '429':
           $ref: '#/components/responses/TooManyRequests'
 
+  /price/{asset}/fiat:
+    get:
+      operationId: getFiatPrice
+      summary: Convert asset price to fiat currency with NGN support (#290)
+      security: []
+      parameters:
+        - name: asset
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: currency
+          in: query
+          required: false
+          schema:
+            type: string
+            default: USD
+        - $ref: '#/components/parameters/NetworkQuery'
+      responses:
+        '200':
+          description: Price converted into target fiat currency
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
   /price/{assetA}/{assetB}/history:
     get:
       operationId: getPriceHistory
