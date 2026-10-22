@@ -103,12 +103,13 @@ npx @modelcontextprotocol/inspector npm run mcp:server
 | POST | `/settle` | Settle an x402 payment (idempotent — retries replay the stored result) |
 | POST | `/webhooks` | Subscribe to a price-threshold webhook |
 | DELETE | `/webhooks/:id` | Delete a webhook subscription |
+| GET | `/admin/webhook-delivery-failures?limit=25` | Recent permanent webhook failures (requires `X-Admin-Token`) |
 | GET/POST | `/graphql` | GraphQL query/mutation endpoint (GraphiQL IDE at `/graphiql`, docs: [`docs/graphql.md`](docs/graphql.md)) |
 
 Every non-internal route above has a matching entry in [`openapi.yaml`](openapi.yaml);
 `tests/openapi.test.ts` boots the server and fails if a registered route is
 missing from the spec. Operator-only and non-HTTP routes (`/admin/keys*`,
-`/admin/usage*`, `/metrics`, `/ws`, `/graphiql*`) are deliberately excluded via
+`/admin/usage*`, `/admin/webhook-delivery-failures`, `/metrics`, `/ws`, `/graphiql*`) are deliberately excluded via
 the commented allow-list in [`src/openapi/coverage.ts`](src/openapi/coverage.ts).
 In addition, live service responses are verified against their published schemas on a daily schedule (`05:00 UTC`) via `npm run spec:validate-live` — see [docs/live-spec-validation.md](docs/live-spec-validation.md).
 

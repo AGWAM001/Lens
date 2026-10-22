@@ -95,6 +95,13 @@ export const x402_payments_received_total = new Counter({
   registers: [register]
 })
 
+export const webhook_delivery_failures_total = new Counter({
+  name: 'webhook_delivery_failures_total',
+  help: 'Permanent webhook delivery failures by bounded failure category',
+  labelNames: ['category'],
+  registers: [register]
+})
+
 export const last_trade_timestamp = new Gauge({
   name: 'last_trade_timestamp',
   help: 'Unix timestamp of the last trade ingested for a pair',
