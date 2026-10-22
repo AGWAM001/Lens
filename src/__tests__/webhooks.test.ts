@@ -10,6 +10,11 @@ vi.mock('../db', () => ({
       delete: vi.fn(),
       findMany: vi.fn(),
     },
+    webhookDeliveryFailure: {
+      create: vi.fn(),
+      deleteMany: vi.fn(),
+      findMany: vi.fn(),
+    },
   },
 }))
 

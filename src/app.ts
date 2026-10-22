@@ -1,6 +1,8 @@
 import Fastify, { type FastifyInstance, type RouteOptions } from 'fastify'
+import { randomUUID } from 'node:crypto'
 import cors from '@fastify/cors'
 import compress from '@fastify/compress'
+import { sendInternalError } from './errors'
 import rateLimit from '@fastify/rate-limit'
 import { registerRESTRoutes } from './api/rest'
 import { registerGraphQL } from './api/graphql'
@@ -8,10 +10,12 @@ import { registerWebhookRoutes } from './routes/webhooks'
 import { registerCandleRoutes } from './routes/candles'
 import { registerPairsRoutes } from './routes/pairs'
 import { registerScreenerRoutes } from './routes/screener'
+import { registerMoversRoutes } from './routes/movers'
 import { registerHistoryRoutes } from './api/history'
 import { registerX402 } from './middleware/x402'
 import { registerNetworkSelector } from './middleware/network'
 import { registerHttpMetrics } from './middleware/httpMetrics'
+import { registerETag } from './middleware/etag'
 import { registerWebSocket } from './api/websocket'
 import { registerApiKeyAuth } from './api/auth'
 import { registerAdminRoutes } from './api/admin'
@@ -24,12 +28,27 @@ import { registerSpreadsRoutes } from './routes/spreads'
 import { registerBenchmarkRoutes } from './routes/benchmark'
 import { registerOracleRoutes } from './routes/oracle'
 import { registerBasketRoutes } from './routes/basket'
+import { registerCorrelationRoutes } from './routes/correlation'
 import { registerDiscoveryRoutes } from './routes/discovery'
+import { registerSnapshotRoutes } from './routes/snapshot'
 import { registerVenueRoutes } from './routes/venues'
 import { registerSettleRoute } from './routes/facilitator'
+import { registerHealthRoutes } from './routes/health'
 import { registerCachePolicy } from './middleware/cachePolicy'
-import { getMetrics } from './metrics'
+import { registerFiatRoutes } from './routes/fiat'
+import { registerGlobalRateLimit, parseGlobalRateLimit } from './middleware/globalRateLimit'
+import { getMetrics, rate_limit_rejections_total } from './metrics'
 import { loggerOptions, createDestination } from './logger'
+
+/**
+ * Routes the rate limiter skips.
+ *
+ * All three are infrastructure polled on a fixed interval, often from several
+ * addresses at once. A 429 during an incident would take an instance out of
+ * rotation exactly when its health matters most, and would be reported as
+ * "unhealthy" by the very probe that got throttled.
+ */
+const PROBE_PATHS = new Set(['/status', '/live', '/ready'])
 
 export interface BuildAppOptions {
   /**
@@ -53,11 +72,27 @@ export interface BuildAppOptions {
  *
  * The returned app is NOT listening; the caller calls `app.listen(...)`.
  */
+export const RATE_LIMITS = {
+  ipDefault: 100,
+  authenticatedDefault: 1000,
+  monitoring: 1000,
+  timeWindow: '1 minute',
+} as const
+
 export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyInstance> {
   // Share the structured logger configuration (level, redaction, dev pretty
   // printing) with Fastify so `req.log` is scrubbed the same way.
   const app = Fastify({
     logger: { ...loggerOptions(), stream: createDestination() },
+    genReqId: () => randomUUID(),
+  })
+
+  app.setErrorHandler((error: any, req, reply) => {
+    const statusCode = typeof error?.statusCode === 'number' ? error.statusCode : 500
+    if (statusCode < 500) {
+      return reply.status(statusCode).send(error)
+    }
+    return sendInternalError(reply, req, error, 'Unhandled server error')
   })
 
   // Capture route registrations first, so it observes every route below
@@ -67,6 +102,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   }
 
   await app.register(cors, { origin: true })
+  await app.register(registerETag)
   await app.register(compress)
 
   // HTTP request/latency metrics. Registered FIRST, ahead of the network
@@ -97,23 +133,53 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   // requests fall back to a conservative shared limit keyed by IP. The IP
   // fallback is overridable via RATE_LIMIT_IP_MAX so load tests (which flood
   // from a single IP without a key) can measure the endpoint, not the limiter.
-  const ipRateLimitMax = parseInt(process.env.RATE_LIMIT_IP_MAX ?? '100', 10)
+  const ipRateLimitMax = parseInt(process.env.RATE_LIMIT_IP_MAX ?? String(RATE_LIMITS.ipDefault), 10)
   await app.register(rateLimit, {
     max: (req) => req.apiKey?.ratePerMin ?? ipRateLimitMax,
     timeWindow: '1 minute',
     keyGenerator: (req) => req.apiKey?.id ?? req.ip,
-    allowList: (req) => req.url === '/status',
-    errorResponseBuilder: (req, context) => ({
-      statusCode: 429,
-      error: 'Too Many Requests',
-      message: `Rate limit exceeded, retry in ${context.after}`,
-      retryAfter: context.after
-    })
+    // PROBE_PATHS, not just /status: /live and /ready are polled by the
+    // platform on a fixed interval and must never be rate limited.
+    allowList: (req) => PROBE_PATHS.has(req.url),
+    errorResponseBuilder: (req, context) => {
+      rate_limit_rejections_total.inc({ scope: req.apiKey ? 'key' : 'ip' })
+      const seconds = typeof context.after === 'number' ? context.after : (Math.ceil(context.ttl / 1000) || 60)
+      return {
+        statusCode: 429,
+        error: 'Too Many Requests',
+        code: 'rate_limited',
+        message: `Rate limit exceeded, retry in ${seconds} seconds`,
+        retryAfter: seconds,
+      }
+    },
   })
 
-  // Specific limit for /status (higher for monitoring)
+  // Ensure Retry-After header is always present on 429 responses (#272)
+  app.addHook('onSend', async (_req, reply, payload) => {
+    if (reply.statusCode === 429 && !reply.hasHeader('retry-after')) {
+      try {
+        const body = typeof payload === 'string' ? JSON.parse(payload) : payload
+        if (body?.retryAfter) {
+          reply.header('Retry-After', String(body.retryAfter))
+        }
+      } catch {
+        // non-fatal
+      }
+    }
+    return payload
+  })
+
+  // The per-instance ceiling runs after the per-key/IP limiter. Health checks
+  // bypass it, and expensive route templates are shed before other routes.
+  registerGlobalRateLimit(app, parseGlobalRateLimit(process.env.GLOBAL_RATE_LIMIT_MAX))
+
+  // Per-route ceiling for the probe routes. Inert while they stay allow-listed
+  // above — @fastify/rate-limit consults `allowList` before it ever reads
+  // `max` — but kept so removing the allow-list does not silently drop these to
+  // the shared per-IP default, which is far too low for an infrastructure
+  // poller.
   app.addHook('onRoute', (routeOptions) => {
-    if (routeOptions.url === '/status') {
+    if (routeOptions.url && PROBE_PATHS.has(routeOptions.url)) {
       routeOptions.config = {
         ...routeOptions.config,
         rateLimit: {
@@ -142,6 +208,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   await registerCandleRoutes(app)
   await registerPairsRoutes(app)
   await registerScreenerRoutes(app)
+  await registerMoversRoutes(app)
   await registerHistoryRoutes(app)
   await registerPriceRoutes(app)
   await registerVolumeRoutes(app)
@@ -150,9 +217,13 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   await registerBenchmarkRoutes(app)
   await registerOracleRoutes(app)
   await registerBasketRoutes(app)
+  await registerCorrelationRoutes(app)
   await registerDiscoveryRoutes(app)
+  await registerSnapshotRoutes(app)
   await registerVenueRoutes(app)
+  await registerFiatRoutes(app)
   await registerSettleRoute(app)
+  await registerHealthRoutes(app)
   await registerGraphQL(app)
   await registerWebSocket(app)
 

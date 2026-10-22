@@ -1,5 +1,6 @@
 import net from 'net'
 import { promises as dns } from 'dns'
+import { Agent, fetch as undiciFetch, type Dispatcher } from 'undici'
 
 /**
  * Server-Side Request Forgery (SSRF) guard for outbound fetches whose target is
@@ -12,6 +13,20 @@ import { promises as dns } from 'dns'
  * mitigation is to refuse any target that is not a public http/https host, and
  * to decide that *after* resolving the hostname, because a public-looking name
  * can resolve to a private address — the classic way this check is bypassed.
+ *
+ * What is and is not guaranteed:
+ *   - Guaranteed: Hostnames and IP literals are validated against private,
+ *     loopback, link-local, and cloud metadata IP ranges.
+ *   - Guaranteed: DNS rebinding defense — connect-time resolution is pinned to
+ *     an address that was explicitly validated during the pre-flight check,
+ *     preventing short-TTL DNS records from redirecting the socket to a private
+ *     address at connect time.
+ *   - Guaranteed: TLS certificate and SNI verification are performed against the
+ *     original hostname, preserving TLS security and host verification.
+ *   - Guaranteed: Redirects are followed manually (`redirect: 'manual'`) and
+ *     every redirect hop is re-validated and re-pinned.
+ *   - Not guaranteed: Host-level application vulnerabilities or semantic contents
+ *     served by a legitimately public host.
  *
  * Design notes:
  *   - Private/loopback/link-local/metadata addresses are always refused. The
@@ -56,10 +71,15 @@ export interface SsrfFetchOptions {
   allowedHosts?: string[]
   /** Resolve a hostname to its addresses. Defaults to real A/AAAA lookups. */
   lookup?: (hostname: string) => Promise<string[]>
-  /** Transport. Defaults to global fetch. Redirects are forced to `manual`. */
+  /** Transport. Defaults to undiciFetch with pinned connection dispatcher. Redirects are forced to `manual`. */
   fetchImpl?: (input: string | URL, init?: RequestInit) => Promise<Response>
   /** Redirect hops to follow before giving up. Default 5. */
   maxRedirects?: number
+}
+
+export interface SafeUrl extends URL {
+  pinnedAddress?: string
+  validatedAddresses?: string[]
 }
 
 const DEFAULT_MAX_REDIRECTS = 5
@@ -83,6 +103,31 @@ export async function defaultLookup(hostname: string): Promise<string[]> {
 }
 
 /**
+ * Creates an undici Dispatcher (Agent) pinned to the specified IP address.
+ * The custom connect lookup hook guarantees that no second DNS lookup occurs,
+ * defeating DNS rebinding attacks while preserving TLS SNI / certificate checks
+ * against the original hostname.
+ */
+export function createPinnedDispatcher(pinnedAddress: string): Dispatcher {
+  const family = net.isIP(pinnedAddress) || 4
+  const connectLookup = (
+    _hostname: string,
+    _options: any,
+    callback: (err: Error | null, addresses: any[]) => void,
+  ) => {
+    callback(null, [{ address: pinnedAddress, family }])
+  }
+  const agent = new Agent({
+    connect: {
+      lookup: connectLookup,
+    },
+  }) as any
+  agent.pinnedAddress = pinnedAddress
+  agent.connectLookup = connectLookup
+  return agent
+}
+
+/**
  * True when `ip` is in a range that must never be fetched: loopback, private,
  * link-local (which holds the cloud metadata IP 169.254.169.254), carrier-grade
  * NAT, documentation/benchmark/multicast/reserved blocks, and the IPv6
@@ -98,108 +143,123 @@ export function isBlockedIpAddress(ip: string): boolean {
 
 function isBlockedIpv4(ip: string): boolean {
   const parts = ip.split('.').map(Number)
-  if (parts.length !== 4 || parts.some((p) => !Number.isInteger(p) || p < 0 || p > 255)) {
+  if (parts.length !== 4 || parts.some((p) => Number.isNaN(p) || p < 0 || p > 255)) {
     return true
   }
   const [a, b] = parts
-  switch (true) {
-    case a === 0: return true // 0.0.0.0/8 "this network" (incl. 0.0.0.0)
-    case a === 10: return true // 10.0.0.0/8
-    case a === 127: return true // 127.0.0.0/8 loopback
-    case a === 100 && b >= 64 && b <= 127: return true // 100.64.0.0/10 CGNAT
-    case a === 169 && b === 254: return true // 169.254.0.0/16 link-local (metadata)
-    case a === 172 && b >= 16 && b <= 31: return true // 172.16.0.0/12
-    case a === 192 && b === 0 && parts[2] === 0: return true // 192.0.0.0/24 IETF
-    case a === 192 && b === 0 && parts[2] === 2: return true // 192.0.2.0/24 TEST-NET-1
-    case a === 198 && (b === 18 || b === 19): return true // 198.18.0.0/15 benchmark
-    case a === 198 && b === 51 && parts[2] === 100: return true // 198.51.100.0/24 TEST-NET-2
-    case a === 203 && b === 0 && parts[2] === 113: return true // 203.0.113.0/24 TEST-NET-3
-    case a === 192 && b === 168: return true // 192.168.0.0/16
-    case a >= 224 && a <= 239: return true // 224.0.0.0/4 multicast
-    case a >= 240: return true // 240.0.0.0/4 reserved + 255.255.255.255
-    default: return false
-  }
-}
 
-function ipv6ToGroups(addr: string): number[] | null {
-  const lower = addr.toLowerCase()
-  let a = lower
-  let tail: number[] = []
+  // 0.0.0.0/8 — current network (often treated as loopback by BSD sockets)
+  if (a === 0) return true
+  // 10.0.0.0/8 — RFC 1918 private
+  if (a === 10) return true
+  // 100.64.0.0/10 — RFC 6598 carrier-grade NAT
+  if (a === 100 && b >= 64 && b <= 127) return true
+  // 127.0.0.0/8 — RFC 1122 loopback
+  if (a === 127) return true
+  // 169.254.0.0/16 — RFC 3927 link-local (holds AWS/GCP/Azure metadata 169.254.169.254)
+  if (a === 169 && b === 254) return true
+  // 172.16.0.0/12 — RFC 1918 private
+  if (a === 172 && b >= 16 && b <= 31) return true
+  // 192.0.0.0/24 — IETF protocol assignments
+  if (a === 192 && b === 0 && parts[2] === 0) return true
+  // 192.0.2.0/24 — TEST-NET-1 documentation
+  if (a === 192 && b === 0 && parts[2] === 2) return true
+  // 192.168.0.0/16 — RFC 1918 private
+  if (a === 192 && b === 168) return true
+  // 198.18.0.0/15 — benchmark tests
+  if (a === 198 && (b === 18 || b === 19)) return true
+  // 198.51.100.0/24 — TEST-NET-2 documentation
+  if (a === 198 && b === 51 && parts[2] === 100) return true
+  // 203.0.113.0/24 — TEST-NET-3 documentation
+  if (a === 203 && b === 0 && parts[2] === 113) return true
+  // 224.0.0.0/4 — multicast
+  if (a >= 224 && a <= 239) return true
+  // 240.0.0.0/4 — reserved for future use (includes 255.255.255.255 broadcast)
+  if (a >= 240) return true
 
-  // An embedded IPv4 (RFC 4291 §2.2 / 6to4 / mapped) occupies the last 32 bits.
-  if (a.includes('.')) {
-    const lastColon = a.lastIndexOf(':')
-    const nums = a.slice(lastColon + 1).split('.').map(Number)
-    if (nums.length !== 4 || nums.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return null
-    tail = [(nums[0] << 8) | nums[1], (nums[2] << 8) | nums[3]]
-    a = a.slice(0, lastColon)
-  }
-
-  const doubleIdx = a.indexOf('::')
-  let head: string[]
-  let rest: string[]
-  if (doubleIdx !== -1) {
-    const left = a.slice(0, doubleIdx)
-    const right = a.slice(doubleIdx + 2)
-    head = left ? left.split(':') : []
-    rest = right ? right.split(':') : []
-  } else {
-    head = a.split(':')
-    rest = []
-  }
-
-  const headNums = head.map((h) => parseInt(h, 16))
-  const restNums = rest.map((h) => parseInt(h, 16))
-  if ([...headNums, ...restNums].some((n) => Number.isNaN(n))) return null
-
-  if (doubleIdx === -1) {
-    if (headNums.length + tail.length !== 8) return null
-    return [...headNums, ...tail]
-  }
-  const fill = 8 - headNums.length - restNums.length - tail.length
-  if (fill < 0) return null
-  return [...headNums, ...Array(fill).fill(0), ...restNums, ...tail]
-}
-
-/** Extract the 4 IPv4 octets encoded in groups[6] and groups[7]. */
-function v4FromGroups(g6: number, g7: number): number[] {
-  return [(g6 >> 8) & 0xff, g6 & 0xff, (g7 >> 8) & 0xff, g7 & 0xff]
+  return false
 }
 
 function isBlockedIpv6(ip: string): boolean {
-  const g = ipv6ToGroups(ip)
-  if (!g) return true // malformed — fail closed
+  // Normalize by parsing into 8 16-bit words.
+  const words = parseIpv6(ip)
+  if (!words) return true
 
-  const zero = (n: number) => n === 0
-  const headIsZero = g.slice(0, 6).every(zero)
+  // ::/128 — unspecified
+  if (words.every((w) => w === 0)) return true
+  // ::1/128 — loopback
+  if (words.slice(0, 7).every((w) => w === 0) && words[7] === 1) return true
 
-  if (g.every(zero)) return true // :: unspecified
-  if (headIsZero && g[6] === 0 && g[7] === 1) return true // ::1 loopback
-
-  if ((g[0] & 0xfe00) === 0xfc00) return true // fc00::/7 unique-local
-  if ((g[0] & 0xffc0) === 0xfe80) return true // fe80::/10 link-local
-  if ((g[0] & 0xff00) === 0xff00) return true // ff00::/8 multicast
-
-  // 6to4 (2002::/16) embeds an IPv4 in groups 1-2.
-  if (g[0] === 0x2002) {
-    return isBlockedIpv4(`${(g[1] >> 8) & 0xff}.${g[1] & 0xff}.${(g[2] >> 8) & 0xff}.${g[2] & 0xff}`)
+  // IPv4-mapped IPv6: ::ffff:a.b.c.d
+  if (words.slice(0, 5).every((w) => w === 0) && words[5] === 0xffff) {
+    const v4 = `${words[6] >> 8}.${words[6] & 0xff}.${words[7] >> 8}.${words[7] & 0xff}`
+    return isBlockedIpv4(v4)
   }
-  // Teredo (2001:0000::/32) obfuscates the peer address — refuse by default.
-  if (g[0] === 0x2001 && g[1] === 0x0000) return true
 
-  // IPv4-mapped (::ffff:x.x.x.x) and IPv4-compatible (::x.x.x.x): classify the v4 tail.
-  if (g[0] === 0 && g[1] === 0 && g[2] === 0 && g[3] === 0 && g[4] === 0 && (g[5] === 0xffff || g[5] === 0)) {
-    if (g[6] === 0 && g[7] === 0) return false // :: / ::ffff:: handled above
-    return isBlockedIpv4(v4FromGroups(g[6], g[7]).join('.'))
+  // 6to4: 2002::/16 embeds IPv4 in words 1 and 2
+  if (words[0] === 0x2002) {
+    const v4 = `${words[1] >> 8}.${words[1] & 0xff}.${words[2] >> 8}.${words[2] & 0xff}`
+    return isBlockedIpv4(v4)
   }
+
+  // fe80::/10 — link-local
+  if ((words[0] & 0xffc0) === 0xfe80) return true
+  // fc00::/7 — unique-local (fc00::/8 and fd00::/8)
+  if ((words[0] & 0xfe00) === 0xfc00) return true
+  // ff00::/8 — multicast
+  if ((words[0] & 0xff00) === 0xff00) return true
+  // 2001:db8::/32 — documentation
+  if (words[0] === 0x2001 && words[1] === 0x0db8) return true
+  // 2001::/23 — IETF protocol assignments (includes Teredo 2001:0000::/32)
+  if (words[0] === 0x2001 && (words[1] & 0xfe00) === 0x0000) return true
 
   return false
+}
+
+function parseIpv6(ip: string): number[] | null {
+  // Strip zone index (%eth0) if present
+  const clean = ip.replace(/%.*$/, '').toLowerCase()
+
+  // Handle embedded IPv4 at the end (e.g. ::ffff:192.0.2.1)
+  const lastColon = clean.lastIndexOf(':')
+  if (lastColon === -1) return null
+  const tail = clean.slice(lastColon + 1)
+  let embeddedV4: number[] | null = null
+  let head = clean
+  if (tail.includes('.')) {
+    const v4Parts = tail.split('.').map(Number)
+    if (v4Parts.length !== 4 || v4Parts.some((p) => Number.isNaN(p) || p < 0 || p > 255)) {
+      return null
+    }
+    embeddedV4 = [(v4Parts[0] << 8) | v4Parts[1], (v4Parts[2] << 8) | v4Parts[3]]
+    head = clean.slice(0, lastColon)
+  }
+
+  const parts = head.split('::')
+  if (parts.length > 2) return null // at most one "::"
+
+  const parseHex = (s: string) => (s ? s.split(':').map((h) => parseInt(h, 16)) : [])
+  const left = parseHex(parts[0])
+  const right = parts.length === 2 ? parseHex(parts[1]) : []
+  if (left.some(Number.isNaN) || right.some(Number.isNaN)) return null
+
+  const needed = 8 - (embeddedV4 ? 2 : 0)
+  if (parts.length === 1) {
+    const total = embeddedV4 ? [...left, ...embeddedV4] : left
+    return total.length === 8 ? total : null
+  }
+
+  const fill = needed - (left.length + right.length)
+  if (fill < 0) return null
+  const middle = new Array(fill).fill(0)
+  const result = [...left, ...middle, ...right]
+  return embeddedV4 ? [...result, ...embeddedV4] : result
 }
 
 /**
  * Validate a single URL: scheme, credentials, optional host allowlist, then DNS
  * resolution and per-address classification. Throws {@link SsrfError} on the
- * first refusal; returns the parsed URL when the target is safe to fetch.
+ * first refusal; returns the parsed URL with pinned validated address when safe.
  */
 export async function assertUrlSafe(
   raw: string | URL,
@@ -213,7 +273,11 @@ export async function assertUrlSafe(
   }
 
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new SsrfError('unsupported_scheme', `Scheme "${url.protocol}" is not allowed; only http/https.`, url.protocol)
+    throw new SsrfError(
+      'unsupported_scheme',
+      `Scheme "${url.protocol}" is not allowed; only http/https.`,
+      url.protocol,
+    )
   }
   if (url.username.length > 0 || url.password.length > 0) {
     throw new SsrfError('embedded_credentials', 'URL must not embed credentials.')
@@ -226,7 +290,11 @@ export async function assertUrlSafe(
 
   const allowlist = normalizeHosts(opts.allowedHosts)
   if (allowlist.length > 0 && !allowlist.includes(hostname)) {
-    throw new SsrfError('host_not_allowed', `Host "${hostname}" is not in the allowed host list.`, hostname)
+    throw new SsrfError(
+      'host_not_allowed',
+      `Host "${hostname}" is not in the allowed host list.`,
+      hostname,
+    )
   }
 
   const lookup = opts.lookup ?? defaultLookup
@@ -250,11 +318,17 @@ export async function assertUrlSafe(
     }
   }
 
-  return url
+  // Pin the validated address to defeat DNS rebinding attacks at connect time
+  const safeUrl = url as SafeUrl
+  safeUrl.pinnedAddress = addresses[0]
+  safeUrl.validatedAddresses = addresses
+
+  return safeUrl
 }
 
 /**
- * Fetch `target`, refusing unsafe hosts and re-validating every redirect hop.
+ * Fetch `target`, refusing unsafe hosts and pinning connection to the pre-validated
+ * address to defeat DNS rebinding. Re-validates and re-pins every redirect hop.
  * Throws {@link SsrfError} when a hop is refused or the chain is too long.
  */
 export async function ssrfSafeFetch(
@@ -262,13 +336,28 @@ export async function ssrfSafeFetch(
   init: RequestInit = {},
   opts: SsrfFetchOptions = {},
 ): Promise<Response> {
-  const fetchImpl = opts.fetchImpl ?? fetch
   const maxRedirects = opts.maxRedirects ?? DEFAULT_MAX_REDIRECTS
 
-  let url = await assertUrlSafe(target, opts)
+  let url = (await assertUrlSafe(target, opts)) as SafeUrl
 
   for (let hop = 0; ; hop++) {
-    const response = await fetchImpl(url.toString(), { ...init, redirect: 'manual' })
+    const pinnedAddress = url.pinnedAddress || url.hostname
+    const dispatcher = createPinnedDispatcher(pinnedAddress)
+
+    let response: Response
+    if (opts.fetchImpl) {
+      response = await opts.fetchImpl(url.toString(), {
+        ...init,
+        redirect: 'manual',
+        dispatcher,
+      } as any)
+    } else {
+      response = (await undiciFetch(url.toString(), {
+        ...init,
+        dispatcher,
+        redirect: 'manual',
+      } as any)) as unknown as Response
+    }
 
     if (!REDIRECT_STATUSES.has(response.status)) {
       return response
@@ -279,15 +368,23 @@ export async function ssrfSafeFetch(
       return response // a redirect we cannot follow — surface it to the caller
     }
     if (hop >= maxRedirects) {
-      throw new SsrfError('too_many_redirects', `Too many redirects (>${maxRedirects}).`, url.hostname)
+      throw new SsrfError(
+        'too_many_redirects',
+        `Too many redirects (>${maxRedirects}).`,
+        url.hostname,
+      )
     }
 
     let next: URL
     try {
       next = new URL(location, url)
     } catch {
-      throw new SsrfError('invalid_url', `Redirect target is not a valid URL: ${location}`, location)
+      throw new SsrfError(
+        'invalid_url',
+        `Redirect target is not a valid URL: ${location}`,
+        location,
+      )
     }
-    url = await assertUrlSafe(next, opts)
+    url = (await assertUrlSafe(next, opts)) as SafeUrl
   }
 }

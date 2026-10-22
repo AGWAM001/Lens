@@ -23,6 +23,16 @@ export interface UsageSummary {
   monthlyRemainingCents: number
   overagePolicy: OveragePolicy
   quotaExceeded: boolean
+  dailyResetsAt: string
+  monthlyResetsAt: string
+  resets: {
+    daily: string
+    monthly: string
+  }
+  resetsInSeconds: {
+    daily: number
+    monthly: number
+  }
 }
 
 function getDailyBase(keyId: string): string {
@@ -107,6 +117,11 @@ async function getUsageSummaryInternal(keyId: string, config: QuotaConfig): Prom
   const monthlyCents = parseInt(monthlyCentsRaw ?? '0', 10)
 
   const quotaExceeded = dailyCents >= config.dailyQuotaCents || monthlyCents >= config.monthlyQuotaCents
+  const now = new Date()
+  const dailyResetDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1))
+  const monthlyResetDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1))
+  const dailyResetsAt = dailyResetDate.toISOString()
+  const monthlyResetsAt = monthlyResetDate.toISOString()
 
   return {
     keyId,
@@ -120,6 +135,16 @@ async function getUsageSummaryInternal(keyId: string, config: QuotaConfig): Prom
     monthlyRemainingCents: Math.max(0, config.monthlyQuotaCents - monthlyCents),
     overagePolicy: config.overagePolicy,
     quotaExceeded,
+    dailyResetsAt,
+    monthlyResetsAt,
+    resets: {
+      daily: dailyResetsAt,
+      monthly: monthlyResetsAt,
+    },
+    resetsInSeconds: {
+      daily: secondsUntilEndOfDay(),
+      monthly: secondsUntilEndOfMonth(),
+    },
   }
 }
 
@@ -136,4 +161,42 @@ export function parseCents(price: string): number {
   const match = price.match(/^\$(\d+(?:\.\d+)?)$/)
   if (!match) return 0
   return Math.round(parseFloat(match[1]) * 100)
+}
+
+export async function copyUsageHistory(sourceKeyId: string, targetKeyId: string): Promise<void> {
+  const db = redis as unknown as Redis
+  if (!db || typeof db.get !== 'function') return
+  try {
+    const [
+      dailyCalls,
+      dailyCents,
+      monthlyCalls,
+      monthlyCents,
+    ] = await Promise.all([
+      db.get(getDailyBase(sourceKeyId) + ':calls'),
+      db.get(getDailyBase(sourceKeyId) + ':cents'),
+      db.get(getMonthlyBase(sourceKeyId) + ':calls'),
+      db.get(getMonthlyBase(sourceKeyId) + ':cents'),
+    ])
+
+    if (typeof db.multi !== 'function') return
+    const multi = db.multi()
+    if (dailyCalls) {
+      multi.set(getDailyBase(targetKeyId) + ':calls', dailyCalls, 'EX', secondsUntilEndOfDay())
+    }
+    if (dailyCents) {
+      multi.set(getDailyBase(targetKeyId) + ':cents', dailyCents, 'EX', secondsUntilEndOfDay())
+    }
+    if (monthlyCalls) {
+      multi.set(getMonthlyBase(targetKeyId) + ':calls', monthlyCalls, 'EX', secondsUntilEndOfMonth())
+    }
+    if (monthlyCents) {
+      multi.set(getMonthlyBase(targetKeyId) + ':cents', monthlyCents, 'EX', secondsUntilEndOfMonth())
+    }
+    if (typeof multi.exec === 'function') {
+      await multi.exec()
+    }
+  } catch {
+    // Graceful fallback if Redis mock or server fails
+  }
 }

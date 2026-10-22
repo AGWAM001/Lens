@@ -7,10 +7,10 @@ Lens exports Prometheus metrics for the HTTP layer on the existing public
 is different: they are labelled by `network` so the per-network ingester loops
 cannot overwrite each other's series.
 
-These three signals — request rate, error rate and p95 latency — are what answer
-"is the API healthy". The pre-existing `price_requests_total` counts price calls
-specifically and cannot answer that question; it is unchanged and still means
-what it always meant.
+Request rate, error rate, latency, authentication failures and load shedding
+help answer "is the API healthy". The pre-existing `price_requests_total`
+counts price calls specifically and cannot answer that question; it is
+unchanged and still means what it always meant.
 
 The same cardinality rule applies to every metric family: labels must come from
 fixed buckets or server-defined values. Never put raw request paths, asset
@@ -37,6 +37,53 @@ Buckets: `0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10`.
 
 Observed for every request that produces a response, successful or not.
 
+### `api_key_auth_failures_total`
+
+Counter. Label: `reason`, with the bounded values `missing`, `malformed`,
+`unknown`, `revoked` and `expired`. The `reason` value matches the
+machine-readable `code` in the corresponding API-key 401 response.
+
+### `admin_auth_failures_total`
+
+Counter. No labels. This tracks rejected authentication attempts on admin
+routes independently of API-key failures.
+
+### Rate-limit counters
+
+`rate_limit_rejections_total` is a counter labelled by the bounded `scope`
+values `key` and `ip`; it counts requests rejected by the per-key or fallback
+IP limiter. Those requests return HTTP 429 and code `PER_KEY_RATE_LIMITED` or
+`IP_RATE_LIMITED`.
+
+`global_shed_requests_total` is an unlabeled counter for requests shed by the
+per-instance global ceiling. Those requests return HTTP 503 with code
+`GLOBAL_RATE_LIMITED`.
+
+Authentication metrics never include keys, hashes, tokens, key prefixes or
+caller addresses as labels.
+
+## Global request ceiling
+
+`GLOBAL_RATE_LIMIT_MAX` configures the maximum accepted non-health requests
+per rolling 60-second window on each instance; it defaults to `1000` and must
+be a positive integer. The global check runs after the per-key/IP limiter, so
+per-key 429 responses remain distinct and are not counted against the global
+ceiling.
+
+At 80% of the ceiling, rounded up, the service starts shedding expensive
+route templates (GraphQL, price, route, pools, candles, history, screener,
+benchmark, oracle, compare, basket, venues, spreads, volumes, book, verify
+and settle) to preserve room for other routes. Once the ceiling is full, it
+sheds all non-health routes.
+`/status`, `/live` and `/ready` are always exempt. Shed requests include a
+`Retry-After` header.
+
+The ceiling is **per instance**, not deployment-wide. With `N` equally
+configured instances the approximate aggregate ceiling is
+`GLOBAL_RATE_LIMIT_MAX x N`; choose the per-instance value based on instance
+capacity and expected autoscaling so scaling out does not imply a higher
+deployment-wide traffic budget than intended.
+
 ## Why the labels look like this
 
 Cardinality is the whole design constraint. A histogram labelled by `req.url`
@@ -58,10 +105,24 @@ So:
   need for an exact code appears, add it then — it is easy to add a label and
   painful to remove one dashboards depend on.
 - **Websocket pairs use fixed buckets.** `ws_clients_total`,
-  `ws_messages_sent_total` and `ws_messages_dropped_total` retain their `pair`
-  label, but pair-specific subscriptions are recorded as `other`; `*` remains
-  the aggregate across all subscriptions. Arbitrary pair names and issuer
-  addresses stay in fanout state only and cannot create Prometheus series.
+  `ws_messages_sent_total`, `ws_messages_dropped_total` and
+  `ws_clients_dropped_total` retain their `pair` label, but pair-specific
+  subscriptions are recorded as `other`; `*` remains the aggregate across all
+  subscriptions. Arbitrary pair names and issuer addresses stay in fanout state
+  only and cannot create Prometheus series. `ws_buffered_bytes` is aggregate-only
+  (`*`): one series per connected client would be unbounded cardinality driven by
+  caller-supplied subscription strings. See
+  [`websocket-backpressure.md`](websocket-backpressure.md).
+
+## Excluded routes
+
+`/metrics`, `/live` and `/ready` are not counted at all (`EXCLUDED_ROUTES` in
+[`src/middleware/httpMetrics.ts`](../src/middleware/httpMetrics.ts)). Each is
+polled on a fixed interval — by the scraper for the first, by the platform for
+the other two — so counting any of them would have the poller continuously
+inflate the very numbers it is reading. Request rate could never fall to zero on
+an idle service, and a real outage could not move it, which is the opposite of
+what these two metrics are for. See [`health.md`](health.md).
 
 ## Bucket choice
 
@@ -93,7 +154,8 @@ see.
 
 `/metrics` itself is excluded from counting. It is scraped on a fixed interval,
 so counting it would have the scraper continuously inflate the numbers it is
-reading — request rate would never fall to zero on an idle service.
+reading — request rate would never fall to zero on an idle service. `/live` and
+`/ready` are excluded for the same reason, polled by a different timer.
 
 ## Queries
 

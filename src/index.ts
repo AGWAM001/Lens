@@ -4,11 +4,12 @@ import { execSync } from 'child_process'
 if (!process.env.DIRECT_DATABASE_URL && process.env.DATABASE_URL) {
   process.env.DIRECT_DATABASE_URL = process.env.DATABASE_URL
 }
-import { config, type NetworkName } from './config'
+import { config, getNetworkConfig, type NetworkName } from './config'
 import { getEnabledNetworks } from './network/enabledNetworks'
 import { createLogger } from './logger'
 import { redis } from './redis'
 import { pgPool } from './db'
+import { assertSchemaValid } from './db/schemaVerify'
 import { buildApp } from './app'
 import { fanOutManager } from './ws/fanout'
 
@@ -24,6 +25,9 @@ import {
   PRICE_POINTS_RETENTION_DAYS,
 } from './jobs/pricePointsPartitionJob'
 import { loadPersistedPairs, getActivePairs } from './pairsRegistry'
+import { markHealthy, recordCrash } from './ingester/restart'
+import { markBootComplete } from './health'
+import { startSep40Publisher } from './publish/publisher'
 
 const log = createLogger('startup')
 
@@ -51,6 +55,10 @@ async function main() {
 
   await pgPool.connect()
   log.info('postgresql connected')
+
+  // Verify database schema matches expected tables and columns (#352)
+  await assertSchemaValid()
+  log.info('database schema verified')
 
   // ── Load persisted runtime pairs ──────────────────────────────────────────
   await loadPersistedPairs()
@@ -186,11 +194,46 @@ async function main() {
   // the (venue, network) pair: a crash in, say, the Soroswap ingester on
   // mainnet only restarts that one instance and cannot affect SDEX/AMM or the
   // ingesters running on testnet.
+  //
+  // A crash-looping ingester must not be invisible: restarts are counted, the
+  // delay grows exponentially up to a ceiling, and the last crash is recorded
+  // so /status can surface it. A sustained healthy run resets the backoff so a
+  // one-off blip does not permanently slow restarts.
+  const INGESTER_RESTART_BASE_MS = 10_000
+  const INGESTER_RESTART_MAX_MS = 5 * 60_000
+  const INGESTER_HEALTHY_RESET_MS = 5 * 60_000
+
   const restartIngester = (name: string, network: NetworkName, fn: () => Promise<void>) => {
-    fn().catch(err => {
-      log.error({ ingester: name, network, err }, 'ingester crashed; restarting in 10s')
-      setTimeout(() => restartIngester(name, network, fn), 10_000)
-    })
+    let healthyTimer: NodeJS.Timeout | undefined
+
+    const run = () => {
+      fn().then(() => {
+        // fn() resolving means the ingester ran to completion rather than
+        // looping forever. Treat that as healthy and reset the backoff.
+        if (healthyTimer) clearTimeout(healthyTimer)
+        markHealthy(name, network)
+      }).catch(err => {
+        if (healthyTimer) clearTimeout(healthyTimer)
+        const state = recordCrash(name, network, err)
+
+        const delay = Math.min(
+          INGESTER_RESTART_BASE_MS * 2 ** (state.failures - 1),
+          INGESTER_RESTART_MAX_MS,
+        )
+        log.error(
+          { err, ingester: name, network, failures: state.failures, delayMs: delay },
+          'ingester crashed, restarting after backoff',
+        )
+        setTimeout(run, delay)
+      })
+
+      // If the ingester stays up past the healthy threshold, reset the
+      // backoff even though fn() has not resolved (infinite loops never do).
+      healthyTimer = setTimeout(() => markHealthy(name, network), INGESTER_HEALTHY_RESET_MS)
+      healthyTimer.unref()
+    }
+
+    run()
   }
 
   const enabledNetworks = getEnabledNetworks()
@@ -200,12 +243,32 @@ async function main() {
       restartIngester(adapter.name, network, () => startVenueAdapter(adapter, network))
     }
     restartIngester('Snapshot', network, () => startSnapshotIngester(network))
+
+    // The publisher is the one loop in this process that writes to a chain, so
+    // it is started on its own per-network switch rather than alongside the
+    // readers: an operator who has deployed a feed but has not put a key in the
+    // environment gets an explicit "not started", not a crash loop. Same fault
+    // isolation as every ingester above.
+    if (getNetworkConfig(network).publisher.enabled) {
+      restartIngester('SEP-40 Publisher', network, () => startSep40Publisher(network))
+    } else {
+      log.info({ network }, 'SEP-40 publication disabled; publisher not started')
+    }
   }
 
   log.info(
     { count: getActivePairs().length, pairs: getActivePairs().map(p => p.pairKey) },
     'watching pairs'
   )
+
+  // ── Ready ──────────────────────────────────────────────────────────────────
+  // Last, and only once every ingester above is running. `app.listen()` happens
+  // part-way through this function, so between listening and here the process
+  // accepts requests it cannot yet answer correctly. `/ready` stays unhealthy
+  // until this line, which is what keeps a starting instance out of the load
+  // balancer without making `/live` fail (a starting process should be held out
+  // of rotation, not killed).
+  markBootComplete()
 }
 
 main().catch(err => {

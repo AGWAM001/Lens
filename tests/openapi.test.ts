@@ -4,7 +4,12 @@ import { fileURLToPath } from 'node:url'
 import type { FastifyInstance, RouteOptions } from 'fastify'
 import YAML from 'js-yaml'
 import { buildApp } from '../src/app'
-import { INTERNAL_ROUTES, isInternalRoute, toOpenApiPath } from '../src/openapi/coverage'
+import {
+  INTERNAL_ROUTES,
+  isInternalRoute,
+  isUndocumentableOperation,
+  toOpenApiPath,
+} from '../src/openapi/coverage'
 import { renderOpenApiJson } from '../scripts/generate-openapi'
 
 const specPath = fileURLToPath(new URL('../openapi.yaml', import.meta.url))
@@ -33,7 +38,13 @@ beforeAll(async () => {
       for (const method of methods) {
         // HEAD is auto-generated from GET and OPTIONS is framework-level;
         // neither needs its own OpenAPI operation.
-        if (method === 'HEAD' || method === 'OPTIONS') continue
+        //
+        // QUERY is the safe, idempotent alternative to POST that Mercurius
+        // registers on /graphql. OpenAPI 3.0 has no `query` operation to
+        // describe it with, and the operation itself is already documented
+        // under POST /graphql — the method is a different transport for the
+        // same thing, not a different endpoint.
+        if (method === 'HEAD' || method === 'OPTIONS' || method === 'QUERY') continue
         registered.push({ method, path: toOpenApiPath(route.url) })
       }
     },
@@ -58,7 +69,10 @@ describe('OpenAPI route coverage', () => {
 
   it('documents the HTTP method for every documented route', () => {
     const missing = registered.filter(
-      r => !isInternalRoute(r.path) && !(r.method.toLowerCase() in (spec.paths[r.path] ?? {})),
+      r =>
+        !isInternalRoute(r.path) &&
+        !isUndocumentableOperation(r.method, r.path) &&
+        !(r.method.toLowerCase() in (spec.paths[r.path] ?? {})),
     )
     expect(missing, `Undocumented operations: ${JSON.stringify(missing)}`).toEqual([])
   })

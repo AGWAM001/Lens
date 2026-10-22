@@ -19,6 +19,9 @@ const ALLOWED_SORT_FIELDS = ['volume', 'change_24h', 'price', 'liquidity'] as co
 const numFilter = (name: string) =>
   z.coerce.number({ error: `${name} must be a valid number` }).optional()
 
+export const SCREENER_DEFAULT_LIMIT = 20
+export const SCREENER_MAX_LIMIT = 100
+
 const ScreenerQuerySchema = z
   .object({
     // Historical behavior: limit is clamped to [1, 100], never rejected.
@@ -26,8 +29,8 @@ const ScreenerQuerySchema = z
     limit: z.coerce
       .number({ error: 'limit must be a valid integer' })
       .int({ error: 'limit must be a valid integer' })
-      .default(20)
-      .transform((v) => Math.min(100, Math.max(1, v))),
+      .default(SCREENER_DEFAULT_LIMIT)
+      .transform((v) => Math.min(SCREENER_MAX_LIMIT, Math.max(1, v))),
     sortBy: z.string().default('volume'),
     order: z
       .preprocess(
@@ -84,7 +87,7 @@ export async function registerScreenerRoutes(app: FastifyInstance) {
       cursor?: string
       limit?: string
     }
-  }>('/screener', async (req, reply) => {
+  }>('/screener', { config: { scope: 'read:prices' } }, async (req, reply) => {
     const log = req.log.child({ component: 'route:screener' })
     try {
       const q = req.query

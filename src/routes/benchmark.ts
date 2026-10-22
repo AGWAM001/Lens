@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import { pgPool } from '../db'
 import { getActivePairs } from '../pairsRegistry'
 import { benchmarkResponseSchema } from '../api/schemas'
+import { sendInternalError } from '../errors'
 
 function findPair(assetCode: string, targetCode: string) {
   const normalize = (c: string) => c.toLowerCase() === 'native' ? 'XLM' : c.split(':')[0].toUpperCase()
@@ -20,7 +21,7 @@ export async function registerBenchmarkRoutes(app: FastifyInstance) {
     Querystring: { target?: string }
   }>(
     '/benchmark/:asset',
-    { schema: { response: { 200: benchmarkResponseSchema } } },
+    { config: { scope: 'read:prices' }, schema: { response: { 200: benchmarkResponseSchema } } },
     async (req, reply) => {
       const { asset } = req.params
       const target = req.query.target ?? 'USD'
@@ -81,7 +82,7 @@ export async function registerBenchmarkRoutes(app: FastifyInstance) {
           rolling24h,
         }
       } catch (err) {
-        return reply.status(500).send({ error: `Benchmark computation failed: ${(err as Error).message}` })
+        return sendInternalError(reply, req, err, 'Benchmark computation failed')
       }
     }
   )

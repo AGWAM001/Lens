@@ -135,7 +135,7 @@ export async function registerBookRoutes(app: FastifyInstance) {
   app.get<{
     Params: { assetA: string; assetB: string }
     Querystring: { depth?: string; step?: string; network?: string }
-  }>('/book/:assetA/:assetB', { schema: { response: { 200: bookResponseSchema, 503: bookResponseSchema } } }, async (req, reply) => {
+  }>('/book/:assetA/:assetB', { config: { scope: 'read:prices' }, schema: { response: { 200: bookResponseSchema, 503: bookResponseSchema } } }, async (req, reply) => {
     const parsedQuery = BookQuerySchema.safeParse(req.query)
     if (!parsedQuery.success) {
       return reply.status(400).send({ error: parsedQuery.error.issues[0]?.message ?? 'Invalid book parameters' })

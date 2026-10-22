@@ -21,10 +21,13 @@ lens/
 │   ├── routes/             # Additional REST route modules
 │   ├── ingesters/          # SDEX + AMM ingester loops
 │   ├── ingest/             # Venue/oracle adapters (Horizon AMM, Aquarius, Reflector)
+│   ├── publish/            # SEP-40 publisher: encoding, publication policy, on-chain feed
 │   ├── aggregator/         # VWAP + best-route calculation
 │   ├── pricing/            # TWAP, depth and aggregate helpers
 │   ├── middleware/         # Network selector, x402, auth, metrics
 │   └── x402/               # x402 facilitator client + metering
+├── oracle/
+│   └── contract/           # Soroban SEP-40 price feed contract (Rust, `cargo test --lib`)
 ├── prisma/
 │   └── schema.prisma       # Network-discriminated data models
 ├── tests/                  # Integration, load and property suites
