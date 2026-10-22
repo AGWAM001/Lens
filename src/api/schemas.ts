@@ -155,6 +155,47 @@ export const priceResponseSchema = {
   },
 } as const
 
+/** Hop schema for multi-hop routes */
+const routeHopSchema = {
+  type: 'object',
+  required: [
+    'assetIn',
+    'assetOut',
+    'venue',
+    'inputAmount',
+    'outputAmount',
+    'price',
+    'spotPrice',
+    'slippagePct',
+  ],
+  additionalProperties: false,
+  properties: {
+    assetIn: {
+      type: 'object',
+      required: ['code'],
+      properties: {
+        code: { type: 'string' },
+        issuer: { type: ['string', 'null'] },
+      },
+    },
+    assetOut: {
+      type: 'object',
+      required: ['code'],
+      properties: {
+        code: { type: 'string' },
+        issuer: { type: ['string', 'null'] },
+      },
+    },
+    venue: { type: 'string', enum: ['SDEX', 'AMM'] },
+    poolId: { type: 'string' },
+    inputAmount: { type: 'number' },
+    outputAmount: { type: 'number' },
+    price: { type: 'number' },
+    spotPrice: { type: 'number' },
+    slippagePct: { type: 'number' },
+  },
+} as const
+
 /** GET /price/:assetA/:assetB/route — matches RouteInfo */
 export const routeResponseSchema = {
   type: 'object',
@@ -168,12 +209,66 @@ export const routeResponseSchema = {
   ],
   additionalProperties: false,
   properties: {
-    route: { type: 'string', enum: ['SDEX', 'AMM', 'SPLIT', 'UNKNOWN'] },
+    route: { type: 'string', enum: ['SDEX', 'AMM', 'SPLIT', 'MULTI_HOP', 'UNKNOWN'] },
     sdexPrice: { type: 'number' },
     ammPrice: { type: 'number' },
     estimatedOutput: { type: 'number' },
     slippagePct: { type: 'number' },
     recommendation: { type: 'string' },
+    network: { type: 'string', enum: ['testnet', 'mainnet'] },
+    hops: {
+      type: 'array',
+      items: routeHopSchema,
+    },
+    comparison: {
+      type: 'object',
+      required: ['direct', 'multiHop'],
+      additionalProperties: false,
+      properties: {
+        direct: {
+          type: 'object',
+          required: ['route', 'sdexPrice', 'ammPrice', 'estimatedOutput', 'slippagePct'],
+          additionalProperties: false,
+          properties: {
+            route: { type: 'string', enum: ['SDEX', 'AMM', 'SPLIT', 'UNKNOWN'] },
+            sdexPrice: { type: 'number' },
+            ammPrice: { type: 'number' },
+            estimatedOutput: { type: 'number' },
+            slippagePct: { type: 'number' },
+          },
+        },
+        multiHop: {
+          type: ['object', 'null'],
+          required: ['hops', 'hopCount', 'estimatedOutput', 'effectivePrice', 'slippagePct'],
+          additionalProperties: false,
+          properties: {
+            hops: {
+              type: 'array',
+              items: routeHopSchema,
+            },
+            hopCount: { type: 'integer' },
+            estimatedOutput: { type: 'number' },
+            effectivePrice: { type: 'number' },
+            slippagePct: { type: 'number' },
+          },
+        },
+      },
+    },
+    provenance: {
+      type: 'object',
+      required: ['sampledAt', 'network', 'venuesQueried', 'sampleCount', 'freshnessSeconds'],
+      additionalProperties: false,
+      properties: {
+        sampledAt: { type: 'string' },
+        network: { type: 'string' },
+        venuesQueried: {
+          type: 'array',
+          items: { type: 'string' },
+        },
+        sampleCount: { type: 'integer' },
+        freshnessSeconds: { type: ['number', 'null'] },
+      },
+    },
   },
 } as const
 
@@ -350,6 +445,50 @@ export const bookResponseSchema = {
         sampleCount: { type: 'integer' },
       },
     },
+  },
+} as const
+
+/** GET /impact/:assetA/:assetB */
+export const impactResponseSchema = {
+  type: 'object',
+  required: ['assetA', 'assetB', 'pairKey', 'status', 'spotPrice', 'availableLiquidity', 'smallestSize', 'ladder', 'thresholds', 'source'],
+  additionalProperties: false,
+  properties: {
+    assetA: { type: 'string' },
+    assetB: { type: 'string' },
+    pairKey: { type: 'string' },
+    status: { type: 'string', enum: ['ok', 'insufficient_liquidity'] },
+    spotPrice: { type: 'number' },
+    availableLiquidity: { type: 'number' },
+    smallestSize: { type: 'number' },
+    ladder: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['size', 'output', 'executionPrice', 'slippagePct'],
+        additionalProperties: false,
+        properties: {
+          size: { type: 'number' },
+          output: { type: 'number' },
+          executionPrice: { type: 'number' },
+          slippagePct: { type: 'number' },
+        },
+      },
+    },
+    thresholds: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['thresholdPct', 'crossed', 'size'],
+        additionalProperties: false,
+        properties: {
+          thresholdPct: { type: 'number' },
+          crossed: { type: 'boolean' },
+          size: { type: ['number', 'null'] },
+        },
+      },
+    },
+    source: { type: 'string', enum: ['AMM'] },
   },
 } as const
 

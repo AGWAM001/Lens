@@ -106,6 +106,15 @@ describe('GET /prices/history', () => {
     expect(res.json().error).toMatch(/from/)
   })
 
+  it('rejects an invalid to date', async () => {
+    const app = await buildApp()
+
+    const res = await app.inject({ method: 'GET', url: '/prices/history?pair=XLM/USDC&to=nope' })
+
+    expect(res.statusCode).toBe(400)
+    expect(res.json().error).toMatch(/to/)
+  })
+
   it('rejects from after to', async () => {
     const app = await buildApp()
 
@@ -128,7 +137,7 @@ describe('GET /prices/history', () => {
     })
 
     expect(res.statusCode).toBe(400)
-    expect(res.json().error).toMatch(/too large/)
+    expect(res.json().error).toMatch(/too\ large/)
     expect(mockQuery).not.toHaveBeenCalled()
   })
 

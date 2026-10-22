@@ -223,6 +223,12 @@ paths:
                 $ref: '#/components/schemas/SnapshotResponse'
         '429':
           $ref: '#/components/responses/TooManyRequests'
+        '500':
+          description: Snapshot aggregation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InternalErrorResponse'
 
   /price/{assetA}/{assetB}:
     get:
@@ -297,6 +303,36 @@ paths:
                 $ref: '#/components/schemas/RouteInfo'
         '402':
           $ref: '#/components/responses/PaymentRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /price/{asset}/fiat:
+    get:
+      operationId: getFiatPrice
+      summary: Convert asset price to fiat currency with NGN support (#290)
+      security: []
+      parameters:
+        - name: asset
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: currency
+          in: query
+          required: false
+          schema:
+            type: string
+            default: USD
+        - $ref: '#/components/parameters/NetworkQuery'
+      responses:
+        '200':
+          description: Price converted into target fiat currency
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '429':
           $ref: '#/components/responses/TooManyRequests'
 
@@ -760,6 +796,61 @@ paths:
         '429':
           $ref: '#/components/responses/TooManyRequests'
 
+  /impact/{assetA}/{assetB}:
+    get:
+      operationId: getImpact
+      summary: Get an adaptive slippage impact curve for a pair
+      description: >-
+        Returns slippage at standard trade sizes, an additional liquidity-sized
+        point, and the size at which configured slippage thresholds are crossed.
+        A thin pair returns `insufficient_liquidity` instead of a fabricated
+        100% slippage result.
+      security:
+        - x402: []
+      parameters:
+        - name: assetA
+          in: path
+          required: true
+          schema:
+            type: string
+          example: XLM
+        - name: assetB
+          in: path
+          required: true
+          schema:
+            type: string
+          example: USDC
+        - name: thresholds
+          in: query
+          required: false
+          description: Comma-separated positive slippage percentages. Defaults to 1,5,10.
+          schema:
+            type: string
+            default: 1,5,10
+        - name: liquidityFraction
+          in: query
+          required: false
+          description: Usable fraction of the A-side reserve, between 0 and 1.
+          schema:
+            type: number
+            default: 0.5
+        - $ref: '#/components/parameters/NetworkQuery'
+      responses:
+        '200':
+          description: Adaptive impact curve
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImpactResponse'
+        '400':
+          description: Invalid threshold or liquidity settings
+        '402':
+          $ref: '#/components/responses/PaymentRequired'
+        '404':
+          description: Pair or AMM liquidity not found
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
   /price/twap/{assetA}/{assetB}:
     get:
       operationId: getTwap
@@ -887,7 +978,14 @@ paths:
       summary: Get cross-venue traded volume for an asset
       description: >-
         Sums traded volume for `asset` across every pair and venue it appears
-        in, measured in the asset's own units, with a per-venue breakdown.
+        in, measured in the asset's own units, with a per-venue breakdown and
+        trade-size statistics. `volumeConcentration` is the Herfindahl-Hirschman
+        Index (HHI), calculated as the sum of squared per-trade volume shares
+        across the selected venues and window; it ranges from 0 to 1, with 1
+        meaning all volume came from one trade. A missing statistic is `null`
+        when there are no trades or no positive volume. Provenance reports the
+        venues, positive-volume trade count, observed sample count, most recent
+        trade timestamp and its age at `endTime`.
       security: []
       parameters:
         - name: asset
@@ -920,6 +1018,10 @@ paths:
           $ref: '#/components/responses/TooManyRequests'
         '500':
           description: Volume aggregation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InternalErrorResponse'
 
   /spreads/{asset}:
     get:
@@ -962,11 +1064,21 @@ paths:
           $ref: '#/components/responses/TooManyRequests'
         '500':
           description: Spread aggregation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InternalErrorResponse'
 
   /compare/{asset}:
     get:
       operationId: compareAsset
       summary: Compare Lens prices with every configured external oracle
+      description: >-
+        Returns 200 even when both Lens and all configured oracles have no data
+        for the asset. The `status` field distinguishes "no_data" from "aligned",
+        "minor_deviation", "major_deviation" and "partial" (one source only).
+        The response includes both the legacy `reflector` field for backward
+        compatibility and an `oracles` array listing every configured source.
       security: []
       parameters:
         - name: asset
@@ -978,7 +1090,7 @@ paths:
         - $ref: '#/components/parameters/NetworkQuery'
       responses:
         '200':
-          description: Price comparison
+          description: Price comparison (includes status:"no_data" when both sources are null)
           headers:
             Cache-Control:
               $ref: '#/components/headers/CacheControl'
@@ -986,8 +1098,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CompareResponse'
-        '404':
-          description: No price data found for the asset
         '429':
           $ref: '#/components/responses/TooManyRequests'
 
@@ -1073,6 +1183,37 @@ paths:
         '500':
           description: Internal server error
 
+  /movers:
+    get:
+      operationId: getMovers
+      summary: Get biggest gainers, biggest losers, and volume movers
+      description: >-
+        Returns the top gainers, losers, and volume movers for the specified lookback window,
+        annotated with venue provenance, sample counts, and single-venue move labelling.
+      security: []
+      parameters:
+        - name: window
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [1h, 24h, 7d]
+            default: 24h
+        - $ref: '#/components/parameters/NetworkQuery'
+      responses:
+        '200':
+          description: Market movers
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MoversResponse'
+        '400':
+          description: Invalid window or network
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          description: Internal server error
+
   /benchmark/{asset}:
     get:
       operationId: getBenchmark
@@ -1107,11 +1248,20 @@ paths:
           $ref: '#/components/responses/TooManyRequests'
         '500':
           description: Benchmark computation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InternalErrorResponse'
 
   /basket:
     get:
       operationId: getBasket
       summary: Compute the weighted price of a basket of assets
+      description: >-
+        Returns 200 even when one or more assets have no price data. The
+        response body will contain an `error` field listing the missing assets
+        and `reason: "missing_price_data"` rather than computing a partial
+        basket price. A 404 would imply the assets themselves are invalid.
       security: []
       parameters:
         - name: asset
@@ -1138,7 +1288,7 @@ paths:
           example: [0.6, 0.4]
       responses:
         '200':
-          description: Basket price
+          description: Basket price or error with reason when price data is missing
           headers:
             Cache-Control:
               $ref: '#/components/headers/CacheControl'
@@ -1148,10 +1298,48 @@ paths:
                 $ref: '#/components/schemas/BasketResponse'
         '400':
           description: Missing assets or mismatched/invalid weights
-        '404':
-          description: No price data for one or more assets
         '429':
           $ref: '#/components/responses/TooManyRequests'
+
+  /correlation:
+    get:
+      operationId: getCorrelation
+      summary: Compute price correlation matrix across a basket of assets over a window
+      security: []
+      parameters:
+        - name: assets
+          in: query
+          required: true
+          description: Comma-separated or repeated asset codes (at least two)
+          schema:
+            oneOf:
+              - type: string
+              - type: array
+                items:
+                  type: string
+          example: XLM,USDC
+        - name: window
+          in: query
+          required: false
+          description: Lookback window (5m, 15m, 1h, 24h, 7d, 30d). Defaults to 24h.
+          schema:
+            type: string
+            enum: [5m, 15m, 1h, 24h, 7d, 30d]
+            default: 24h
+        - $ref: '#/components/parameters/NetworkQuery'
+      responses:
+        '200':
+          description: Correlation matrix and pair provenance
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CorrelationResponse'
+        '400':
+          description: Missing or invalid parameters
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          description: Correlation computation failed
 
   /discovery/resources:
     get:
@@ -1278,6 +1466,27 @@ paths:
     get:
       operationId: getMyUsage
       summary: Get usage and quota for the calling API key
+      security:
+        - apiKeyAuth: []
+      responses:
+        '200':
+          description: Usage summary for the authenticated key
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsageResponse'
+        '401':
+          description: Missing or invalid API key
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /usage:
+    get:
+      operationId: getCallerUsage
+      summary: Get usage and quota for the calling API key (alias for /usage/me)
       security:
         - apiKeyAuth: []
       responses:
@@ -1516,6 +1725,12 @@ components:
                 type: string
               retryAfter:
                 type: string
+    InternalServerError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/InternalErrorResponse'
 
   headers:
     CacheControl:
@@ -1531,6 +1746,21 @@ components:
         example: 'public, max-age=300'
 
   schemas:
+    InternalErrorResponse:
+      type: object
+      required: [code, message, correlationId]
+      properties:
+        code:
+          type: string
+          enum: [internal_error]
+          example: internal_error
+        message:
+          type: string
+          example: An internal server error occurred.
+        correlationId:
+          type: string
+          example: 9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d
+
     DependencyCheck:
       type: object
       description: >-
@@ -1931,12 +2161,97 @@ components:
           type: integer
           nullable: true
 
+    RouteHop:
+      type: object
+      required: [assetIn, assetOut, venue, inputAmount, outputAmount, price, spotPrice, slippagePct]
+      properties:
+        assetIn:
+          $ref: '#/components/schemas/Asset'
+        assetOut:
+          $ref: '#/components/schemas/Asset'
+        venue:
+          type: string
+          enum: [SDEX, AMM]
+        poolId:
+          type: string
+        inputAmount:
+          type: number
+        outputAmount:
+          type: number
+        price:
+          type: number
+        spotPrice:
+          type: number
+        slippagePct:
+          type: number
+
+    RouteOption:
+      type: object
+      required: [hops, hopCount, estimatedOutput, effectivePrice, slippagePct]
+      properties:
+        hops:
+          type: array
+          items:
+            $ref: '#/components/schemas/RouteHop'
+        hopCount:
+          type: integer
+        estimatedOutput:
+          type: number
+        effectivePrice:
+          type: number
+        slippagePct:
+          type: number
+
+    RouteComparison:
+      type: object
+      required: [direct, multiHop]
+      properties:
+        direct:
+          type: object
+          required: [route, sdexPrice, ammPrice, estimatedOutput, slippagePct]
+          properties:
+            route:
+              type: string
+              enum: [SDEX, AMM, SPLIT, UNKNOWN]
+            sdexPrice:
+              type: number
+            ammPrice:
+              type: number
+            estimatedOutput:
+              type: number
+            slippagePct:
+              type: number
+        multiHop:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/RouteOption'
+
+    RouteProvenance:
+      type: object
+      required: [sampledAt, network, venuesQueried, sampleCount, freshnessSeconds]
+      properties:
+        sampledAt:
+          type: string
+          format: date-time
+        network:
+          type: string
+        venuesQueried:
+          type: array
+          items:
+            type: string
+        sampleCount:
+          type: integer
+        freshnessSeconds:
+          type: number
+          nullable: true
+
     RouteInfo:
       type: object
+      required: [route, sdexPrice, ammPrice, estimatedOutput, slippagePct, recommendation]
       properties:
         route:
           type: string
-          enum: [SDEX, AMM, SPLIT, UNKNOWN]
+          enum: [SDEX, AMM, SPLIT, MULTI_HOP, UNKNOWN]
         sdexPrice:
           type: number
         ammPrice:
@@ -1947,6 +2262,17 @@ components:
           type: number
         recommendation:
           type: string
+        network:
+          type: string
+          enum: [testnet, mainnet]
+        hops:
+          type: array
+          items:
+            $ref: '#/components/schemas/RouteHop'
+        comparison:
+          $ref: '#/components/schemas/RouteComparison'
+        provenance:
+          $ref: '#/components/schemas/RouteProvenance'
 
     PriceBucket:
       type: object
@@ -2121,6 +2447,59 @@ components:
               items:
                 $ref: '#/components/schemas/BookSource'
 
+    ImpactResponse:
+      type: object
+      required: [assetA, assetB, pairKey, status, spotPrice, availableLiquidity, smallestSize, ladder, thresholds, source]
+      additionalProperties: false
+      properties:
+        assetA:
+          type: string
+        assetB:
+          type: string
+        pairKey:
+          type: string
+        status:
+          type: string
+          enum: [ok, insufficient_liquidity]
+        spotPrice:
+          type: number
+        availableLiquidity:
+          type: number
+        smallestSize:
+          type: number
+        ladder:
+          type: array
+          items:
+            type: object
+            required: [size, output, executionPrice, slippagePct]
+            additionalProperties: false
+            properties:
+              size:
+                type: number
+              output:
+                type: number
+              executionPrice:
+                type: number
+              slippagePct:
+                type: number
+        thresholds:
+          type: array
+          items:
+            type: object
+            required: [thresholdPct, crossed, size]
+            additionalProperties: false
+            properties:
+              thresholdPct:
+                type: number
+              crossed:
+                type: boolean
+              size:
+                type: number
+                nullable: true
+        source:
+          type: string
+          enum: [AMM]
+
     TwapResponse:
       type: object
       required: [assetA, assetB, pairKey, network, twap, windowMinutes, sampleIntervalSeconds, startTime, endTime, sampleCount, outlierRejected, filterMethod]
@@ -2190,11 +2569,29 @@ components:
 
     VolumeResponse:
       type: object
-      required: [asset, window, startTime, endTime, totalVolume, byVenue, venues, tradeCount]
+      required:
+        - asset
+        - network
+        - window
+        - startTime
+        - endTime
+        - totalVolume
+        - byVenue
+        - venues
+        - tradeCount
+        - medianTradeSize
+        - topTradeVolumeShare
+        - volumeConcentration
+        - concentrationMeasure
+        - status
+        - provenance
       additionalProperties: false
       properties:
         asset:
           type: string
+        network:
+          type: string
+          enum: [testnet, mainnet]
         window:
           type: string
           enum: [24h, 7d, 30d]
@@ -2216,6 +2613,47 @@ components:
             type: string
         tradeCount:
           type: integer
+          description: Number of positive-volume price point samples in the selected window.
+        medianTradeSize:
+          type: number
+          nullable: true
+          description: Median per-sample volume measured in the requested asset's units.
+        topTradeVolumeShare:
+          type: number
+          nullable: true
+          description: Largest single sample's share of total volume, from 0 to 1.
+        volumeConcentration:
+          type: number
+          nullable: true
+          description: HHI, the sum of squared per-sample volume shares; 1 is fully concentrated in one sample.
+        concentrationMeasure:
+          type: string
+          enum: [hhi]
+        status:
+          type: string
+          enum: [ok, no_trades, no_positive_volume]
+        provenance:
+          type: object
+          required: [venues, sampleCount, observedSampleCount, latestTradeAt, dataAgeSeconds]
+          additionalProperties: false
+          properties:
+            venues:
+              type: array
+              items:
+                type: string
+            sampleCount:
+              type: integer
+              description: Positive-volume samples used to calculate trade-size statistics.
+            observedSampleCount:
+              type: integer
+              description: All matching price point samples observed in the window, including zero-volume samples.
+            latestTradeAt:
+              type: string
+              format: date-time
+              nullable: true
+            dataAgeSeconds:
+              type: integer
+              nullable: true
 
     SpreadVenue:
       type: object
@@ -2354,6 +2792,76 @@ components:
           type: integer
           nullable: true
 
+    MoverItem:
+      type: object
+      required: [pairKey, assetA, assetB, priceChangePct, startPrice, endPrice, currentVolume, previousVolume, volumeChangePct, venues, isSingleVenue, sampleCount, lastUpdated]
+      additionalProperties: false
+      properties:
+        pairKey:
+          type: string
+        assetA:
+          type: string
+        assetB:
+          type: string
+        priceChangePct:
+          type: number
+          nullable: true
+        startPrice:
+          type: number
+          nullable: true
+        endPrice:
+          type: number
+          nullable: true
+        currentVolume:
+          type: number
+        previousVolume:
+          type: number
+        volumeChangePct:
+          type: number
+          nullable: true
+        venues:
+          type: array
+          items:
+            type: string
+        isSingleVenue:
+          type: boolean
+        sampleCount:
+          type: integer
+        lastUpdated:
+          type: string
+          format: date-time
+          nullable: true
+
+    MoversResponse:
+      type: object
+      required: [network, window, startTime, endTime, gainers, losers, volumeMovers]
+      additionalProperties: false
+      properties:
+        network:
+          type: string
+          enum: [testnet, mainnet]
+        window:
+          type: string
+          enum: [1h, 24h, 7d]
+        startTime:
+          type: string
+          format: date-time
+        endTime:
+          type: string
+          format: date-time
+        gainers:
+          type: array
+          items:
+            $ref: '#/components/schemas/MoverItem'
+        losers:
+          type: array
+          items:
+            $ref: '#/components/schemas/MoverItem'
+        volumeMovers:
+          type: array
+          items:
+            $ref: '#/components/schemas/MoverItem'
+
     BenchmarkResponse:
       type: object
       required: [asset, target, pairKey, currentPrice, currentDeviationBp, rolling24h]
@@ -2418,6 +2926,85 @@ components:
         computedAt:
           type: string
           format: date-time
+
+    CorrelationResponse:
+      type: object
+      required: [network, window, startTime, endTime, assets, matrix, sampleCounts, pairs]
+      additionalProperties: false
+      properties:
+        network:
+          type: string
+          enum: [testnet, mainnet]
+        window:
+          type: string
+          enum: [5m, 15m, 1h, 24h, 7d, 30d]
+        startTime:
+          type: string
+          format: date-time
+        endTime:
+          type: string
+          format: date-time
+        assets:
+          type: array
+          items:
+            type: string
+        matrix:
+          type: object
+          description: Symmetric correlation matrix keyed by asset pair
+          additionalProperties:
+            type: object
+            additionalProperties:
+              type: number
+              nullable: true
+        sampleCounts:
+          type: object
+          description: Overlapping sample count per pair
+          additionalProperties:
+            type: object
+            additionalProperties:
+              type: integer
+        pairs:
+          type: array
+          items:
+            $ref: '#/components/schemas/CorrelationCell'
+
+    CorrelationCell:
+      type: object
+      required: [assetA, assetB, coefficient, status, sampleCount, provenance]
+      additionalProperties: false
+      properties:
+        assetA:
+          type: string
+        assetB:
+          type: string
+        coefficient:
+          type: number
+          nullable: true
+          description: Pearson correlation coefficient between -1 and 1, or null if insufficient
+        status:
+          type: string
+          enum: [computed, insufficient]
+        sampleCount:
+          type: integer
+        provenance:
+          type: object
+          required: [sampleCount, venues, oldestSample, newestSample]
+          additionalProperties: false
+          properties:
+            sampleCount:
+              type: integer
+            venues:
+              type: array
+              items:
+                type: string
+            oldestSample:
+              type: string
+              format: date-time
+              nullable: true
+            newestSample:
+              type: string
+              format: date-time
+              nullable: true
 
     DiscoveryResource:
       type: object
@@ -2511,6 +3098,24 @@ components:
           enum: [block, charge_402, allow_overage]
         quotaExceeded:
           type: boolean
+        dailyResetsAt:
+          type: string
+        monthlyResetsAt:
+          type: string
+        resets:
+          type: object
+          properties:
+            daily:
+              type: string
+            monthly:
+              type: string
+        resetsInSeconds:
+          type: object
+          properties:
+            daily:
+              type: integer
+            monthly:
+              type: integer
 
     VerifyRequest:
       type: object

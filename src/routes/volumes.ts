@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 import { pgPool } from '../db'
 import { activeNetwork, type NetworkName } from '../config'
+import { sendInternalError } from '../errors'
 
 // Supported windows → lookback in hours.
 const WINDOW_HOURS = {
@@ -32,7 +33,7 @@ export async function registerVolumeRoutes(app: FastifyInstance) {
   app.get<{
     Params: { asset: string }
     Querystring: { window?: string; network?: string }
-  }>('/volumes/:asset', async (req, reply) => {
+  }>('/volumes/:asset', { config: { scope: 'read:prices' } }, async (req, reply) => {
     const { asset } = req.params
     const window = req.query.window ?? '24h'
 
@@ -42,47 +43,78 @@ export async function registerVolumeRoutes(app: FastifyInstance) {
         .send({ error: `window must be one of: ${WINDOWS.join(', ')}` })
     }
 
-    const requested = req.query.network
-    if (requested !== undefined && requested !== 'testnet' && requested !== 'mainnet') {
+    const rawRequested: unknown = req.query.network
+    const requested = typeof rawRequested === 'string' ? rawRequested.trim().toLowerCase() : rawRequested
+    if (requested !== undefined && requested !== '' && requested !== 'testnet' && requested !== 'mainnet') {
       return reply.status(400).send({ error: 'network must be one of: testnet, mainnet' })
     }
-    const network: NetworkName = (requested as NetworkName) ?? activeNetwork
+    const network: NetworkName = req.network
+      ?? (requested ? requested as NetworkName : activeNetwork)
 
     const hours = WINDOW_HOURS[window as VolumeWindow]
     const endTime = new Date()
     const startTime = new Date(endTime.getTime() - hours * 60 * 60 * 1000)
 
     try {
-      // Per-venue volume for the asset, summed over the window. The asset's volume
-      // is base_volume when it's asset_a and counter_volume when it's asset_b.
+      // The CTE gives each observation its volume in the requested asset's own
+      // units. Statistics are aggregated in Postgres so a long window does not
+      // require sending every trade to the API process.
       const { rows } = await pgPool.query(
-        `SELECT source,
-                SUM(
-                  CASE
+        `WITH asset_trades AS (
+           SELECT source,
+                  timestamp,
+                  (CASE
                     WHEN asset_a = $1 THEN base_volume
                     WHEN asset_b = $1 THEN counter_volume
-                    ELSE 0
-                  END
-                )::numeric AS volume,
-                COUNT(*)::int AS trade_count
-           FROM price_points
-          WHERE (asset_a = $1 OR asset_b = $1)
-            AND network = $2
-            AND timestamp >= $3
-          GROUP BY source`,
+                  END)::numeric AS volume
+             FROM price_points
+            WHERE (asset_a = $1 OR asset_b = $1)
+              AND network = $2
+              AND timestamp >= $3
+         ),
+         venue_totals AS (
+           SELECT source, SUM(volume)::float8 AS volume
+             FROM asset_trades
+            GROUP BY source
+         ),
+         trade_stats AS (
+           SELECT (COUNT(*) FILTER (WHERE volume > 0))::int AS trade_count,
+                  COUNT(*)::int AS observed_sample_count,
+                  SUM(volume)::float8 AS total_volume,
+                  percentile_cont(0.5) WITHIN GROUP (ORDER BY volume::float8)
+                    FILTER (WHERE volume > 0) AS median_trade_size,
+                  (MAX(volume) FILTER (WHERE volume > 0))::float8
+                    / NULLIF((SUM(volume) FILTER (WHERE volume > 0))::float8, 0) AS top_trade_volume_share,
+                  (SUM(volume * volume) FILTER (WHERE volume > 0))::float8
+                    / NULLIF(POWER((SUM(volume) FILTER (WHERE volume > 0))::float8, 2), 0) AS volume_concentration,
+                  MAX(timestamp) FILTER (WHERE volume > 0) AS latest_trade_at
+             FROM asset_trades
+         ),
+         venue_summary AS (
+           SELECT COALESCE(jsonb_object_agg(source, volume) FILTER (WHERE volume > 0), '{}'::jsonb) AS by_venue,
+                  COALESCE(jsonb_agg(source ORDER BY source) FILTER (WHERE volume > 0), '[]'::jsonb) AS venues
+             FROM venue_totals
+         )
+         SELECT trade_stats.*, venue_summary.by_venue, venue_summary.venues
+           FROM trade_stats CROSS JOIN venue_summary`,
         [asset, network, startTime],
       )
 
-      const byVenue: Record<string, number> = {}
-      let totalVolume = 0
-      let tradeCount = 0
-
-      for (const row of rows) {
-        const volume = parseFloat(row.volume) || 0
-        byVenue[row.source] = volume
-        totalVolume += volume
-        tradeCount += Number(row.trade_count) || 0
-      }
+      const row = rows[0] ?? {}
+      const tradeCount = Number(row.trade_count) || 0
+      const observedSampleCount = Number(row.observed_sample_count) || 0
+      const totalVolume = Number(row.total_volume) || 0
+      const latestTradeAt = row.latest_trade_at == null
+        ? null
+        : new Date(row.latest_trade_at as string | Date).toISOString()
+      const dataAgeSeconds = latestTradeAt === null
+        ? null
+        : Math.max(0, Math.floor((endTime.getTime() - new Date(latestTradeAt).getTime()) / 1000))
+      const status = observedSampleCount === 0
+        ? 'no_trades'
+        : tradeCount === 0 || totalVolume <= 0
+          ? 'no_positive_volume'
+          : 'ok'
 
       return {
         asset,
@@ -90,17 +122,25 @@ export async function registerVolumeRoutes(app: FastifyInstance) {
         window,
         startTime: startTime.toISOString(),
         endTime: endTime.toISOString(),
-        // Cross-venue sum.
         totalVolume,
-        // Per-venue breakdown that the total is summed from.
-        byVenue,
-        venues: Object.keys(byVenue),
+        byVenue: row.by_venue ?? {},
+        venues: row.venues ?? [],
         tradeCount,
+        medianTradeSize: row.median_trade_size == null ? null : Number(row.median_trade_size),
+        topTradeVolumeShare: row.top_trade_volume_share == null ? null : Number(row.top_trade_volume_share),
+        volumeConcentration: row.volume_concentration == null ? null : Number(row.volume_concentration),
+        concentrationMeasure: 'hhi',
+        status,
+        provenance: {
+          venues: row.venues ?? [],
+          sampleCount: tradeCount,
+          observedSampleCount,
+          latestTradeAt,
+          dataAgeSeconds,
+        },
       }
     } catch (err) {
-      return reply
-        .status(500)
-        .send({ error: `Volume aggregation failed: ${(err as Error).message}` })
+      return sendInternalError(reply, req, err, 'Volume aggregation failed')
     }
   })
 }

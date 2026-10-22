@@ -56,6 +56,13 @@ export const price_requests_total = new Counter({
   registers: [register]
 })
 
+export const price_rejected_total = new Counter({
+  name: 'price_rejected_total',
+  help: 'Total number of prices rejected due to plausibility sanity bounds',
+  labelNames: ['pair', 'network', 'venue', 'reason'],
+  registers: [register]
+})
+
 export const api_key_auth_failures_total = new Counter({
   name: 'api_key_auth_failures_total',
   help: 'Total number of API key authentication failures, by bounded reason',
@@ -85,6 +92,13 @@ export const global_shed_requests_total = new Counter({
 export const x402_payments_received_total = new Counter({
   name: 'x402_payments_received_total',
   help: 'Total number of valid x402 payments received',
+  registers: [register]
+})
+
+export const webhook_delivery_failures_total = new Counter({
+  name: 'webhook_delivery_failures_total',
+  help: 'Permanent webhook delivery failures by bounded failure category',
+  labelNames: ['category'],
   registers: [register]
 })
 
