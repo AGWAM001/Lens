@@ -466,6 +466,8 @@ Or interactively at [http://localhost:3002/graphiql](http://localhost:3002/graph
 Detailed system design and data flow diagrams can be found in the [Architecture Overview](docs/architecture.md).
 The API specification is available in [OpenAPI 3.0 format](openapi.yaml) and is auto-published to GitHub Pages at https://miracle656.github.io/lens/openapi.json.
 
+Operators: start with the [Operations runbook](docs/RUNBOOK.md) — what runs, how each external dependency degrades, how to check ingestion health via `/status` and `/metrics`, the known failure modes with their symptoms, and deploy/rollback procedures.
+
 Operational docs: [HTTP metrics](docs/http-metrics.md), [ingest metrics](docs/ingest-metrics.md), [websocket backpressure](docs/websocket-backpressure.md), [health probes](docs/health.md), [GraphQL](docs/graphql.md).
 The MCP server also advertises read-only [resources](docs/mcp-resources.md) — the watched pairs, venues, this OpenAPI document, and service status — each with a stable URI and freshness an agent can cache against.
 
