@@ -44,7 +44,7 @@ async function recordPermanentFailure(args: {
       where: { createdAt: { lt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } },
     })
   } catch (err) {
-    console.error('[webhook] could not persist permanent delivery failure:', (err as Error).message)
+    log.error({ err }, 'could not persist permanent webhook delivery failure')
   }
 }
 

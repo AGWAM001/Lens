@@ -11,8 +11,8 @@ import {
   calculateOHLCV,
   getPriceChange24h,
   getAggregatedPrice,
-  CONFIDENCE_HIGH_THRESHOLD_SECONDS,
-  CONFIDENCE_MEDIUM_THRESHOLD_SECONDS,
+  HIGH_CONFIDENCE_MAX_AGE_SECONDS,
+  MEDIUM_CONFIDENCE_MAX_AGE_SECONDS,
 } from '../aggregator/vwap'
 import type { NetworkName } from '../config'
 
@@ -25,12 +25,12 @@ describe('aggregator/vwap.ts', () => {
   })
 
   describe('exported constants', () => {
-    it('exports CONFIDENCE_HIGH_THRESHOLD_SECONDS as 30', () => {
-      expect(CONFIDENCE_HIGH_THRESHOLD_SECONDS).toBe(30)
+    it('exports HIGH_CONFIDENCE_MAX_AGE_SECONDS as 30', () => {
+      expect(HIGH_CONFIDENCE_MAX_AGE_SECONDS).toBe(30)
     })
 
-    it('exports CONFIDENCE_MEDIUM_THRESHOLD_SECONDS as 300', () => {
-      expect(CONFIDENCE_MEDIUM_THRESHOLD_SECONDS).toBe(300)
+    it('exports MEDIUM_CONFIDENCE_MAX_AGE_SECONDS as 300', () => {
+      expect(MEDIUM_CONFIDENCE_MAX_AGE_SECONDS).toBe(300)
     })
   })
 
@@ -324,7 +324,7 @@ describe('aggregator/vwap.ts', () => {
         expect(res.confidence).toBe('unknown')
       })
 
-      // Boundary 2: age = 29s (< CONFIDENCE_HIGH_THRESHOLD_SECONDS = 30)
+      // Boundary 2: age = 29s (< HIGH_CONFIDENCE_MAX_AGE_SECONDS = 30)
       it('returns confidence="high" at age = 29s (< 30) when sources > 1 and volume24h > 0', async () => {
         const tradeTime = new Date(FIXED_NOW - 29 * 1000)
         setupAggregatedPriceMocks({
@@ -338,7 +338,7 @@ describe('aggregator/vwap.ts', () => {
         expect(res.confidence).toBe('high')
       })
 
-      // Boundary 3: age = 30s (= CONFIDENCE_HIGH_THRESHOLD_SECONDS)
+      // Boundary 3: age = 30s (= HIGH_CONFIDENCE_MAX_AGE_SECONDS)
       it('returns confidence="medium" at age = 30s (boundary of high threshold) even with multiple sources and volume', async () => {
         const tradeTime = new Date(FIXED_NOW - 30 * 1000)
         setupAggregatedPriceMocks({
@@ -381,7 +381,7 @@ describe('aggregator/vwap.ts', () => {
         expect(res.confidence).toBe('medium')
       })
 
-      // Boundary 6: age = 299s (< CONFIDENCE_MEDIUM_THRESHOLD_SECONDS = 300)
+      // Boundary 6: age = 299s (< MEDIUM_CONFIDENCE_MAX_AGE_SECONDS = 300)
       it('returns confidence="medium" at age = 299s (< 300)', async () => {
         const tradeTime = new Date(FIXED_NOW - 299 * 1000)
         setupAggregatedPriceMocks({
@@ -395,7 +395,7 @@ describe('aggregator/vwap.ts', () => {
         expect(res.confidence).toBe('medium')
       })
 
-      // Boundary 7: age = 300s (= CONFIDENCE_MEDIUM_THRESHOLD_SECONDS)
+      // Boundary 7: age = 300s (= MEDIUM_CONFIDENCE_MAX_AGE_SECONDS)
       it('returns confidence="low" at age = 300s (boundary of medium threshold)', async () => {
         const tradeTime = new Date(FIXED_NOW - 300 * 1000)
         setupAggregatedPriceMocks({

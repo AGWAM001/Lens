@@ -1,8 +1,11 @@
+import { createLogger } from '../logger'
 import { readFileSync, existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 // @ts-expect-error js-yaml types
 import YAML from 'js-yaml'
 import Ajv, { type ErrorObject } from 'ajv'
+
+const log = createLogger('liveValidator')
 
 export interface SchemaMismatchDetail {
   path: string
@@ -428,7 +431,7 @@ export async function postOrUpdateGitHubReport(
       return { action: 'created', issueNumber: created.number }
     }
   } catch (err) {
-    console.warn('[liveValidator] GitHub issue update error:', err)
+    log.warn({ err }, 'liveValidator: GitHub issue update failed')
   }
 
   return { action: 'summary_only' }
