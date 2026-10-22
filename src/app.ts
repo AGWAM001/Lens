@@ -70,6 +70,13 @@ export interface BuildAppOptions {
  *
  * The returned app is NOT listening; the caller calls `app.listen(...)`.
  */
+export const RATE_LIMITS = {
+  ipDefault: 100,
+  authenticatedDefault: 1000,
+  monitoring: 1000,
+  timeWindow: '1 minute',
+} as const
+
 export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyInstance> {
   // Share the structured logger configuration (level, redaction, dev pretty
   // printing) with Fastify so `req.log` is scrubbed the same way.
@@ -115,7 +122,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   // requests fall back to a conservative shared limit keyed by IP. The IP
   // fallback is overridable via RATE_LIMIT_IP_MAX so load tests (which flood
   // from a single IP without a key) can measure the endpoint, not the limiter.
-  const ipRateLimitMax = parseInt(process.env.RATE_LIMIT_IP_MAX ?? '100', 10)
+  const ipRateLimitMax = parseInt(process.env.RATE_LIMIT_IP_MAX ?? String(RATE_LIMITS.ipDefault), 10)
   await app.register(rateLimit, {
     max: (req) => req.apiKey?.ratePerMin ?? ipRateLimitMax,
     timeWindow: '1 minute',
@@ -125,14 +132,30 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     allowList: (req) => PROBE_PATHS.has(req.url),
     errorResponseBuilder: (req, context) => {
       rate_limit_rejections_total.inc({ scope: req.apiKey ? 'key' : 'ip' })
+      const seconds = typeof context.after === 'number' ? context.after : (Math.ceil(context.ttl / 1000) || 60)
       return {
         statusCode: 429,
         error: 'Too Many Requests',
-        code: req.apiKey ? 'PER_KEY_RATE_LIMITED' : 'IP_RATE_LIMITED',
-        message: `Rate limit exceeded, retry in ${context.after}`,
-        retryAfter: context.after
+        code: 'rate_limited',
+        message: `Rate limit exceeded, retry in ${seconds} seconds`,
+        retryAfter: seconds,
+      }
+    },
+  })
+
+  // Ensure Retry-After header is always present on 429 responses (#272)
+  app.addHook('onSend', async (_req, reply, payload) => {
+    if (reply.statusCode === 429 && !reply.hasHeader('retry-after')) {
+      try {
+        const body = typeof payload === 'string' ? JSON.parse(payload) : payload
+        if (body?.retryAfter) {
+          reply.header('Retry-After', String(body.retryAfter))
+        }
+      } catch {
+        // non-fatal
       }
     }
+    return payload
   })
 
   // The per-instance ceiling runs after the per-key/IP limiter. Health checks
