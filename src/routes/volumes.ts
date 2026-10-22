@@ -33,7 +33,7 @@ export async function registerVolumeRoutes(app: FastifyInstance) {
   app.get<{
     Params: { asset: string }
     Querystring: { window?: string; network?: string }
-  }>('/volumes/:asset', async (req, reply) => {
+  }>('/volumes/:asset', { config: { scope: 'read:prices' } }, async (req, reply) => {
     const { asset } = req.params
     const window = req.query.window ?? '24h'
 

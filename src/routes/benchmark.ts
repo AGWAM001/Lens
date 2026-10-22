@@ -21,7 +21,7 @@ export async function registerBenchmarkRoutes(app: FastifyInstance) {
     Querystring: { target?: string }
   }>(
     '/benchmark/:asset',
-    { schema: { response: { 200: benchmarkResponseSchema } } },
+    { config: { scope: 'read:prices' }, schema: { response: { 200: benchmarkResponseSchema } } },
     async (req, reply) => {
       const { asset } = req.params
       const target = req.query.target ?? 'USD'

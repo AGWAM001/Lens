@@ -87,7 +87,7 @@ export async function registerScreenerRoutes(app: FastifyInstance) {
       cursor?: string
       limit?: string
     }
-  }>('/screener', async (req, reply) => {
+  }>('/screener', { config: { scope: 'read:prices' } }, async (req, reply) => {
     const log = req.log.child({ component: 'route:screener' })
     try {
       const q = req.query

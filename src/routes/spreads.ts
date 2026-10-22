@@ -70,7 +70,7 @@ export async function registerSpreadsRoutes(app: FastifyInstance) {
   app.get<{
     Params: { asset: string }
     Querystring: { window?: string; network?: string }
-  }>('/spreads/:asset', async (req, reply) => {
+  }>('/spreads/:asset', { config: { scope: 'read:prices' } }, async (req, reply) => {
     const { asset } = req.params
     const window = req.query.window ?? '5m'
 
