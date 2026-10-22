@@ -58,8 +58,8 @@ Lens utilizes two distinct ingestion strategies to maintain up-to-date pricing d
 *   **AMM Ingester**: Polls Horizon for liquidity pool snapshots and recent AMM trades. It stores pool reserves (Asset A/B amounts) in `pool_snapshots` and individual trades in `price_points`. This allows Lens to calculate spot prices based on reserve ratios even when no trades have occurred recently.
 
 ### 2. Storage Layer
-Data is stored in a PostgreSQL database optimized with TimescaleDB for time-series efficiency.
-*   **`price_points`**: A unified table for all trade events across both SDEX and AMM. This enables high-performance VWAP (Volume Weighted Average Price) calculations over various time windows (1m, 5m, 1h, 24h).
+Data is stored in a PostgreSQL database optimized with declarative range partitioning and time-series indexing.
+*   **`price_points`**: A unified table for all trade events across both SDEX and AMM, range-partitioned by `timestamp` into daily partitions (`price_points_yYYYYmMMdDD`). Automatic background workers pre-create future partitions ahead of need. Partition retention via metadata-only `DROP TABLE` operations is opt-in (`PRICE_POINTS_DROP_EXPIRED=true`, default: off) to safeguard raw historical records until rollups are completed (#231). Query execution plans on recent time windows leverage PostgreSQL partition pruning to scan only active partitions and skip all historical data.
 *   **`pool_snapshots`**: Stores the reserve state of AMM liquidity pools, which is critical for slippage estimation and constant-product price calculations.
 
 ### 3. Aggregation & Routing (`bestRoute`)

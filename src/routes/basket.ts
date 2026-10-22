@@ -1,5 +1,7 @@
 import type { FastifyInstance } from 'fastify'
+import { z } from 'zod'
 import { pgPool } from '../db'
+import { formatValidationError } from '../validation'
 
 async function fetchAssetVWAP(asset: string): Promise<number | null> {
   const result = await pgPool.query(
@@ -16,39 +18,66 @@ async function fetchAssetVWAP(asset: string): Promise<number | null> {
   return parseFloat(vwap)
 }
 
+const toArray = z
+  .union([z.string(), z.array(z.string())])
+  .transform((v) => (Array.isArray(v) ? v : [v]))
+
+const BasketQuerySchema = z
+  .object({
+    asset: toArray.optional(),
+    weight: toArray.optional(),
+  })
+  .superRefine((data, ctx) => {
+    const assets = data.asset ?? []
+    const weightStrings = data.weight ?? []
+    if (assets.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['asset'],
+        message: 'at least one asset is required',
+      })
+    }
+    if (assets.length === 1) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['asset'],
+        message: 'basket requires at least 2 assets',
+      })
+    }
+    if (assets.length !== weightStrings.length) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['weight'],
+        message: 'number of assets and weights must match',
+      })
+    }
+    const weights = weightStrings.map((w) => parseFloat(w))
+    if (weights.some((w) => isNaN(w) || w <= 0)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['weight'],
+        message: 'all weights must be positive numbers',
+      })
+    }
+  })
+
 export async function registerBasketRoutes(app: FastifyInstance) {
   app.get<{
     Querystring: { asset?: string | string[]; weight?: string | string[] }
   }>('/basket', async (req, reply) => {
-    const rawAssets = req.query.asset
-    const rawWeights = req.query.weight
+    const parsed = BasketQuerySchema.safeParse(req.query)
+    if (!parsed.success) {
+      return reply.status(400).send(formatValidationError(parsed.error))
+    }
+    const assets = parsed.data.asset ?? []
+    const weightStrings = parsed.data.weight ?? []
 
-    const assets: string[] = rawAssets
-      ? Array.isArray(rawAssets) ? rawAssets : [rawAssets]
-      : []
-    const weightStrings: string[] = rawWeights
-      ? Array.isArray(rawWeights) ? rawWeights : [rawWeights]
-      : []
-
-    if (assets.length === 0) {
-      return reply.status(400).send({ error: 'At least one asset is required' })
-    }
-    if (assets.length < 2) {
-      return reply.status(400).send({ error: 'Basket requires at least 2 assets' })
-    }
-    if (assets.length !== weightStrings.length) {
-      return reply.status(400).send({ error: 'Number of assets and weights must match' })
-    }
-
-    const rawWeightValues = weightStrings.map(w => parseFloat(w))
-    if (rawWeightValues.some(w => isNaN(w) || w <= 0)) {
-      return reply.status(400).send({ error: 'All weights must be positive numbers' })
-    }
+    const rawWeightValues = weightStrings.map((w) => parseFloat(w))
 
     const weightSum = rawWeightValues.reduce((a, b) => a + b, 0)
-    const normalizedWeights = rawWeightValues.map(w => w / weightSum)
+    const normalizedWeights = rawWeightValues.map((w) => w / weightSum)
 
-    const prices = await Promise.all(assets.map(a => fetchAssetVWAP(a)))
+    const prices = await Promise.all(assets.map((a) => fetchAssetVWAP(a)))
 
     const components = assets.map((asset, i) => ({
       asset: asset.toUpperCase(),
@@ -56,7 +85,7 @@ export async function registerBasketRoutes(app: FastifyInstance) {
       weight: normalizedWeights[i],
     }))
 
-    const missingAssets = components.filter(c => c.price === null).map(c => c.asset)
+    const missingAssets = components.filter((c) => c.price === null).map((c) => c.asset)
     if (missingAssets.length > 0) {
       return reply.status(404).send({ error: `No price data found for: ${missingAssets.join(', ')}` })
     }
@@ -68,7 +97,7 @@ export async function registerBasketRoutes(app: FastifyInstance) {
 
     return {
       basketPrice,
-      components: components.map(c => ({
+      components: components.map((c) => ({
         asset: c.asset,
         price: c.price as number,
         weight: parseFloat(c.weight.toFixed(8)),

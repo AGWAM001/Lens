@@ -285,8 +285,13 @@ export async function computeVWAP(
 
 // ─── Helper: Outlier rejection returning rejected indices ─────────────────────
 
+export const MIN_OUTLIER_SAMPLES = 4
+export const IQR_MULTIPLIER = 1.5
+export const MODIFIED_Z_SCORE_THRESHOLD = 3.5
+export const MODIFIED_Z_SCORE_FACTOR = 0.6745
+
 function rejectOutliersWithIndices(prices: number[]): { rejectedIndices: Set<number> } {
-  if (prices.length < 4) return { rejectedIndices: new Set() }
+  if (prices.length < MIN_OUTLIER_SAMPLES) return { rejectedIndices: new Set() }
 
   const sorted = [...prices].sort((a, b) => a - b)
   const n = sorted.length
@@ -298,8 +303,8 @@ function rejectOutliersWithIndices(prices: number[]): { rejectedIndices: Set<num
   const q3 = median(upperHalf)
   const iqr = q3 - q1
 
-  const lowerBound = q1 - 1.5 * iqr
-  const upperBound = q3 + 1.5 * iqr
+  const lowerBound = q1 - IQR_MULTIPLIER * iqr
+  const upperBound = q3 + IQR_MULTIPLIER * iqr
 
   const rejectedIndices = new Set<number>()
   prices.forEach((p, i) => {
@@ -310,7 +315,7 @@ function rejectOutliersWithIndices(prices: number[]): { rejectedIndices: Set<num
 }
 
 function rejectOutliersModifiedZScoreWithIndices(prices: number[]): { rejectedIndices: Set<number> } {
-  if (prices.length < 4) return { rejectedIndices: new Set() }
+  if (prices.length < MIN_OUTLIER_SAMPLES) return { rejectedIndices: new Set() }
 
   const sorted = [...prices].sort((a, b) => a - b)
   const med = median(sorted)
@@ -318,10 +323,10 @@ function rejectOutliersModifiedZScoreWithIndices(prices: number[]): { rejectedIn
 
   if (mad === 0) return { rejectedIndices: new Set() }
 
-  const threshold = 3.5
+  const threshold = MODIFIED_Z_SCORE_THRESHOLD
   const rejectedIndices = new Set<number>()
   prices.forEach((p, i) => {
-    const zScore = 0.6745 * (p - med) / mad
+    const zScore = MODIFIED_Z_SCORE_FACTOR * (p - med) / mad
     if (Math.abs(zScore) > threshold) rejectedIndices.add(i)
   })
 

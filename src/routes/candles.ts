@@ -1,14 +1,6 @@
 import type { FastifyInstance } from 'fastify'
 import { pgPool } from '../db'
-
-const INTERVAL_SECONDS: Record<string, number> = {
-  '1m': 60,
-  '5m': 300,
-  '15m': 900,
-  '1h': 3600,
-  '4h': 14_400,
-  '1d': 86_400,
-}
+import { INTERVAL_SECONDS } from '../candleIntervals'
 
 export async function registerCandleRoutes(app: FastifyInstance) {
   app.get<{

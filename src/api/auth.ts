@@ -1,7 +1,10 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
-import { createHash } from 'crypto'
+import { createHash, timingSafeEqual } from 'crypto'
 import fp from 'fastify-plugin'
 import { prisma } from '../db'
+import { api_key_auth_failures_total } from '../metrics'
+
+type ApiKeyAuthFailureReason = 'missing' | 'malformed' | 'unknown' | 'revoked' | 'expired'
 
 /**
  * Metadata for an authenticated API key, attached to each request as
@@ -38,24 +41,58 @@ export function extractBearer(header: string | undefined): string | null {
 
 /**
  * Looks up an API key by its plaintext value, returning the key context only
- * when the key exists and has not been revoked.
+ * when the key exists and has not been revoked or expired.
  */
 export async function lookupApiKey(plaintext: string): Promise<ApiKeyContext | null> {
+  return (await lookupApiKeyResult(plaintext)).context
+}
+
+async function lookupApiKeyResult(
+  plaintext: string,
+): Promise<{ context: ApiKeyContext | null; failureReason?: ApiKeyAuthFailureReason }> {
   const hash = hashApiKey(plaintext)
   const record = await prisma.apiKey.findUnique({ where: { hash } })
-  if (!record || record.revokedAt) return null
-  return {
-    id: record.id,
-    label: record.label,
-    ratePerMin: record.ratePerMin,
-    ratePerDay: record.ratePerDay,
+  if (!record) return { context: null, failureReason: 'unknown' }
+  if (record.revokedAt) return { context: null, failureReason: 'revoked' }
+  if (record.expiresAt && record.expiresAt <= new Date()) {
+    return { context: null, failureReason: 'expired' }
   }
+  return {
+    context: {
+      id: record.id,
+      label: record.label,
+      ratePerMin: record.ratePerMin,
+      ratePerDay: record.ratePerDay,
+    },
+  }
+}
+
+/**
+ * Guards admin routes with a shared secret supplied via the `ADMIN_TOKEN`
+ * env var, sent as `X-Admin-Token` (or `Authorization: Bearer <token>`).
+ * Returns true if the caller is authorized.
+ *
+ * This is the single implementation used by every admin route (keys and
+ * usage), so the two surfaces cannot drift apart.
+ */
+export function isAdminAuthorized(req: FastifyRequest): boolean {
+  const adminToken = process.env.ADMIN_TOKEN
+  if (!adminToken) return false
+  const supplied =
+    (req.headers['x-admin-token'] as string | undefined) ??
+    req.headers['authorization']?.replace(/^Bearer\s+/i, '')
+  if (!supplied) return false
+  const a = Buffer.from(supplied)
+  const b = Buffer.from(adminToken)
+  // Constant-time comparison (timingSafeEqual requires equal-length buffers).
+  // The length guard is not itself a meaningful leak for a high-entropy token.
+  return a.length === b.length && timingSafeEqual(a, b)
 }
 
 /**
  * Fastify plugin that authenticates requests via `Authorization: Bearer <key>`.
  *
- * A request without a valid, non-revoked key gets 401. Valid requests have
+ * A request without a valid, non-revoked, unexpired key gets 401. Valid requests have
  * their key metadata attached to `req.apiKey` so downstream rate limiting can
  * read per-key quotas.
  *
@@ -74,19 +111,48 @@ async function apiKeyAuthPlugin(app: FastifyInstance) {
     const routeConfig = (req.routeOptions?.config ?? {}) as { public?: boolean }
     if (routeConfig.public) return
 
-    const token = extractBearer(req.headers['authorization'])
-    if (!token) {
+    const authorization = req.headers['authorization']
+    const token = extractBearer(authorization)
+    if (authorization !== undefined && !token) {
+      api_key_auth_failures_total.inc({ reason: 'malformed' })
       return reply.status(401).send({
         error: 'Unauthorized',
+        code: 'malformed',
+        message: 'Malformed Authorization header.',
+      })
+    }
+
+    if (authorization === undefined) {
+      api_key_auth_failures_total.inc({ reason: 'missing' })
+      return reply.status(401).send({
+        error: 'Unauthorized',
+        code: 'missing',
+        message: 'Missing API key. Provide an Authorization header.',
+      })
+    }
+
+    if (!token) {
+      api_key_auth_failures_total.inc({ reason: 'malformed' })
+      return reply.status(401).send({
+        error: 'Unauthorized',
+        code: 'malformed',
         message: 'Missing API key. Provide an Authorization: Bearer <key> header.',
       })
     }
 
-    const keyContext = await lookupApiKey(token)
+    const result = await lookupApiKeyResult(token)
+    const keyContext = result.context
     if (!keyContext) {
+      const reason = result.failureReason ?? 'unknown'
+      api_key_auth_failures_total.inc({ reason })
       return reply.status(401).send({
         error: 'Unauthorized',
-        message: 'Invalid or revoked API key.',
+        code: reason,
+        message: reason === 'revoked'
+          ? 'Revoked API key. Request a replacement key.'
+          : reason === 'expired'
+            ? 'Expired API key. Request a replacement key.'
+            : 'Unknown API key.',
       })
     }
 
