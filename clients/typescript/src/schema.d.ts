@@ -1839,7 +1839,9 @@ export interface operations {
         parameters: {
             query?: {
                 interval?: "1m" | "5m" | "15m" | "1h" | "4h" | "1d";
+                /** @description Start of the time window (inclusive). Together with `to` this defines a half-open interval [from, to): samples whose timestamp is exactly `from` are included, samples whose timestamp is exactly `to` are excluded. This means two adjacent windows [T0, T1) and [T1, T2) share no boundary — a sample landing exactly on T1 appears in exactly one of the two windows. */
                 from?: string;
+                /** @description End of the time window (exclusive). Together with `from` this defines a half-open interval [from, to): samples whose timestamp is exactly `to` are excluded, samples whose timestamp is exactly `from` are included. This means two adjacent windows [T0, T1) and [T1, T2) share no boundary — a sample landing exactly on T1 appears in exactly one of the two windows. */
                 to?: string;
             };
             header?: never;
@@ -1892,7 +1894,9 @@ export interface operations {
                 /** @example XLM/USDC */
                 pair: string;
                 interval?: "1m" | "5m" | "1h";
+                /** @description Start of the time window (inclusive). Together with `to` this defines a half-open interval [from, to): samples whose timestamp is exactly `from` are included, samples whose timestamp is exactly `to` are excluded. This means two adjacent windows [T0, T1) and [T1, T2) share no boundary — a sample landing exactly on T1 appears in exactly one of the two windows. */
                 from?: string;
+                /** @description End of the time window (exclusive). Together with `from` this defines a half-open interval [from, to): samples whose timestamp is exactly `to` are excluded, samples whose timestamp is exactly `from` are included. This means two adjacent windows [T0, T1) and [T1, T2) share no boundary — a sample landing exactly on T1 appears in exactly one of the two windows. */
                 to?: string;
                 /** @description Response encoding. `csv` returns a text/csv body holding a `ts,price,volume` table (RFC 4180 quoting, LF line endings, one trailing newline); `json` is the default. */
                 format?: "json" | "csv";
