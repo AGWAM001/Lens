@@ -1,5 +1,6 @@
 import { pgPool } from '../db'
 import type { NetworkName } from '../config'
+import type { DecimalFormat } from '../utils/decimals'
 
 export const STALENESS_THRESHOLD_SECONDS = 300
 export const HIGH_CONFIDENCE_MAX_AGE_SECONDS = 30
@@ -18,12 +19,12 @@ export const MEDIUM_CONFIDENCE_MAX_AGE_SECONDS = 300
  * refinement: there is no default that is correct by accident, and a caller
  * that doesn't know which chain it is quoting should refuse rather than guess.
  */
-export async function calculateVWAP(
+export async function calculateVWAPDetailed(
   pairKey: string,
   windowMinutes: number,
   network: NetworkName,
   source?: 'SDEX' | 'AMM'
-): Promise<number> {
+): Promise<{ num: number; raw: string }> {
   const sourceFilter = source ? `AND source = $4` : ''
   const params: (string | number)[] = [pairKey, network, windowMinutes]
   if (source) params.push(source)
@@ -41,7 +42,18 @@ export async function calculateVWAP(
        ${sourceFilter}`,
     params
   )
-  return parseFloat(result.rows[0]?.vwap ?? '0')
+  const raw = String(result.rows[0]?.vwap ?? '0')
+  return { num: parseFloat(raw), raw }
+}
+
+export async function calculateVWAP(
+  pairKey: string,
+  windowMinutes: number,
+  network: NetworkName,
+  source?: 'SDEX' | 'AMM'
+): Promise<number> {
+  const detailed = await calculateVWAPDetailed(pairKey, windowMinutes, network, source)
+  return detailed.num
 }
 
 export async function calculateOHLCV(
@@ -83,42 +95,169 @@ export async function calculateOHLCV(
   }
 }
 
-export async function getPriceChange24h(pairKey: string, network: NetworkName): Promise<number> {
+/**
+ * Sum two decimal strings preserving exact precision without IEEE-754 loss.
+ */
+export function addDecimalStrings(a: string, b: string): string {
+  const cleanA = (a ?? '').trim() || '0'
+  const cleanB = (b ?? '').trim() || '0'
+  const [aInt = '0', aFrac = ''] = cleanA.split('.')
+  const [bInt = '0', bFrac = ''] = cleanB.split('.')
+  const maxFracLen = Math.max(aFrac.length, bFrac.length)
+  const aPadded = aFrac.padEnd(maxFracLen, '0')
+  const bPadded = bFrac.padEnd(maxFracLen, '0')
+  const aBig = BigInt((aInt.startsWith('-') ? '-' : '') + aInt.replace('-', '') + aPadded)
+  const bBig = BigInt((bInt.startsWith('-') ? '-' : '') + bInt.replace('-', '') + bPadded)
+  const sum = aBig + bBig
+  const isNeg = sum < 0n
+  const sumAbs = isNeg ? -sum : sum
+  const sumStr = sumAbs.toString().padStart(maxFracLen + 1, '0')
+  const intPart = sumStr.slice(0, sumStr.length - maxFracLen) || '0'
+  const fracPart = sumStr.slice(sumStr.length - maxFracLen).replace(/0+$/, '')
+  const result = (isNeg ? '-' : '') + (fracPart ? `${intPart}.${fracPart}` : intPart)
+  return result === '' || result === '-0' ? '0' : result
+}
+
+/**
+ * Computes exact percentage change between two decimal strings: ((now - ago) / ago) * 100
+ */
+export function computePriceChange(
+  nowRaw: string | undefined | null,
+  agoRaw: string | undefined | null,
+  computedRaw?: string | null
+): { num: number; raw: string } {
+  if (computedRaw != null) {
+    const raw = String(computedRaw)
+    return { num: parseFloat(raw) || 0, raw }
+  }
+  const agoStr = (agoRaw != null ? String(agoRaw) : '0').trim()
+  const nowStr = (nowRaw != null ? String(nowRaw) : '0').trim()
+  const agoNum = parseFloat(agoStr)
+  const nowNum = parseFloat(nowStr)
+  if (!agoNum || agoNum === 0 || !Number.isFinite(agoNum)) {
+    return { num: 0, raw: '0' }
+  }
+  try {
+    const [aInt = '0', aFrac = ''] = agoStr.split('.')
+    const [nInt = '0', nFrac = ''] = nowStr.split('.')
+    const scale = Math.max(aFrac.length, nFrac.length)
+    const aBig = BigInt((aInt.startsWith('-') ? '-' : '') + aInt.replace('-', '') + aFrac.padEnd(scale, '0'))
+    const nBig = BigInt((nInt.startsWith('-') ? '-' : '') + nInt.replace('-', '') + nFrac.padEnd(scale, '0'))
+    if (aBig === 0n) return { num: 0, raw: '0' }
+    const diff = nBig - aBig
+    const PRECISION = 18n
+    const mult = 10n ** PRECISION
+    const scaledQuotient = (diff * 100n * mult) / aBig
+    const isNeg = scaledQuotient < 0n
+    const absQ = isNeg ? -scaledQuotient : scaledQuotient
+    const qStr = absQ.toString().padStart(Number(PRECISION) + 1, '0')
+    const intPart = qStr.slice(0, qStr.length - Number(PRECISION)) || '0'
+    const fracPart = qStr.slice(qStr.length - Number(PRECISION)).replace(/0+$/, '')
+    const raw = (isNeg ? '-' : '') + (fracPart ? `${intPart}.${fracPart}` : intPart)
+    return { num: parseFloat(raw) || 0, raw: raw === '' || raw === '-0' ? '0' : raw }
+  } catch {
+    const num = ((nowNum - agoNum) / agoNum) * 100
+    return { num, raw: String(num) }
+  }
+}
+
+export async function getPriceChange24hDetailed(
+  pairKey: string,
+  network: NetworkName
+): Promise<{ num: number; raw: string }> {
   const result = await pgPool.query(
     `SELECT
-       (SELECT price::numeric FROM price_points
-        WHERE pair_key = $1 AND network = $2
-          AND timestamp > NOW() - INTERVAL '24 hours'
-        ORDER BY timestamp ASC LIMIT 1) AS price_24h_ago,
-       (SELECT price::numeric FROM price_points
-        WHERE pair_key = $1 AND network = $2
-          AND timestamp > NOW() - INTERVAL '24 hours'
-        ORDER BY timestamp DESC LIMIT 1) AS price_now`,
+       price_24h_ago,
+       price_now,
+       CASE
+         WHEN price_24h_ago IS NULL OR price_24h_ago = 0 THEN 0
+         ELSE ((price_now - price_24h_ago) / price_24h_ago * 100)
+       END AS price_change_24h
+     FROM (
+       SELECT
+         (SELECT price::numeric FROM price_points
+          WHERE pair_key = $1 AND network = $2
+            AND timestamp > NOW() - INTERVAL '24 hours'
+          ORDER BY timestamp ASC LIMIT 1) AS price_24h_ago,
+         (SELECT price::numeric FROM price_points
+          WHERE pair_key = $1 AND network = $2
+            AND timestamp > NOW() - INTERVAL '24 hours'
+          ORDER BY timestamp DESC LIMIT 1) AS price_now
+     ) sub`,
     [pairKey, network]
   )
   const row = result.rows[0]
-  const ago = parseFloat(row?.price_24h_ago ?? '0')
-  const now = parseFloat(row?.price_now ?? '0')
-  if (ago === 0) return 0
-  return ((now - ago) / ago) * 100
+  return computePriceChange(row?.price_now, row?.price_24h_ago, row?.price_change_24h)
 }
 
-export async function getAggregatedPrice(pairKey: string, network: NetworkName): Promise<{
-  price: number; sdexPrice: number; ammPrice: number
-  volume24h: number; sdexVolume24h: number; ammVolume24h: number
-  vwap1m: number; vwap5m: number; vwap1h: number; vwap24h: number
-  priceChange24h: number; sources: number
+export async function getPriceChange24h(pairKey: string, network: NetworkName): Promise<number> {
+  const detailed = await getPriceChange24hDetailed(pairKey, network)
+  return detailed.num
+}
+
+export interface AggregatedPriceNumeric {
+  price: number
+  sdexPrice: number
+  ammPrice: number
+  volume24h: number
+  sdexVolume24h: number
+  ammVolume24h: number
+  vwap1m: number
+  vwap5m: number
+  vwap1h: number
+  vwap24h: number
+  priceChange24h: number
+  sources: number
   confidence: 'high' | 'medium' | 'low' | 'unknown'
   lastTradeAgeSeconds: number | null
   stale: boolean
-}> {
+}
+
+export interface AggregatedPriceString {
+  price: string
+  sdexPrice: string
+  ammPrice: string
+  volume24h: string
+  sdexVolume24h: string
+  ammVolume24h: string
+  vwap1m: string
+  vwap5m: string
+  vwap1h: string
+  vwap24h: string
+  priceChange24h: string
+  sources: number
+  confidence: 'high' | 'medium' | 'low' | 'unknown'
+  lastTradeAgeSeconds: number | null
+  stale: boolean
+}
+
+export async function getAggregatedPrice(
+  pairKey: string,
+  network: NetworkName,
+  options: { decimalFormat: 'string' }
+): Promise<AggregatedPriceString>
+export async function getAggregatedPrice(
+  pairKey: string,
+  network: NetworkName,
+  options?: { decimalFormat?: 'number' }
+): Promise<AggregatedPriceNumeric>
+export async function getAggregatedPrice(
+  pairKey: string,
+  network: NetworkName,
+  options?: { decimalFormat?: DecimalFormat }
+): Promise<AggregatedPriceNumeric | AggregatedPriceString>
+export async function getAggregatedPrice(
+  pairKey: string,
+  network: NetworkName,
+  options?: { decimalFormat?: DecimalFormat }
+): Promise<AggregatedPriceNumeric | AggregatedPriceString> {
   const [vwap1m, vwap5m, vwap1h, vwap24h, sdexVwap24h, priceChange24h, ammSpotResult, lastTradeResult] = await Promise.all([
-    calculateVWAP(pairKey, 1, network),
-    calculateVWAP(pairKey, 5, network),
-    calculateVWAP(pairKey, 60, network),
-    calculateVWAP(pairKey, 1440, network),
-    calculateVWAP(pairKey, 1440, network, 'SDEX'),
-    getPriceChange24h(pairKey, network),
+    calculateVWAPDetailed(pairKey, 1, network),
+    calculateVWAPDetailed(pairKey, 5, network),
+    calculateVWAPDetailed(pairKey, 60, network),
+    calculateVWAPDetailed(pairKey, 1440, network),
+    calculateVWAPDetailed(pairKey, 1440, network, 'SDEX'),
+    getPriceChange24hDetailed(pairKey, network),
     // AMM price: latest spot_price averaged across pools for this pair, on this
     // network only. Both halves of the lookup are network-filtered: the outer
     // scan of pool_snapshots, and the price_points subquery that decides which
@@ -147,23 +286,43 @@ export async function getAggregatedPrice(pairKey: string, network: NetworkName):
   ])
 
   const volResult = await pgPool.query(
-    `SELECT
-       source,
-       SUM(base_volume::numeric) AS vol
-     FROM price_points
-     WHERE pair_key = $1
-       AND network = $2
-       AND timestamp > NOW() - INTERVAL '24 hours'
-     GROUP BY source`,
+    `WITH per_source AS (
+       SELECT
+         source,
+         SUM(base_volume::numeric) AS vol
+       FROM price_points
+       WHERE pair_key = $1
+         AND network = $2
+         AND timestamp > NOW() - INTERVAL '24 hours'
+       GROUP BY source
+     )
+     SELECT source, vol FROM per_source
+     UNION ALL
+     SELECT 'TOTAL' AS source, COALESCE(SUM(vol)::numeric, 0) AS vol FROM per_source`,
     [pairKey, network]
   )
 
+  let sdexVolume24hRaw = '0'
+  let ammVolume24hRaw = '0'
+  let totalVolume24hRaw: string | null = null
   let sdexVolume24h = 0
   let ammVolume24h = 0
   for (const row of volResult.rows) {
-    if (row.source === 'SDEX') sdexVolume24h = parseFloat(row.vol)
-    else if (row.source === 'AMM') ammVolume24h = parseFloat(row.vol)
+    if (row.source === 'SDEX') {
+      sdexVolume24hRaw = String(row.vol ?? '0')
+      sdexVolume24h = parseFloat(sdexVolume24hRaw)
+    } else if (row.source === 'AMM') {
+      ammVolume24hRaw = String(row.vol ?? '0')
+      ammVolume24h = parseFloat(ammVolume24hRaw)
+    } else if (row.source === 'TOTAL' || row.source === null) {
+      totalVolume24hRaw = String(row.vol ?? '0')
+    }
   }
+
+  if (totalVolume24hRaw === null) {
+    totalVolume24hRaw = addDecimalStrings(sdexVolume24hRaw, ammVolume24hRaw)
+  }
+  const volume24h = parseFloat(totalVolume24hRaw)
 
   const sourcesResult = await pgPool.query(
     `SELECT COUNT(DISTINCT COALESCE(pool_id, 'sdex')) AS sources
@@ -174,12 +333,11 @@ export async function getAggregatedPrice(pairKey: string, network: NetworkName):
     [pairKey, network]
   )
 
-  const ammPrice = parseFloat(ammSpotResult.rows[0]?.amm_price ?? '0')
+  const ammPriceRaw = String(ammSpotResult.rows[0]?.amm_price ?? '0')
+  const ammPrice = parseFloat(ammPriceRaw)
   const lastTrade = lastTradeResult.rows[0]?.last_trade
   const lastTradeAgeSeconds = lastTrade ? Math.floor((Date.now() - new Date(lastTrade).getTime()) / 1000) : null
   const sources = parseInt(sourcesResult.rows[0]?.sources ?? '0', 10)
-  const volume24h = sdexVolume24h + ammVolume24h
-
 
   let confidence: 'high' | 'medium' | 'low' | 'unknown' = 'unknown'
   if (lastTradeAgeSeconds === null) {
@@ -194,21 +352,49 @@ export async function getAggregatedPrice(pairKey: string, network: NetworkName):
 
   const stale = lastTradeAgeSeconds !== null && lastTradeAgeSeconds >= STALENESS_THRESHOLD_SECONDS
 
+  const isString = options?.decimalFormat === 'string'
+
+  if (isString) {
+    const stringPrice = (vwap1h.num > 0 ? vwap1h.raw : null)
+      ?? (vwap24h.num > 0 ? vwap24h.raw : null)
+      ?? (ammPrice > 0 ? ammPriceRaw : null)
+      ?? '0'
+
+    return {
+      price: stringPrice,
+      sdexPrice: sdexVwap24h.raw,
+      ammPrice: ammPriceRaw,
+      volume24h: totalVolume24hRaw,
+      sdexVolume24h: sdexVolume24hRaw,
+      ammVolume24h: ammVolume24hRaw,
+      vwap1m: vwap1m.raw,
+      vwap5m: vwap5m.raw,
+      vwap1h: vwap1h.raw,
+      vwap24h: vwap24h.raw,
+      priceChange24h: priceChange24h.raw,
+      sources,
+      confidence,
+      lastTradeAgeSeconds,
+      stale,
+    }
+  }
+
   return {
-    price: vwap1h || vwap24h || ammPrice || 0,
-    sdexPrice: sdexVwap24h,
+    price: vwap1h.num || vwap24h.num || ammPrice || 0,
+    sdexPrice: sdexVwap24h.num,
     ammPrice,
     volume24h,
     sdexVolume24h,
     ammVolume24h,
-    vwap1m,
-    vwap5m,
-    vwap1h,
-    vwap24h,
-    priceChange24h,
+    vwap1m: vwap1m.num,
+    vwap5m: vwap5m.num,
+    vwap1h: vwap1h.num,
+    vwap24h: vwap24h.num,
+    priceChange24h: priceChange24h.num,
     sources,
     confidence,
     lastTradeAgeSeconds,
     stale,
   }
 }
+

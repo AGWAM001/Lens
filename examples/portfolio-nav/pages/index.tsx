@@ -47,9 +47,11 @@ export default function PortfolioNav() {
         balances.map(async (b) => {
           const bal = parseFloat(b.balance)
           if (b.asset_code === 'XLM') {
-            // Fetch XLM/USDC price from Lens
+            // Fetch XLM/USDC price from Lens with full decimal precision
             try {
-              const priceResp = await fetch(`${LENS_URL}/price/XLM/USDC`)
+              const priceResp = await fetch(`${LENS_URL}/price/XLM/USDC`, {
+                headers: { 'x-decimal-format': 'string' },
+              })
               if (priceResp.ok) {
                 const data = await priceResp.json()
                 const price = parseFloat(data.price)
@@ -60,7 +62,9 @@ export default function PortfolioNav() {
           }
 
           try {
-            const priceResp = await fetch(`${LENS_URL}/price/${b.asset_code}/USDC`)
+            const priceResp = await fetch(`${LENS_URL}/price/${b.asset_code}/USDC`, {
+              headers: { 'x-decimal-format': 'string' },
+            })
             if (priceResp.ok) {
               const data = await priceResp.json()
               const price = parseFloat(data.price)
