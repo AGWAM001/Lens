@@ -5,6 +5,7 @@ import {
   ammAdapter,
   soroswapAdapter,
   aquariusAdapter,
+  defindexAdapter,
   startVenueAdapter,
   startAllVenueAdapters,
   writeVenuePricePoints,
@@ -37,7 +38,8 @@ describe('VenueAdapter Interface and Runner (#218)', () => {
     expect(venueAdapters).toContain(ammAdapter)
     expect(venueAdapters).toContain(soroswapAdapter)
     expect(venueAdapters).toContain(aquariusAdapter)
-    expect(venueAdapters.length).toBe(4)
+    expect(venueAdapters).toContain(defindexAdapter)
+    expect(venueAdapters.length).toBe(5)
   })
 
   it('ensures each adapter implements the VenueAdapter contract', () => {
@@ -59,6 +61,7 @@ describe('VenueAdapter Interface and Runner (#218)', () => {
     expect(ammAdapter.source).toBe('AMM')
     expect(soroswapAdapter.source).toBe('soroswap_amm')
     expect(aquariusAdapter.source).toBe('aquarius_amm')
+    expect(defindexAdapter.source).toBe('defindex_vault')
   })
 
   it('manages last-price tracking with network and pairKey isolation in runner', () => {
