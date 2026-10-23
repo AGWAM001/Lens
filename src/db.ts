@@ -1,12 +1,71 @@
-import { PrismaClient } from '@prisma/client'
+import { PrismaClient, Prisma } from '@prisma/client'
 import { Pool } from 'pg'
 import { createHash } from 'node:crypto'
-import { db_query_duration_seconds } from './metrics'
+import {
+  db_query_duration_seconds,
+  db_pool_connections_in_use,
+  db_pool_connections_idle,
+  db_pool_connections_waiting,
+  db_pool_exhaustion_errors_total,
+  setPoolMetricsUpdater,
+} from './metrics'
 import { config, type NetworkName } from './config'
+import { createLogger } from './logger'
+
+const log = createLogger('db')
+
+/**
+ * ── Connection Pool Arithmetic & Capacity Planning ────────────────────────────
+ *
+ * Postgres enforces `max_connections` (typically 100 on standard cloud instances,
+ * or 20–60 on managed serverless/starter tiers).
+ *
+ * Each Lens process shares a single connection pool across:
+ *   1. HTTP request handlers (Fastify REST, GraphQL, WebSocket queries)
+ *   2. Several ingester loops per enabled network (SDEX, AMM, Soroswap, Snapshot, Aquarius)
+ *   3. Retention and partition maintenance background workers
+ *
+ * When running N process instances (e.g., in a container orchestrator or horizontally
+ * scaled deployment), the aggregate connection load against Postgres is:
+ *
+ *   Total Database Connections = Instances × (Pool Size per Instance) + Superuser/Admin headroom
+ *
+ * With the default `connectionLimit = 10`:
+ *   - 1 instance  : 10 connections  (10% of 100 max_connections)
+ *   - 3 instances : 30 connections  (30% of 100 max_connections)
+ *   - 5 instances : 50 connections  (50% of 100 max_connections)
+ *
+ * Leaving ample headroom for Postgres background processes (autovacuum, WAL sender)
+ * and direct migration connections (`DIRECT_DATABASE_URL`).
+ *
+ * If `pool_timeout` (acquisition timeout) expires before a connection is leased,
+ * requests fail loudly with a distinct pool exhaustion error rather than hanging.
+ */
+
+export function buildDatabaseUrl(baseUrl: string, connectionLimit: number, poolTimeoutMs: number): string {
+  try {
+    const url = new URL(baseUrl)
+    url.searchParams.set('connection_limit', connectionLimit.toString())
+    // Prisma pool_timeout parameter is configured in seconds
+    const poolTimeoutSec = Math.max(1, Math.ceil(poolTimeoutMs / 1000))
+    url.searchParams.set('pool_timeout', poolTimeoutSec.toString())
+    return url.toString()
+  } catch {
+    // If URL parsing fails, return as-is
+    return baseUrl
+  }
+}
+
+const configuredDbUrl = buildDatabaseUrl(
+  config.db.url,
+  config.db.connectionLimit,
+  config.db.poolTimeoutMs
+)
 
 // Prisma for schema management + simple queries
 const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient }
 export const prisma = globalForPrisma.prisma ?? new PrismaClient({
+  datasourceUrl: configuredDbUrl,
   log: process.env.NODE_ENV === 'development' ? ['warn', 'error'] : ['error'],
 })
 if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma
@@ -16,6 +75,8 @@ if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma
 // (their pooler uses a self-signed cert in the chain — this is safe for Supabase specifically)
 export const pgPool = new Pool({
   connectionString: config.db.url,
+  max: config.db.connectionLimit,
+  connectionTimeoutMillis: config.db.poolTimeoutMs,
   ssl: config.db.url.includes('supabase.com') ? { rejectUnauthorized: false } : undefined,
 })
 
@@ -25,10 +86,94 @@ pgPool.query = (async (...args: any[]) => {
   const end = db_query_duration_seconds.startTimer()
   try {
     return await (originalQuery as any)(...args)
+  } catch (err) {
+    if (isPoolExhaustionError(err)) {
+      recordPoolExhaustion(err, 'pgPool.query')
+    }
+    throw err
   } finally {
     end()
   }
 }) as any
+
+// Instrument pgPool acquire/error events
+pgPool.on('error', (err) => {
+  if (isPoolExhaustionError(err)) {
+    recordPoolExhaustion(err, 'pgPool.on_error')
+  } else {
+    log.error({ err }, 'unexpected postgres client error')
+  }
+})
+
+/**
+ * Periodically or on scrape, export pgPool utilisation metrics through prom-client.
+ */
+export function updatePoolMetrics() {
+  const total = pgPool.totalCount
+  const idle = pgPool.idleCount
+  const waiting = pgPool.waitingCount
+  const inUse = Math.max(0, total - idle)
+
+  db_pool_connections_in_use.set(inUse)
+  db_pool_connections_idle.set(idle)
+  db_pool_connections_waiting.set(waiting)
+}
+
+setPoolMetricsUpdater(updatePoolMetrics)
+
+/**
+ * Detects whether an error represents database connection pool exhaustion or acquisition timeout.
+ */
+export function isPoolExhaustionError(err: unknown): boolean {
+  if (!err) return false
+
+  // Prisma pool timeout error: P2024
+  if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2024') {
+    return true
+  }
+
+  const message = typeof err === 'object' && err !== null && 'message' in err ? String(err.message) : String(err)
+  if (
+    message.includes('Timed out fetching a new connection from the connection pool') ||
+    message.includes('timeout exceeded when trying to connect') ||
+    message.includes('Connection pool timeout') ||
+    message.includes('connection queue is full') ||
+    message.includes('timeout expired') ||
+    message.includes('remaining connection slots are reserved')
+  ) {
+    return true
+  }
+
+  // pg-pool connection timeout
+  if (
+    typeof err === 'object' &&
+    err !== null &&
+    'code' in err &&
+    (err as { code: unknown }).code === 'ETIMEDOUT'
+  ) {
+    return true
+  }
+
+  return false
+}
+
+/**
+ * Logs a distinct warning/error and increments the Prometheus pool exhaustion metric.
+ */
+export function recordPoolExhaustion(err: unknown, source: string = 'database'): void {
+  db_pool_exhaustion_errors_total.inc()
+  log.error(
+    {
+      err,
+      source,
+      inUse: Math.max(0, pgPool.totalCount - pgPool.idleCount),
+      waiting: pgPool.waitingCount,
+      total: pgPool.totalCount,
+      limit: config.db.connectionLimit,
+    },
+    'database connection pool exhausted: connection acquisition timed out'
+  )
+}
 
 /**
  * `network` is required rather than defaulting to the active one. Ingesters are

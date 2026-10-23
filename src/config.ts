@@ -462,6 +462,8 @@ function buildNetworkConfig(network: NetworkName): NetworkConfig {
 const globalConfig = {
   db: {
     url: process.env.DATABASE_URL ?? 'postgresql://lens:lens@localhost:5432/lens',
+    connectionLimit: parseInt(process.env.DB_POOL_SIZE ?? '10', 10),
+    poolTimeoutMs: parseInt(process.env.DB_POOL_TIMEOUT_MS ?? '5000', 10),
   },
   redis: {
     url: process.env.REDIS_URL ?? 'redis://localhost:6379',

@@ -265,6 +265,21 @@ staleness signal silently unusable. See
 [`docs/ingest-metrics.md`](docs/ingest-metrics.md) for the cardinality notes
 (`pairs x networks`) and a staleness alert.
 
+### Database Connection Pool & Shared Architecture
+
+> **Important architectural note**: The ingester loops (SDEX, AMM, Soroswap, Snapshot, Aquarius), background workers (retention, partitions), and the HTTP/GraphQL API handlers **run in a single process and share one connection pool**.
+
+Because deployments often scale across multiple instances, total database connections against Postgres equal:
+$$\text{Total Connections} = \text{Instances} \times \text{DB\_POOL\_SIZE} + \text{Superuser/Admin Headroom}$$
+
+Configure `DB_POOL_SIZE` and `DB_POOL_TIMEOUT_MS` appropriately so the aggregate across all running instances stays safely beneath PostgreSQL's `max_connections` (typically 100).
+
+Pool utilisation and exhaustion metrics are exposed on `GET /metrics`:
+- `db_pool_connections_in_use`: Number of active connections checked out.
+- `db_pool_connections_idle`: Number of idle connections ready in pool.
+- `db_pool_connections_waiting`: Requests queued waiting for an available connection.
+- `db_pool_exhaustion_errors_total`: Counter incremented whenever connection acquisition times out. Requests encountering pool exhaustion fail with an explicit `503 Service Unavailable` (`DB_POOL_EXHAUSTED`) rather than generic latency or unhandled timeouts.
+
 ### GraphQL Subscriptions (live prices)
 
 Lens exposes a `priceUpdated(pair)` subscription that pushes a message every time

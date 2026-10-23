@@ -44,6 +44,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/tvl": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Total Value Locked across Stellar DeFi venues
+         * @description Aggregates Total Value Locked (TVL) in USD across Stellar Classic AMM, Soroswap, and Aquarius. Reports totals, breakdown by venue, breakdown by asset with valuation sources named, and marks pools with unpriceable assets as unpriced rather than zero. Querying `?history=true` returns historical hourly TVL samples.
+         */
+        get: operations["getTvl"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/ready": {
         parameters: {
             query?: never;
@@ -1532,6 +1552,31 @@ export interface operations {
             /** @description Process is alive. */
             200: {
                 headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getTvl: {
+        parameters: {
+            query?: {
+                /** @description Stellar network to answer for — `testnet` or `mainnet`. Defaults to this instance's configured `STELLAR_NETWORK`. An unrecognised value is rejected with 400. DB-backed reads are currently served from whichever network this instance indexes, even when another is requested. */
+                network?: components["parameters"]["NetworkQuery"];
+                /** @description Return historical time series of TVL when true */
+                history?: boolean;
+                /** @description Historical lookback window in hours (default 24) */
+                window?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Total Value Locked breakdown or historical series */
+            200: {
+                headers: {
                     "Cache-Control": components["headers"]["CacheControl"];
                     [name: string]: unknown;
                 };
@@ -1567,6 +1612,13 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ReadinessReport"];
                 };
+            };
+            /** @description Invalid parameters */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Not ready. `ok` is false and `checks` says which dependency (or the boot sequence) is responsible. `/live` remains healthy. */
             503: {
