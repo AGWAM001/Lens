@@ -1,4 +1,5 @@
 import { pgPool } from '../db'
+import { activeNetwork, type NetworkName } from '../config'
 
 /**
  * Aggregate price for a pair across sources (SDEX, AMM) weighted by volume.
@@ -7,11 +8,15 @@ import { pgPool } from '../db'
  *
  * @param pairKey The pair identifier (e.g., "XLM/USDC").
  * @param deviationThreshold Fractional threshold (e.g., 0.05 for 5%).
+ * @param network The chain to read. `price_points` indexes `network` as the
+ *   leading column of (network, pair_key, timestamp), and the same pair key
+ *   exists on both chains — an unfiltered read blends two separate markets.
  * @returns Composite price and per‑source breakdown.
  */
 export async function aggregatePrice(
   pairKey: string,
   deviationThreshold: number = 0.05,
+  network: NetworkName = activeNetwork,
 ): Promise<{
   composite: number
   breakdown: Array<{
@@ -30,9 +35,10 @@ export async function aggregatePrice(
        SUM(base_volume::numeric) AS volume
      FROM price_points
      WHERE pair_key = $1
+       AND network = $2
        AND timestamp > NOW() - INTERVAL '1 hour'
      GROUP BY source`,
-    [pairKey]
+    [pairKey, network]
   )
 
   const sources = result.rows.map((row: any) => ({

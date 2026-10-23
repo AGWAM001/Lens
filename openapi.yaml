@@ -96,6 +96,36 @@ paths:
       responses:
         '200':
           description: Process is alive.
+  /tvl:
+    get:
+      operationId: getTvl
+      summary: Total Value Locked across Stellar DeFi venues
+      description: >-
+        Aggregates Total Value Locked (TVL) in USD across Stellar Classic AMM,
+        Soroswap, and Aquarius. Reports totals, breakdown by venue, breakdown
+        by asset with valuation sources named, and marks pools with unpriceable
+        assets as unpriced rather than zero. Querying `?history=true` returns
+        historical hourly TVL samples.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/NetworkQuery'
+        - name: history
+          in: query
+          required: false
+          description: Return historical time series of TVL when true
+          schema:
+            type: boolean
+            default: false
+        - name: window
+          in: query
+          required: false
+          description: Historical lookback window in hours (default 24)
+          schema:
+            type: string
+            default: 24
+      responses:
+        '200':
+          description: Total Value Locked breakdown or historical series
           headers:
             Cache-Control:
               $ref: '#/components/headers/CacheControl'
@@ -147,6 +177,29 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ReadinessReport'
+                properties:
+                  network:
+                    type: string
+                    enum: [testnet, mainnet]
+                  totalTvlUsd:
+                    type: number
+                  unpricedPoolsCount:
+                    type: integer
+                  pricedPoolsCount:
+                    type: integer
+                  venues:
+                    type: object
+                  byAsset:
+                    type: object
+                  pools:
+                    type: array
+                    items:
+                      type: object
+                  computedAt:
+                    type: string
+                    format: date-time
+        '400':
+          description: Invalid parameters
 
   /status:
     get:
@@ -250,6 +303,7 @@ paths:
             type: string
           example: USDC
         - $ref: '#/components/parameters/NetworkQuery'
+        - $ref: '#/components/parameters/DecimalFormatHeader'
       responses:
         '200':
           description: Aggregated price data
@@ -291,6 +345,7 @@ paths:
             type: number
             default: 1000
         - $ref: '#/components/parameters/NetworkQuery'
+        - $ref: '#/components/parameters/DecimalFormatHeader'
       responses:
         '200':
           description: Best route information
@@ -332,7 +387,7 @@ paths:
               schema:
                 type: object
         '400':
-          $ref: '#/components/responses/BadRequest'
+          description: Invalid parameters
         '429':
           $ref: '#/components/responses/TooManyRequests'
 
@@ -367,6 +422,7 @@ paths:
             default: 100
             maximum: 1000
         - $ref: '#/components/parameters/NetworkQuery'
+        - $ref: '#/components/parameters/DecimalFormatHeader'
       responses:
         '200':
           description: Price history
@@ -402,6 +458,7 @@ paths:
         - x402: []
       parameters:
         - $ref: '#/components/parameters/NetworkQuery'
+        - $ref: '#/components/parameters/DecimalFormatHeader'
       responses:
         '200':
           description: List of pools
@@ -425,11 +482,17 @@ paths:
                         asset_b:
                           type: string
                         reserve_a:
-                          type: number
+                          oneOf:
+                            - type: number
+                            - type: string
                         reserve_b:
-                          type: number
+                          oneOf:
+                            - type: number
+                            - type: string
                         spot_price:
-                          type: number
+                          oneOf:
+                            - type: number
+                            - type: string
                         fee_bp:
                           type: integer
                         timestamp:
@@ -467,12 +530,26 @@ paths:
         - name: from
           in: query
           required: false
+          description: >-
+            Start of the time window (inclusive). Together with `to` this defines
+            a half-open interval [from, to): samples whose timestamp is exactly
+            `from` are included, samples whose timestamp is exactly `to` are
+            excluded. This means two adjacent windows [T0, T1) and [T1, T2)
+            share no boundary — a sample landing exactly on T1 appears in
+            exactly one of the two windows.
           schema:
             type: string
             format: date-time
         - name: to
           in: query
           required: false
+          description: >-
+            End of the time window (exclusive). Together with `from` this
+            defines a half-open interval [from, to): samples whose timestamp is
+            exactly `to` are excluded, samples whose timestamp is exactly
+            `from` are included. This means two adjacent windows [T0, T1) and
+            [T1, T2) share no boundary — a sample landing exactly on T1 appears
+            in exactly one of the two windows.
           schema:
             type: string
             format: date-time
@@ -547,12 +624,26 @@ paths:
         - name: from
           in: query
           required: false
+          description: >-
+            Start of the time window (inclusive). Together with `to` this defines
+            a half-open interval [from, to): samples whose timestamp is exactly
+            `from` are included, samples whose timestamp is exactly `to` are
+            excluded. This means two adjacent windows [T0, T1) and [T1, T2)
+            share no boundary — a sample landing exactly on T1 appears in
+            exactly one of the two windows.
           schema:
             type: string
             format: date-time
         - name: to
           in: query
           required: false
+          description: >-
+            End of the time window (exclusive). Together with `from` this
+            defines a half-open interval [from, to): samples whose timestamp is
+            exactly `to` are excluded, samples whose timestamp is exactly
+            `from` are included. This means two adjacent windows [T0, T1) and
+            [T1, T2) share no boundary — a sample landing exactly on T1 appears
+            in exactly one of the two windows.
           schema:
             type: string
             format: date-time
@@ -714,6 +805,7 @@ paths:
             type: number
             default: 1000
         - $ref: '#/components/parameters/NetworkQuery'
+        - $ref: '#/components/parameters/DecimalFormatHeader'
       responses:
         '200':
           description: Depth ladder
@@ -778,6 +870,7 @@ paths:
             maximum: 0.1
             default: 0.01
         - $ref: '#/components/parameters/NetworkQuery'
+        - $ref: '#/components/parameters/DecimalFormatHeader'
       responses:
         '200':
           description: Book levels with per-venue provenance; unavailable venues are identified in the response.
@@ -894,6 +987,7 @@ paths:
             enum: [iqr, modified_zscore]
             default: iqr
         - $ref: '#/components/parameters/NetworkQuery'
+        - $ref: '#/components/parameters/DecimalFormatHeader'
       responses:
         '200':
           description: TWAP result
@@ -953,6 +1047,8 @@ paths:
             type: string
             enum: [iqr, modified_zscore]
             default: iqr
+        - $ref: '#/components/parameters/DecimalFormatHeader'
+        - $ref: '#/components/parameters/NetworkQuery'
       responses:
         '200':
           description: VWAP result
@@ -1069,6 +1165,42 @@ paths:
               schema:
                 $ref: '#/components/schemas/InternalErrorResponse'
 
+  /rates/{asset}:
+    get:
+      operationId: getLendingRates
+      summary: Get supply and borrow rates for an asset across lending venues
+      description: >-
+        Answers what `asset` earns when supplied and costs to borrow at every
+        lending venue Lens ingests, one entry per venue sorted best-first
+        (highest supply rate first). Each entry names the venue, the source it
+        was read from and the specific pool/market it came from, so a rate is
+        always attributable and venues are never silently averaged.
+
+        An asset with no lending market returns an empty `venues` list with a
+        200, not a 404.
+      security: []
+      parameters:
+        - name: asset
+          in: path
+          required: true
+          schema:
+            type: string
+          example: USDC
+        - $ref: '#/components/parameters/NetworkQuery'
+      responses:
+        '200':
+          description: Per-venue lending rates, best-first (empty when no market)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RatesResponse'
+        '400':
+          description: Invalid network
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          description: Rate lookup failed
+
   /compare/{asset}:
     get:
       operationId: compareAsset
@@ -1135,6 +1267,11 @@ paths:
         - name: liquidity
           in: query
           required: false
+          description: >-
+            Filter for pairs with total AMM pool liquidity greater than or equal to this value.
+            Liquidity is defined as the sum across all active AMM pools for the pair of
+            (reserve_a * spot_price + reserve_b), valued in the quote asset (asset_b) at the
+            latest snapshot spot price.
           schema:
             type: number
         - name: sortBy
@@ -1401,6 +1538,37 @@ paths:
         '429':
           $ref: '#/components/responses/TooManyRequests'
 
+  /discovery/search:
+    get:
+      operationId: searchDiscoveryResources
+      summary: Natural language search with ranking and quality evaluation for discoverable resources
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 20
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Search results with relevance ranking and metadata quality
+          content:
+            application/json:
+              schema:
+                type: object
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
   /webhooks:
     post:
       operationId: createWebhook
@@ -1660,6 +1828,21 @@ components:
         `Authorization: Bearer <key>`.
 
   parameters:
+    DecimalFormatHeader:
+      name: X-Decimal-Format
+      in: header
+      required: false
+      description: >-
+        Formatting for decimal quantities (prices, volumes, reserves).
+        Set to `string` to serialize high-precision `Decimal(36,18)`
+        quantities as exact strings, preventing IEEE-754 floating-point
+        precision loss. Defaults to `number`. Can also be negotiated via
+        `Accept: application/json; decimals=strings` or query parameter `?decimals=strings`.
+      schema:
+        type: string
+        enum: [number, string]
+        default: number
+
     NetworkQuery:
       name: network
       in: query
@@ -2125,30 +2308,52 @@ components:
         pairKey:
           type: string
         price:
-          type: number
+          oneOf:
+            - type: number
+            - type: string
         sdexPrice:
-          type: number
+          oneOf:
+            - type: number
+            - type: string
         ammPrice:
-          type: number
+          oneOf:
+            - type: number
+            - type: string
         bestRoute:
           type: string
           enum: [SDEX, AMM, SPLIT, UNKNOWN]
         volume24h:
-          type: number
+          oneOf:
+            - type: number
+            - type: string
         sdexVolume24h:
-          type: number
+          oneOf:
+            - type: number
+            - type: string
         ammVolume24h:
-          type: number
+          oneOf:
+            - type: number
+            - type: string
         vwap1m:
-          type: number
+          oneOf:
+            - type: number
+            - type: string
         vwap5m:
-          type: number
+          oneOf:
+            - type: number
+            - type: string
         vwap1h:
-          type: number
+          oneOf:
+            - type: number
+            - type: string
         vwap24h:
-          type: number
+          oneOf:
+            - type: number
+            - type: string
         priceChange24h:
-          type: number
+          oneOf:
+            - type: number
+            - type: string
         lastUpdated:
           type: string
           format: date-time
@@ -2253,13 +2458,21 @@ components:
           type: string
           enum: [SDEX, AMM, SPLIT, MULTI_HOP, UNKNOWN]
         sdexPrice:
-          type: number
+          oneOf:
+            - type: number
+            - type: string
         ammPrice:
-          type: number
+          oneOf:
+            - type: number
+            - type: string
         estimatedOutput:
-          type: number
+          oneOf:
+            - type: number
+            - type: string
         slippagePct:
-          type: number
+          oneOf:
+            - type: number
+            - type: string
         recommendation:
           type: string
         network:
@@ -2283,28 +2496,44 @@ components:
         window:
           type: string
         vwap:
-          type: number
+          oneOf:
+            - type: number
+            - type: string
         sdexVwap:
-          type: number
+          oneOf:
+            - type: number
+            - type: string
           nullable: true
         ammVwap:
-          type: number
+          oneOf:
+            - type: number
+            - type: string
           nullable: true
         volume:
-          type: number
+          oneOf:
+            - type: number
+            - type: string
         tradeCount:
           type: integer
         open:
-          type: number
+          oneOf:
+            - type: number
+            - type: string
           nullable: true
         close:
-          type: number
+          oneOf:
+            - type: number
+            - type: string
           nullable: true
         high:
-          type: number
+          oneOf:
+            - type: number
+            - type: string
           nullable: true
         low:
-          type: number
+          oneOf:
+            - type: number
+            - type: string
           nullable: true
 
     PriceLevel:
@@ -2313,9 +2542,13 @@ components:
       additionalProperties: false
       properties:
         price:
-          type: number
+          oneOf:
+            - type: number
+            - type: string
         size:
-          type: number
+          oneOf:
+            - type: number
+            - type: string
 
     DepthResponse:
       type: object
@@ -2329,11 +2562,17 @@ components:
         pairKey:
           type: string
         spotPrice:
-          type: number
+          oneOf:
+            - type: number
+            - type: string
         executionPrice:
-          type: number
+          oneOf:
+            - type: number
+            - type: string
         slippagePct:
-          type: number
+          oneOf:
+            - type: number
+            - type: string
         asks:
           type: array
           items:
@@ -2352,13 +2591,19 @@ components:
       additionalProperties: false
       properties:
         price:
-          type: number
+          oneOf:
+            - type: number
+            - type: string
           description: Quote-asset units per base-asset unit.
         size:
-          type: number
+          oneOf:
+            - type: number
+            - type: string
           description: Base-asset size at this level.
         cumulativeSize:
-          type: number
+          oneOf:
+            - type: number
+            - type: string
           description: Base-asset size from the best price through this level, independently for asks and bids.
         venues:
           type: array
@@ -2515,7 +2760,9 @@ components:
           type: string
           enum: [testnet, mainnet]
         twap:
-          type: number
+          oneOf:
+            - type: number
+            - type: string
         windowMinutes:
           type: integer
         sampleIntervalSeconds:
@@ -2536,7 +2783,7 @@ components:
 
     VwapResponse:
       type: object
-      required: [assetA, assetB, pairKey, vwap, windowMinutes, source, startTime, endTime, sampleCount, volumeTotal, outlierRejected, filterMethod]
+      required: [assetA, assetB, pairKey, network, vwap, windowMinutes, source, startTime, endTime, sampleCount, volumeTotal, outlierRejected, filterMethod]
       additionalProperties: false
       properties:
         assetA:
@@ -2545,8 +2792,13 @@ components:
           type: string
         pairKey:
           type: string
+        network:
+          type: string
+          enum: [testnet, mainnet]
         vwap:
-          type: number
+          oneOf:
+            - type: number
+            - type: string
         windowMinutes:
           type: integer
         source:
@@ -2560,7 +2812,9 @@ components:
         sampleCount:
           type: integer
         volumeTotal:
-          type: number
+          oneOf:
+            - type: number
+            - type: string
         outlierRejected:
           type: integer
         filterMethod:
@@ -2706,6 +2960,64 @@ components:
           allOf:
             - $ref: '#/components/schemas/SpreadVenue'
 
+    RateVenue:
+      type: object
+      required: [venue, source, pool, poolName, supplyRate, borrowRate, ledger, updatedAt]
+      additionalProperties: false
+      properties:
+        venue:
+          type: string
+          description: Lending venue the rate was read from (e.g. "blend").
+        source:
+          type: string
+          description: Distinct source tag stored on the row.
+        pool:
+          type: string
+          description: Pool / market contract id the rate came from, never elided.
+        poolName:
+          type: string
+          nullable: true
+          description: Human-readable pool name, when the venue publishes one.
+        supplyRate:
+          type: number
+          description: APY earned by supplying the asset, as a fraction (0.05 == 5%).
+        borrowRate:
+          type: number
+          description: APY charged to borrow the asset, as a fraction (0.07 == 7%).
+        ledger:
+          type: integer
+        updatedAt:
+          type: string
+          format: date-time
+
+    RatesResponse:
+      type: object
+      required: [asset, network, venues, best, count, computedAt]
+      additionalProperties: false
+      properties:
+        asset:
+          type: string
+        network:
+          type: string
+          enum: [testnet, mainnet]
+        venues:
+          type: array
+          description: >-
+            One entry per venue, sorted best-first (highest supply rate). Empty
+            when no venue lists the asset.
+          items:
+            $ref: '#/components/schemas/RateVenue'
+        best:
+          nullable: true
+          description: The highest-supply venue, or null when nothing lends the asset.
+          allOf:
+            - $ref: '#/components/schemas/RateVenue'
+        count:
+          type: integer
+        computedAt:
+          type: string
+          format: date-time
+
     CompareResponse:
       type: object
       required: [asset, network, lens, reflector, deviationPct, status, fetchedAt, oracles]
@@ -2773,12 +3085,25 @@ components:
           type: number
         liquidity:
           type: number
+          description: >-
+            Total liquidity across all active AMM pools for this pair on the network,
+            computed as sum(reserve_a * spot_price + reserve_b), valued in the quote
+            asset (asset_b) at each pool's latest snapshot spot price.
+        liquidity_unit:
+          type: string
+          description: >-
+            The asset symbol/identifier that liquidity is denominated in, corresponding
+            to the counter/quote asset (asset_b) of the pair (the asset after the slash in pair_key).
 
     ScreenerResponse:
       type: object
       required: [data, nextCursor, hasMore, total]
       additionalProperties: false
       properties:
+        network:
+          type: string
+          enum: [testnet, mainnet]
+          description: The network answered for.
         data:
           type: array
           items:

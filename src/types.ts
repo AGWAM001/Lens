@@ -17,18 +17,18 @@ export interface AggregatedPrice {
   assetA: string
   assetB: string
   pairKey: string
-  price: number
-  sdexPrice: number
-  ammPrice: number
+  price: number | string
+  sdexPrice: number | string
+  ammPrice: number | string
   bestRoute: 'SDEX' | 'AMM' | 'SPLIT' | 'UNKNOWN'
-  volume24h: number
-  sdexVolume24h: number
-  ammVolume24h: number
-  vwap1m: number
-  vwap5m: number
-  vwap1h: number
-  vwap24h: number
-  priceChange24h: number
+  volume24h: number | string
+  sdexVolume24h: number | string
+  ammVolume24h: number | string
+  vwap1m: number | string
+  vwap5m: number | string
+  vwap1h: number | string
+  vwap24h: number | string
+  priceChange24h: number | string
   lastUpdated: Date
   sources: number
   confidence: 'high' | 'medium' | 'low' | 'unknown'

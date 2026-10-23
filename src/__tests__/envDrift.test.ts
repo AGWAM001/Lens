@@ -40,6 +40,10 @@ export const UNDOCUMENTED_ENV_ALLOW_LIST: Record<string, string> = {
     'Optional per-network override for polling interval; shared fallback SOROSWAP_POLL_INTERVAL_MS is documented in .env.example.',
   SOROSWAP_POLL_INTERVAL_MS_MAINNET:
     'Optional per-network override for polling interval; shared fallback SOROSWAP_POLL_INTERVAL_MS is documented in .env.example.',
+  DEFINDEX_POLL_INTERVAL_MS_TESTNET:
+    'Optional per-network override for polling interval; shared fallback DEFINDEX_POLL_INTERVAL_MS is documented in .env.example.',
+  DEFINDEX_POLL_INTERVAL_MS_MAINNET:
+    'Optional per-network override for polling interval; shared fallback DEFINDEX_POLL_INTERVAL_MS is documented in .env.example.',
   AQUARIUS_API_URL_TESTNET:
     'Optional per-network venue override; shared fallback AQUARIUS_API_URL is documented in .env.example.',
   AQUARIUS_API_URL_MAINNET:

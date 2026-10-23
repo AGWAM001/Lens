@@ -5,6 +5,7 @@ import { Counter } from 'prom-client';
 import { register } from '../metrics.js';
 import type { McpErrorCode } from './codes.js';
 import { parsePaidCallAllowlist } from './paidCallAllowlist.js';
+import { parseUsdToNanodollars } from './budget.js';
 
 export type PaymentOutcome = 'success' | 'failure';
 
@@ -74,6 +75,13 @@ export interface PaymentLedgerConfig {
    * Networks allowed to appear as the `network` label. Anything else is
    * `unknown`. Defaults to {@link DEFAULT_PAYMENT_METRIC_NETWORKS}.
    */
+   * an agent asks for lets one caller mint unbounded time series. The default
+   * of an empty list therefore labels every series `unknown`; pass the server's
+   * allow-listed host set to get per-host series. The durable record always keeps
+   * the real host regardless of this list.
+   */
+  metricHosts?: readonly string[];
+  /** Networks allowed to appear as the `network` label. Anything else is `unknown`. */
   metricNetworks?: readonly string[];
   now?: () => Date;
 }
@@ -287,6 +295,7 @@ export class PaymentLedger {
     this.filePath = config.filePath;
     this.metricHosts = config.metricHosts ?? [];
     this.metricNetworks = config.metricNetworks ?? DEFAULT_PAYMENT_METRIC_NETWORKS;
+    this.metricNetworks = config.metricNetworks ?? [];
     this.now = config.now ?? (() => new Date());
     this.durable = true;
     if (this.filePath) {
@@ -390,6 +399,9 @@ export class PaymentLedger {
    * cannot rule out, and how much of the trail it could not price in USD. This
    * is the measurement a cumulative ceiling should read, as distinct from the
    * worst case it reserves before a price is known.
+   * The running total of recorded spend. This is what a cumulative ceiling reads
+   * instead of guessing from a per-call maximum: `settledNanodollars` is what the
+   * ledger saw settle, and `possibleNanodollars` is what it cannot rule out.
    */
   totalSpend(): SpendSummary {
     return {
@@ -408,6 +420,7 @@ export class PaymentLedger {
     if (record.amount !== null) {
       try {
         nanodollars = usdOfferToNanodollars(record.amount);
+        nanodollars = parseUsdToNanodollars(record.amount);
       } catch {
         // Not a USD money string: an atomic-unit offer, or something a seller
         // invented. It is recorded verbatim but cannot join a USD total.
@@ -452,12 +465,14 @@ export class PaymentLedger {
     const host = this.metricHosts.includes(record.host) ? record.host : UNKNOWN_LABEL;
     const network =
       record.network !== null && this.metricNetworks.includes(record.network) ? record.network : UNKNOWN_LABEL;
+    const network = record.network !== null && this.metricNetworks.includes(record.network) ? record.network : UNKNOWN_LABEL;
 
     paymentAttemptsTotal.inc({ host, network, outcome: record.outcome });
     if (record.spend === 'settled' && record.amount !== null) {
       let nanodollars: bigint | null = null;
       try {
         nanodollars = usdOfferToNanodollars(record.amount);
+        nanodollars = parseUsdToNanodollars(record.amount);
       } catch {
         nanodollars = null;
       }
@@ -468,5 +483,17 @@ export class PaymentLedger {
     if (record.spend !== 'none' && !isUsdAmount(record.amount)) {
       paymentUnquantifiedTotal.inc({ host, network });
     }
+  }
+}
+
+function isUsdAmount(amount: string | null): boolean {
+  if (amount === null) {
+    return false;
+  }
+  try {
+    parseUsdToNanodollars(amount);
+    return true;
+  } catch {
+    return false;
   }
 }

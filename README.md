@@ -49,8 +49,10 @@ curl -X POST http://localhost:3002/graphql \
 ### MCP
 
 ```bash
-# The MCP server speaks MCP over stdin and stdout — it does not listen
-# on a port. Port 3002 is the HTTP API, which knows nothing about MCP.
+# By default the MCP server speaks over stdin and stdout and listens on no
+# port; MCP_TRANSPORT=http serves Streamable HTTP on MCP_HTTP_PORT instead
+# (see "MCP server" below). Port 3002 is the HTTP API, which knows nothing
+# about MCP either way.
 npm run mcp:server
 
 # To drive it interactively, point the inspector at that command:
@@ -205,6 +207,9 @@ The GraphQL schema is exported as a canonical Schema Definition Language (SDL) a
 ## Observability
 
 Prometheus metrics are exposed on `GET /metrics` (public, no API key required).
+The MCP server is a separate process with its own `GET /metrics` on its own
+port, and that one does require its bearer token — see
+[MCP server](#mcp-server).
 
 Alongside the ingestion and database metrics, Lens exports HTTP request,
 latency, authentication and rate-limit signals:
@@ -259,6 +264,21 @@ ingester overwrites the other's value for the same pair — which would make the
 staleness signal silently unusable. See
 [`docs/ingest-metrics.md`](docs/ingest-metrics.md) for the cardinality notes
 (`pairs x networks`) and a staleness alert.
+
+### Database Connection Pool & Shared Architecture
+
+> **Important architectural note**: The ingester loops (SDEX, AMM, Soroswap, Snapshot, Aquarius), background workers (retention, partitions), and the HTTP/GraphQL API handlers **run in a single process and share one connection pool**.
+
+Because deployments often scale across multiple instances, total database connections against Postgres equal:
+$$\text{Total Connections} = \text{Instances} \times \text{DB\_POOL\_SIZE} + \text{Superuser/Admin Headroom}$$
+
+Configure `DB_POOL_SIZE` and `DB_POOL_TIMEOUT_MS` appropriately so the aggregate across all running instances stays safely beneath PostgreSQL's `max_connections` (typically 100).
+
+Pool utilisation and exhaustion metrics are exposed on `GET /metrics`:
+- `db_pool_connections_in_use`: Number of active connections checked out.
+- `db_pool_connections_idle`: Number of idle connections ready in pool.
+- `db_pool_connections_waiting`: Requests queued waiting for an available connection.
+- `db_pool_exhaustion_errors_total`: Counter incremented whenever connection acquisition times out. Requests encountering pool exhaustion fail with an explicit `503 Service Unavailable` (`DB_POOL_EXHAUSTED`) rather than generic latency or unhandled timeouts.
 
 ### GraphQL Subscriptions (live prices)
 
@@ -321,13 +341,18 @@ const unsubscribe = client.subscribe(
 > the exact keys being indexed. Only the pair you subscribe to is delivered;
 > updates for other pairs are filtered out server-side. For full protocol handshake details and a raw WebSocket implementation, see [`docs/graphql.md`](docs/graphql.md#live-price-subscriptions-graphql-transport-ws).
 
-## MCP (Model Context Protocol)
+## MCP server
 
-Lens exposes its Bazaar catalog of x402-discoverable resources as an MCP
-server, so any MCP-compatible client or agent can discover and pay for price
-data through two tools: `bazaar_search` and `paid_call`. The server signs
-x402 payment challenges with Stellar secret keys on both `stellar:testnet`
-and `stellar:pubnet`.
+`npm run mcp:server` starts the Bazaar MCP server ([src/mcp/server.ts](src/mcp/server.ts), wired up in [examples/mcp-server/run.ts](examples/mcp-server/run.ts)). It advertises:
+
+| Tool | What it does | Spends? |
+| --- | --- | --- |
+| `bazaar_search` | Reads a Bazaar base URL's `/discovery/resources` or `/discovery/search?q=` and lists what is available. | No |
+| `paid_call` | Fetches an x402-gated URL and handles the `402 → sign → retry` loop. | **Yes — it signs with a real Stellar key** |
+| `payment_budget` | Reports the configured limits and what is left of today's budget. | No |
+| `lens_get_price` | Reads Lens's own aggregated price for a watched pair. | No |
+
+`payment_budget` appears whenever a spend budget is configured, which the example always sets, and `lens_get_price` only where the server can reach Lens's own price data. Every one of them is served over **either** transport, and the tool list, schemas and error codes are identical whichever you pick. Which transport runs is selected by configuration; **stdio is the default**, so an existing setup needs no changes.
 
 Every paid call — failed ones included — is appended to a durable audit trail and
 counted in spend metrics whose labels are bounded to the operator's allow-list, so
@@ -338,7 +363,140 @@ refused rather than made silently.
 **⚠️ Warning:** the mainnet key signs with real XLM. Read the configuration,
 spending warning, and worked example before running.
 
+The server signs with a real Stellar key, so it needs `MCP_AGENT_SECRET_KEY_TESTNET`
+and `MCP_AGENT_SECRET_KEY_MAINNET` in the environment — keep them in `.env`
+(`run.ts` loads it with `dotenv`) rather than in a shell history line or a
+client config file that gets shared. Never commit them. Optional spend
+controls: `MCP_MAX_PAYMENT_PRICE` (per call, default `$1.00`),
+`MCP_DAILY_SPEND_CEILING` (default `$10.00`) and `MCP_SPEND_STATE_FILE` — the
+running total survives a restart, because a restart does not refund what the
+previous process spent.
+
 Full documentation: [examples/mcp-server/README.md](examples/mcp-server/README.md)
+
+### stdio (default)
+
+For a client that spawns the server itself as a child process — Claude
+Desktop, Cursor, or the runnable [agent example](examples/mcp-server/agent.ts)
+(`npm run mcp:agent`, which prints discovery and a paid call end to end).
+
+```bash
+npm run mcp:server   # reads MCP_TRANSPORT=stdio, talks JSON-RPC on stdin/stdout
+```
+
+Point a client at the command — the keys come from `.env`, so nothing secret
+has to be written into client config. This is the same invocation
+[agent.ts](examples/mcp-server/agent.ts) uses:
+
+```json
+{
+  "mcpServers": {
+    "lens-bazaar": {
+      "command": "npx",
+      "args": ["tsx", "examples/mcp-server/run.ts"]
+    }
+  }
+}
+```
+
+Because the process is spawned by the client, there is no port, no token and
+no remote attack surface: whoever can spawn it can spend, so keep it to
+your own machine.
+
+### Streamable HTTP
+
+For a client that connects over the network instead of spawning a process —
+a hosted agent, a shared dev box, a container. Set `MCP_TRANSPORT=http`:
+
+```bash
+# MCP_AGENT_SECRET_KEY_TESTNET / MCP_AGENT_SECRET_KEY_MAINNET live in .env
+export MCP_TRANSPORT=http
+export MCP_HTTP_AUTH_TOKEN="$(openssl rand -hex 32)"   # required, see below
+export MCP_HTTP_HOST=127.0.0.1                   # default
+export MCP_HTTP_PORT=3003                        # default
+export MCP_HTTP_PATH=/mcp                        # default
+npm run mcp:server
+# [mcp-server] Listening at http://127.0.0.1:3003/mcp
+```
+
+**Authentication is mandatory and fails closed.** Without a non-empty
+`MCP_HTTP_AUTH_TOKEN` the process exits before it builds a signer, so an
+unauthenticated remote server with `paid_call` on its tool list can never come
+up. Every request must then carry it as a bearer token; anything else gets a
+JSON-RPC error with `ERR_UNAUTHORIZED` and is rejected before the payment path
+is reached:
+
+```bash
+curl -sS -X POST http://127.0.0.1:3003/mcp \
+  -H "Authorization: Bearer $MCP_HTTP_AUTH_TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+A client connects the same way:
+
+```ts
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+
+const transport = new StreamableHTTPClientTransport(new URL('http://127.0.0.1:3003/mcp'), {
+  requestInit: { headers: { authorization: `Bearer ${process.env.MCP_HTTP_AUTH_TOKEN}` } },
+});
+
+const client = new Client({ name: 'lens-agent', version: '1.0.0' }, { capabilities: {} });
+await client.connect(transport);
+```
+
+Notes for this transport:
+
+- It binds `127.0.0.1` unless you set `MCP_HTTP_HOST` deliberately. Do not
+  expose it on a routable address over plain HTTP: the bearer token and every
+  paid result cross the wire, so terminate TLS in a reverse proxy and forward
+  to loopback.
+- The token is a credential — the bearer who holds it can spend. Keep it out
+  of URLs, logs, and shell history; rotate it if it leaks.
+- Requests are stateless: no `Mcp-Session-Id` is issued and each `POST` is
+  served by a fresh transport, so a client cannot hold a session open across
+  requests. Every MCP message must be a `POST` (`GET` returns `405`, which
+  spec-compliant clients treat as "no server-initiated stream"). Bodies are
+  capped at 1 MiB.
+- The daily spend ceiling is shared across everything this process serves, so
+  one HTTP client cannot spend past a budget another one already used up.
+
+#### Payment spend metrics
+
+What the agent spent is scrapeable from the same listener, at `GET /metrics`,
+guarded by the same bearer token — it is operator data about a key that moves
+money, so there is no anonymous scrape:
+
+```bash
+curl -sS http://127.0.0.1:3003/metrics \
+  -H "Authorization: Bearer $MCP_HTTP_AUTH_TOKEN"
+```
+
+| Metric | Type | Labels |
+| --- | --- | --- |
+| `mcp_payment_attempts_total` | Counter | `host`, `network`, `outcome` |
+| `mcp_payment_amount_usd_total` | Counter | `host`, `network` |
+| `mcp_payment_unquantified_total` | Counter | `host`, `network` |
+
+A refused payment is an attempt (`outcome="failure"`) and adds nothing to
+`mcp_payment_amount_usd_total`. `host` may only be a value from
+`MCP_METRIC_HOSTS` and `network` only one from `MCP_METRIC_NETWORKS` (default
+`stellar:testnet,stellar:pubnet` — the networks this server signs for):
+Prometheus series are permanent, so anything outside an allow-list is reported
+as `unknown` instead of letting one caller mint a time series per URL an agent
+tries. Amounts that are not a USD money string cannot join the USD sum, so they
+are counted in `mcp_payment_unquantified_total` rather than dropped silently.
+Per-payment detail — full URL, transaction hash, asset, error code — is in the
+`MCP_PAYMENT_LEDGER_FILE` audit trail, which keeps the real host whatever the
+allow-list says.
+
+`MCP_HTTP_PATH` cannot be `/metrics`; the process exits at boot rather than
+answering MCP and Prometheus on one path. Under **stdio** there is no listener
+to scrape, so read the running total from the `payment_budget` tool or the
+audit file.
 
 ### WebSocket backpressure
 
@@ -467,6 +625,43 @@ curl -X POST http://localhost:3002/graphql \
 Or interactively at [http://localhost:3002/graphiql](http://localhost:3002/graphiql).
 
 > **Note:** the current `GATED_ROUTES` map in [`src/middleware/x402.ts`](src/middleware/x402.ts) gates `/price`, `/pools`, and `/candles` only — `/graphql` is not gated. If you intend price data from GraphQL to require the same payment as REST, extend `GATED_ROUTES` (or add a per-resolver guard).
+
+## TypeScript Client
+
+A typed TypeScript client is generated from [`openapi.yaml`](openapi.yaml) with
+[`openapi-typescript`](https://github.com/openapi-ts/openapi-typescript) and
+[`openapi-fetch`](https://github.com/openapi-ts/openapi-typescript/tree/main/packages/openapi-fetch).
+It is committed at [`clients/typescript`](clients/typescript) — **no type is
+hand-written**, so a change to the spec is a change to the client.
+
+```bash
+# Regenerate clients/typescript/src/schema.d.ts from the spec
+npm run client:gen
+
+# Type-check the generated client
+npm run client:typecheck
+```
+
+CI runs `npm run client:gen` and fails if the committed client differs from the
+regenerated output, so the client can never drift from `openapi.yaml`.
+
+```typescript
+import { createLensClient } from "./clients/typescript/src/index.js";
+
+const client = createLensClient({ baseUrl: "http://localhost:3002" });
+
+const { data, error } = await client.GET("/price/{assetA}/{assetB}", {
+  params: { path: { assetA: "XLM", assetB: "USDC" } },
+});
+if (error) throw new Error(`request failed: ${error}`);
+
+// `data` is `AggregatedPrice`, derived from the spec.
+console.log(`XLM/USDC vwap1h: ${data?.vwap1h}`);
+```
+
+A runnable version lives in
+[`clients/typescript/src/example.ts`](clients/typescript/src/example.ts); run it
+against a local server with `npx tsx clients/typescript/src/example.ts`.
 
 ## Documentation
 Detailed system design and data flow diagrams can be found in the [Architecture Overview](docs/architecture.md).

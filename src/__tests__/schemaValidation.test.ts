@@ -119,10 +119,44 @@ describe('REST response schema validation', () => {
     expect(res.statusCode).toBe(200)
 
     // The serialized body must independently satisfy the published schema.
-    const ajv = new Ajv({ allErrors: true })
+    const ajv = new Ajv({ allErrors: true, allowUnionTypes: true })
     const validate = ajv.compile(priceResponseSchema as object)
     const ok = validate(res.json())
     // Surface a readable diff if the body ever drifts from the schema.
+    expect(ok, ajv.errorsText(validate.errors)).toBe(true)
+  })
+
+  it('returns 200 and a body that matches the declared /price schema when string decimals are requested', async () => {
+    mockGetAggregatedPrice.mockResolvedValue({
+      ...validAggregate(),
+      price: '0.123456789012345678',
+      sdexPrice: '0.123456789012345678',
+      ammPrice: '0.123456789012345678',
+      volume24h: '150.000000000000000000',
+      sdexVolume24h: '100.000000000000000000',
+      ammVolume24h: '50.000000000000000000',
+      vwap1m: '0.123456789012345678',
+      vwap5m: '0.123456789012345678',
+      vwap1h: '0.123456789012345678',
+      vwap24h: '0.123456789012345678',
+      priceChange24h: '1.100000000000000000',
+    })
+
+    const app = await buildApp()
+    const res = await app.inject({
+      method: 'GET',
+      url: '/price/XLM/USDC',
+      headers: { 'x-decimal-format': 'string' },
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(res.headers['x-decimal-format']).toBe('string')
+    const body = res.json()
+    expect(body.price).toBe('0.123456789012345678')
+
+    const ajv = new Ajv({ allErrors: true, allowUnionTypes: true })
+    const validate = ajv.compile(priceResponseSchema as object)
+    const ok = validate(body)
     expect(ok, ajv.errorsText(validate.errors)).toBe(true)
   })
 

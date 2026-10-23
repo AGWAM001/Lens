@@ -76,12 +76,12 @@ describe('Live Spec Validator', () => {
     })
 
     it('detects a deliberate schema mismatch: invalid field type', () => {
-      // In AggregatedPrice, 'price' must be a number, but we deliberately pass a string
+      // In AggregatedPrice, 'price' allows number or string, so we deliberately pass a boolean
       const mismatchedPrice = {
         assetA: 'XLM',
         assetB: 'USDC',
         pairKey: 'XLM/USDC',
-        price: 'not-a-number-string',
+        price: true,
         sdexPrice: 0.12,
         ammPrice: 0.12,
         bestRoute: 'SDEX',

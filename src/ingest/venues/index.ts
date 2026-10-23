@@ -2,6 +2,8 @@ import { sdexAdapter } from './sdex'
 import { ammAdapter } from './amm'
 import { soroswapAdapter } from './soroswap'
 import { aquariusAdapter } from './aquarius'
+import { defindexAdapter } from './defindex'
+import { phoenixAdapter } from './phoenix'
 import type { VenueAdapter } from './types'
 
 export * from './types'
@@ -10,6 +12,8 @@ export { sdexAdapter, startSDEXIngester } from './sdex'
 export { ammAdapter, startAMMIngester } from './amm'
 export { soroswapAdapter, startSoroswapIngester } from './soroswap'
 export { aquariusAdapter, startAquariusIngester } from './aquarius'
+export { defindexAdapter, startDeFindexIngester } from './defindex'
+export { phoenixAdapter, startPhoenixIngester } from './phoenix'
 
 /**
  * Registry of all available venue adapters.
@@ -21,4 +25,6 @@ export const venueAdapters: VenueAdapter[] = [
   ammAdapter,
   soroswapAdapter,
   aquariusAdapter,
+  defindexAdapter,
+  phoenixAdapter,
 ]

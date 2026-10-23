@@ -1,9 +1,11 @@
 import 'dotenv/config'
 import { execSync } from 'child_process'
+import Fastify from 'fastify'
 
 if (!process.env.DIRECT_DATABASE_URL && process.env.DATABASE_URL) {
   process.env.DIRECT_DATABASE_URL = process.env.DATABASE_URL
 }
+import { installProcessErrorHandlers } from './processErrorHandlers'
 import { config, getNetworkConfig, type NetworkName } from './config'
 import { getEnabledNetworks } from './network/enabledNetworks'
 import { createLogger } from './logger'
@@ -30,6 +32,12 @@ import { markBootComplete } from './health'
 import { startSep40Publisher } from './publish/publisher'
 
 const log = createLogger('startup')
+
+// The house logger, not a throwaway Fastify instance built only to borrow one:
+// buildLogger pipes every line through redactSecrets, and a fatal handler that
+// prints an unredacted error is the one place that matters most — a crash log
+// is exactly where a connection string or an API key tends to surface.
+installProcessErrorHandlers(log)
 
 async function main() {
   // ── Ensure DB schema is up-to-date ────────────────────────────────────────

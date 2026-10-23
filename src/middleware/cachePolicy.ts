@@ -160,6 +160,7 @@ export function cachePolicyFor(
     case '/volumes/:asset':
     case '/screener':
     case '/basket':
+    case '/tvl':
       policy = 'public, max-age=120'
       break
 

@@ -10,6 +10,9 @@ export const MCP_ERROR_CODES = {
   ERR_PAIR_NOT_WATCHED: 'ERR_PAIR_NOT_WATCHED',
   ERR_ASSET_ISSUER_MISMATCH: 'ERR_ASSET_ISSUER_MISMATCH',
   ERR_BUDGET_EXCEEDED: 'ERR_BUDGET_EXCEEDED',
+  // The Streamable HTTP transport refuses a request whose bearer token is
+  // missing or wrong, before any tool runs.
+  ERR_UNAUTHORIZED: 'ERR_UNAUTHORIZED',
   // A request that succeeded upstream and was still refused: the body came back
   // too large to hand to an agent without consuming its whole context. Not a
   // reachability answer (ERR_SERVICE_UNREACHABLE) and not a refusal to ask
@@ -23,6 +26,7 @@ export const MCP_ERROR_CODES = {
   //                        paid_call allow-list — #487
   ERR_URL_BLOCKED: 'ERR_URL_BLOCKED',
   ERR_HOST_NOT_ALLOWED: 'ERR_HOST_NOT_ALLOWED',
+  ERR_UNKNOWN_TOOL: 'ERR_UNKNOWN_TOOL',
   ERR_INTERNAL_FAILURE: 'ERR_INTERNAL_FAILURE'
 } as const;
 

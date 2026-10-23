@@ -1,8 +1,12 @@
+import { redis } from '../redis'
+import { createLogger } from '../logger'
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { createHash, timingSafeEqual } from 'crypto'
 import fp from 'fastify-plugin'
 import { prisma } from '../db'
 import { api_key_auth_failures_total } from '../metrics'
+
+const log = createLogger('auth')
 
 type ApiKeyAuthFailureReason = 'missing' | 'malformed' | 'unknown' | 'revoked' | 'expired' | 'insufficient_scope'
 
@@ -109,6 +113,71 @@ export function isAdminAuthorized(req: FastifyRequest): boolean {
 }
 
 /**
+ * Seconds remaining until UTC midnight.
+ * Used for both Redis TTL and the HTTP Retry-After response header.
+ */
+export function getSecondsUntilUtcMidnight(now = new Date()): number {
+  const tomorrow = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1))
+  return Math.max(1, Math.floor((tomorrow.getTime() - now.getTime()) / 1000))
+}
+
+// In-memory fallback daily request tracker (keyed by apiKeyId), used if Redis is unreachable or in tests
+const inMemoryDailyUsage = new Map<string, { count: number; date: string }>()
+
+/**
+ * Checks and increments the daily request count for an authenticated API key.
+ *
+ * Uses Redis (ratelimit:day:{apiKeyId}:{YYYY-MM-DD}) with an expiration set to
+ * the remaining seconds until UTC midnight.
+ *
+ * On Redis being unreachable, allow the request and log it — do not fail closed.
+ * Unlike x402 metering which guards an actual payment and must fail closed,
+ * a rate limiter failing closed would turn a cache/Redis outage into a total API
+ * outage for every authenticated caller, which is a far worse trade.
+ */
+export async function checkAndIncrementDailyUsage(
+  apiKeyId: string,
+  ratePerDay: number,
+): Promise<{ allowed: boolean; remaining: number }> {
+  const now = new Date()
+  const today = now.toISOString().slice(0, 10)
+  const redisKey = `ratelimit:day:${apiKeyId}:${today}`
+
+  try {
+    if (redis && redis.status === 'ready') {
+      const count = await redis.incr(redisKey)
+      if (count === 1) {
+        const ttl = getSecondsUntilUtcMidnight(now)
+        await redis.expire(redisKey, ttl)
+      }
+      if (count > ratePerDay) {
+        return { allowed: false, remaining: 0 }
+      }
+      return { allowed: true, remaining: Math.max(0, ratePerDay - count) }
+    }
+  } catch (err) {
+    // Fail-open: allow request and log warning
+    log.warn({ err, apiKeyId }, 'redis rate limiter unreachable; failing open')
+  }
+
+  // In-memory fallback when Redis is offline or during testing
+  const entry = inMemoryDailyUsage.get(apiKeyId)
+  if (!entry || entry.date !== today) {
+    inMemoryDailyUsage.set(apiKeyId, { count: 1, date: today })
+    return { allowed: true, remaining: Math.max(0, ratePerDay - 1) }
+  }
+  if (entry.count >= ratePerDay) {
+    return { allowed: false, remaining: 0 }
+  }
+  entry.count++
+  return { allowed: true, remaining: Math.max(0, ratePerDay - entry.count) }
+}
+
+export function resetDailyUsage(): void {
+  inMemoryDailyUsage.clear()
+}
+
+/**
  * Fastify plugin that authenticates requests via `Authorization: Bearer <key>`.
  *
  * A request without a valid, non-revoked, unexpired key gets 401. Valid requests have
@@ -191,6 +260,23 @@ async function apiKeyAuthPlugin(app: FastifyInstance) {
           message: `Missing required scope: ${scope}`,
           requiredScope: scope,
           scope,
+        })
+      }
+    }
+
+    // The per-minute limiter cannot express a daily cap, so this runs alongside it
+    if (keyContext.ratePerDay && keyContext.ratePerDay > 0) {
+      const { allowed, remaining } = await checkAndIncrementDailyUsage(keyContext.id, keyContext.ratePerDay)
+      const retryAfterSec = getSecondsUntilUtcMidnight()
+      reply.header('X-RateLimit-Limit-Day', keyContext.ratePerDay)
+      reply.header('X-RateLimit-Remaining-Day', remaining)
+      if (!allowed) {
+        reply.header('Retry-After', retryAfterSec)
+        return reply.status(429).send({
+          statusCode: 429,
+          error: 'Too Many Requests',
+          message: `Daily rate limit of ${keyContext.ratePerDay} requests exceeded for this API key. Quota resets at UTC midnight.`,
+          retryAfter: retryAfterSec,
         })
       }
     }

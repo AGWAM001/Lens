@@ -14,7 +14,12 @@ vi.mock('../config', async (importOriginal) => {
   return {
     ...actual,
     activeNetwork: 'testnet',
+    // Spread the real config first, then override only the venues this test
+    // pins. Enumerating them exhaustively meant every newly registered adapter
+    // turned GET /venues/registry into a 500: `isEnabled` reads its own key,
+    // and a key this mock had never heard of is `undefined.enabled`.
     getNetworkConfig: (network: string) => ({
+      ...actual.getNetworkConfig(network as Parameters<typeof actual.getNetworkConfig>[0]),
       soroswap: { enabled: network === 'mainnet' },
       aquarius: { enabled: network === 'mainnet' },
       oracle: { enabled: false },

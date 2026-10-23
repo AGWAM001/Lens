@@ -1,6 +1,14 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { BazaarMcpServer, SERVER_VERSION, SERVER_NAME, type McpServerConfig } from '../src/mcp/server';
 import { CallToolRequestSchema, ListToolsRequestSchema, ToolSchema } from '@modelcontextprotocol/sdk/types.js';
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest';
+import { BazaarMcpServer, SERVER_VERSION, SERVER_NAME } from '../src/mcp/server';
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema,
+  ListToolsResultSchema,
+  ToolSchema,
+} from '@modelcontextprotocol/sdk/types.js';
 import { PAID_CALL_HTTP_METHODS } from '../src/mcp/toolSchemas';
 import { readFileSync } from 'fs';
 import { dirname, join } from 'path';
@@ -137,6 +145,55 @@ describe('BazaarMcpServer', () => {
     const parsedText = JSON.parse(response.content[0].text);
     expect(parsedText.success).toBe(true);
   });
+
+  it('should return structured ERR_UNKNOWN_TOOL error with valid tool names when unknown tool is called', async () => {
+    const server = new BazaarMcpServer({ fetchWithPayment: vi.fn() });
+    let handler: any = null;
+    (server as any).server.setRequestHandler = (schema: any, fn: any) => {
+      if (schema === CallToolRequestSchema) {
+        handler = fn;
+      }
+    };
+    (server as any).setupHandlers();
+
+    const response = await handler({
+      params: {
+        name: 'non_existent_tool_123',
+        arguments: {}
+      }
+    });
+
+    expect(response.isError).toBe(true);
+    const content = JSON.parse(response.content[0].text);
+    expect(content.code).toBe('ERR_UNKNOWN_TOOL');
+    expect(content.reason).toContain("Unknown tool 'non_existent_tool_123'");
+    expect(content.reason).toContain('bazaar_search, paid_call');
+  });
+
+  it('should bound and sanitize unknown tool name in error response', async () => {
+    const server = new BazaarMcpServer({ fetchWithPayment: vi.fn() });
+    let handler: any = null;
+    (server as any).server.setRequestHandler = (schema: any, fn: any) => {
+      if (schema === CallToolRequestSchema) {
+        handler = fn;
+      }
+    };
+    (server as any).setupHandlers();
+
+    const overlyLongName = 'a'.repeat(200);
+    const response = await handler({
+      params: {
+        name: overlyLongName,
+        arguments: {}
+      }
+    });
+
+    expect(response.isError).toBe(true);
+    const content = JSON.parse(response.content[0].text);
+    expect(content.code).toBe('ERR_UNKNOWN_TOOL');
+    expect(content.reason).toContain('a'.repeat(64));
+    expect(content.reason).not.toContain('a'.repeat(65));
+  });
 });
 
 describe('BazaarMcpServer bazaar_search SSRF guard (#407)', () => {
@@ -236,6 +293,24 @@ describe('BazaarMcpServer argument validation (#411)', () => {
   }
 
   describe('advertised schema', () => {
+    it('tells the caller what each tool costs and when not to reach for it', async () => {
+      const server = new BazaarMcpServer({ paidCallAllowlist: ['example.com'] });
+      const { listHandler } = captureHandlers(server);
+      const res = await listHandler({});
+      const tools = res.tools as Array<{ name: string; description: string }>;
+
+      // A model picks a tool from its description alone. Saying bazaar_search
+      // is free and paid_call spends real funds — and naming the other tool to
+      // reach for instead — is what stops a free lookup being made as a payment.
+      const search = tools.find((t) => t.name === 'bazaar_search')
+      expect(search?.description).toContain('free')
+      expect(search?.description).toContain('paid_call')
+
+      const paid = tools.find((t) => t.name === 'paid_call')
+      expect(paid?.description).toContain('spends real funds')
+      expect(paid?.description).toContain('bazaar_search')
+    })
+
     it('advertises schemas derived from Zod definitions', async () => {
       const server = new BazaarMcpServer({ paidCallAllowlist: ['example.com'] });
       const { listHandler } = captureHandlers(server);
@@ -857,6 +932,385 @@ describe('cumulative spend budget', () => {
   })
 })
 
+// ── Discovery routing, advertised tools and the payment audit ledger ─────────
+// This branch's half of the file, restored after a merge that replaced it
+// wholesale. Main's half above covers the SSRF guard (#407), argument validation
+// (#411), discovery upstream failures (#349) and paid-call classification; what
+// follows covers where discovery routes to, what the server advertises, and what
+// the PaymentLedger this branch adds actually records.
+import { register } from '../src/metrics';
+import { PaymentLedger } from '../src/mcp/ledger';
+
+/**
+ * Hosts these cases are allowed to pay. The gate itself — and every way it
+ * refuses — is tested in tests/mcp-paid-call-allowlist.test.ts; naming the
+ * fixtures here just lets the cases below reach the code they are about.
+ */
+const HARNESS_PAID_CALL_ALLOWLIST = [
+  'bazaar.example',
+  'ledger-audit.test',
+  'ledger-offer.test',
+  'ledger-sum.test',
+  'ledger-metrics.test',
+  // Payable, but deliberately absent from the ledger's metricHosts below.
+  'not-allow-listed.test',
+];
+
+function createHarness(
+  fetchWithPayment: Mock = vi.fn(),
+  budget?: SpendBudget,
+  paymentLedger?: PaymentLedger,
+  bazaarFetch?: Record<string, unknown>
+) {
+  const server = new BazaarMcpServer({
+    fetchWithPayment: fetchWithPayment as unknown as typeof fetch,
+    paidCallAllowlist: HARNESS_PAID_CALL_ALLOWLIST,
+    ...(budget ? { budget } : {}),
+    ...(paymentLedger ? { paymentLedger } : {}),
+    ...(bazaarFetch ? { bazaarFetch: bazaarFetch as any } : {}),
+  });
+
+  const handlers = new Map<unknown, CapturedHandler>();
+  (server as any).server.setRequestHandler = (schema: unknown, fn: CapturedHandler) => {
+    handlers.set(schema, fn);
+  };
+  (server as any).setupHandlers();
+
+  const callTool = handlers.get(CallToolRequestSchema);
+  const listTools = handlers.get(ListToolsRequestSchema);
+  if (!callTool || !listTools) {
+    throw new Error('BazaarMcpServer did not register both a ListTools and a CallTool handler');
+  }
+
+  return {
+    fetchWithPayment,
+    ledger: server.paymentLedger,
+    listTools: () => listTools({}),
+    callTool: (name: string, args?: Record<string, unknown>) =>
+      callTool({ params: { name, arguments: args } }),
+  };
+}
+
+function jsonResponse(body: unknown) {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+/** undici's real shape for a connection-level failure. */
+function transportFailure() {
+  return new TypeError('fetch failed', {
+    cause: Object.assign(new Error('connect ECONNREFUSED 203.0.113.10:443'), {
+      code: 'ECONNREFUSED',
+    }),
+  });
+}
+
+function parseFailure(result: { success: boolean; error?: unknown }) {
+  return result.success ? '' : String(result.error);
+}
+
+describe('bazaar_search discovery routing', () => {
+  /**
+   * Drives discovery through an injected lookup and transport, so no case here
+   * touches DNS or a socket, and records every URL the server asked the node for.
+   */
+  function searchHarness(respond: () => Response | Promise<Response>) {
+    const calls: string[] = [];
+    const harness = createHarness(vi.fn(), undefined, undefined, {
+      allowedHosts: [],
+      lookup: async () => ['93.184.216.34'],
+      fetchImpl: async (input: string | URL) => {
+        calls.push(String(input));
+        return respond();
+      },
+    });
+    return { ...harness, calls };
+  }
+
+  it('lists resources from /discovery/resources when no query is given', async () => {
+    const body = {
+      resources: [
+        {
+          name: 'Mock Price Feed',
+          description: 'Price data for XLM',
+          url: 'https://bazaar.example/api/v1/price',
+        },
+      ],
+    };
+    const { callTool, calls, fetchWithPayment } = searchHarness(() => jsonResponse(body));
+
+    const response = await callTool('bazaar_search', { url: 'https://bazaar.example/' });
+
+    // A trailing slash on the base URL must not produce a double slash, and the
+    // page is bounded by default (#416).
+    expect(calls).toEqual(['https://bazaar.example/discovery/resources?limit=50&offset=0']);
+    // Discovery must never spend: only paid_call may reach the payment signer.
+    expect(fetchWithPayment).not.toHaveBeenCalled();
+    expect(response.isError).toBeFalsy();
+    expect(JSON.parse(response.content[0].text)).toEqual(body);
+  });
+
+  it('routes a query to /discovery/search with the query URL-encoded', async () => {
+    const body = {
+      resources: [{ name: 'Mock Price Feed', url: 'https://bazaar.example/api/v1/price' }],
+    };
+    const { callTool, calls } = searchHarness(() => jsonResponse(body));
+
+    const response = await callTool('bazaar_search', {
+      url: 'https://bazaar.example',
+      query: 'XLM/USD spot',
+    });
+
+    expect(calls).toEqual(['https://bazaar.example/discovery/search?q=XLM%2FUSD+spot&limit=50&offset=0']);
+    expect(response.isError).toBeFalsy();
+    expect(JSON.parse(response.content[0].text)).toEqual(body);
+  });
+
+  it('maps an empty resources array to ERR_NO_RESULTS', async () => {
+    const { callTool } = searchHarness(() => jsonResponse({ resources: [] }));
+
+    const response = await callTool('bazaar_search', { url: 'https://bazaar.example' });
+
+    expect(response.isError).toBe(true);
+    expect(JSON.parse(response.content[0].text)).toEqual({
+      isError: true,
+      code: MCP_ERROR_CODES.ERR_NO_RESULTS,
+      reason: 'No resources found',
+    });
+  });
+
+  it('maps an empty top-level array to ERR_NO_RESULTS', async () => {
+    const { callTool } = searchHarness(() => jsonResponse([]));
+
+    const response = await callTool('bazaar_search', {
+      url: 'https://bazaar.example',
+      query: 'nothing indexed yet',
+    });
+
+    expect(response.isError).toBe(true);
+    expect(JSON.parse(response.content[0].text)).toEqual({
+      isError: true,
+      code: MCP_ERROR_CODES.ERR_NO_RESULTS,
+      reason: 'No resources found',
+    });
+  });
+
+  it('maps a non-2xx response to ERR_SERVICE_UNREACHABLE with the status in the reason', async () => {
+    const { callTool } = searchHarness(() => new Response('Service Unavailable', { status: 503 }));
+
+    const response = await callTool('bazaar_search', { url: 'https://bazaar.example' });
+
+    expect(response.isError).toBe(true);
+    const payload = JSON.parse(response.content[0].text);
+    expect(payload.code).toBe(MCP_ERROR_CODES.ERR_SERVICE_UNREACHABLE);
+    expect(payload.reason).toContain('bazaar.example');
+    expect(payload.reason).toContain('503');
+  });
+
+  it('maps a 200 carrying an unparseable body to ERR_SERVICE_UNREACHABLE', async () => {
+    // A gateway can answer 200 with HTML. The content type is checked before the
+    // body is parsed, so the reason names the type instead of a parse error.
+    const { callTool } = searchHarness(
+      () =>
+        new Response('<!DOCTYPE html><html><body>502 Bad Gateway</body></html>', {
+          status: 200,
+          headers: { 'Content-Type': 'text/html' },
+        })
+    );
+
+    const response = await callTool('bazaar_search', { url: 'https://bazaar.example' });
+
+    expect(response.isError).toBe(true);
+    const payload = JSON.parse(response.content[0].text);
+    expect(payload.code).toBe(MCP_ERROR_CODES.ERR_SERVICE_UNREACHABLE);
+    expect(typeof payload.reason).toBe('string');
+    expect(payload.reason.length).toBeGreaterThan(0);
+  });
+
+  it('maps a transport failure to ERR_SERVICE_UNREACHABLE', async () => {
+    const { callTool } = searchHarness(() => Promise.reject(transportFailure()));
+
+    const response = await callTool('bazaar_search', { url: 'https://bazaar.example' });
+
+    expect(response.isError).toBe(true);
+    const payload = JSON.parse(response.content[0].text);
+    expect(payload.code).toBe(MCP_ERROR_CODES.ERR_SERVICE_UNREACHABLE);
+    expect(payload.reason).toContain('bazaar.example');
+    expect(payload.reason).toContain('fetch failed');
+  });
+});
+
+describe('paid_call upstream failures', () => {
+  const TARGET_URL = 'https://bazaar.example/api/v1/price';
+
+  it('maps a transport failure to ERR_INTERNAL_FAILURE when nothing structured survives', async () => {
+    // undici reports a connection-level failure as TypeError("fetch failed") and
+    // puts the real reason on `cause`. classifyPaidCallError reads the message and
+    // a Horizon result_codes body, not `cause`, so there is no signal to match and
+    // the message is preserved verbatim rather than guessed at.
+    const fetchWithPayment = vi.fn().mockRejectedValue(transportFailure());
+    const { callTool } = createHarness(fetchWithPayment);
+
+    const response = await callTool('paid_call', { url: TARGET_URL });
+
+    expect(response.isError).toBe(true);
+    expect(JSON.parse(response.content[0].text)).toEqual({
+      isError: true,
+      code: MCP_ERROR_CODES.ERR_INTERNAL_FAILURE,
+      reason: 'fetch failed',
+    });
+  });
+
+  it('maps an unmatched non-402 status to ERR_BAD_REQUEST', async () => {
+    const fetchWithPayment = vi
+      .fn()
+      .mockResolvedValue(new Response('Internal Server Error', { status: 500 }));
+    const { callTool } = createHarness(fetchWithPayment);
+
+    const response = await callTool('paid_call', { url: TARGET_URL });
+
+    expect(response.isError).toBe(true);
+    expect(JSON.parse(response.content[0].text)).toEqual({
+      isError: true,
+      code: MCP_ERROR_CODES.ERR_BAD_REQUEST,
+      reason: 'Request failed with status 500',
+    });
+  });
+
+  it('falls through to ERR_INTERNAL_FAILURE and keeps the upstream reason verbatim', async () => {
+    // @x402/fetch wraps whatever ExactStellarScheme threw while building the
+    // payment; this one is its asset-address validation.
+    const reason =
+      'Failed to create payment payload: Invalid Stellar asset address: not-a-stellar-asset';
+    const fetchWithPayment = vi.fn().mockRejectedValue(new Error(reason));
+    const { callTool } = createHarness(fetchWithPayment);
+
+    const response = await callTool('paid_call', { url: TARGET_URL });
+
+    expect(response.isError).toBe(true);
+    expect(JSON.parse(response.content[0].text)).toEqual({
+      isError: true,
+      code: MCP_ERROR_CODES.ERR_INTERNAL_FAILURE,
+      reason,
+    });
+  });
+
+  it('reports an unregistered scheme client as ERR_INTERNAL_FAILURE instead of blaming the network', async () => {
+    // @x402/core throws this when no client matches the payment requirements. It
+    // is local misconfiguration, yet the substring "network" in the message used
+    // to route it to ERR_SERVICE_UNREACHABLE and point the agent at the remote
+    // service instead of its own x402 config. A text match now has to be one of
+    // the signals classifyByText lists, so this stays unclassified and keeps its
+    // original message.
+    const message = 'No client registered for scheme: exact and network: stellar:pubnet';
+    const fetchWithPayment = vi.fn().mockRejectedValue(new Error(message));
+    const { callTool } = createHarness(fetchWithPayment);
+
+    const response = await callTool('paid_call', { url: TARGET_URL });
+
+    expect(response.isError).toBe(true);
+    expect(JSON.parse(response.content[0].text)).toEqual({
+      isError: true,
+      code: MCP_ERROR_CODES.ERR_INTERNAL_FAILURE,
+      reason: message,
+    });
+  });
+
+  it('cannot see a trustline failure that lives in the structured result codes', async () => {
+    // Horizon reports why a transaction failed in extras.result_codes, nested
+    // under `response.data`, and extractStructuredSignal only reads a top-level
+    // `result_codes` — so op_no_trust is lost. Plain-string fixtures hide this;
+    // the real error object does not.
+    const failure: any = new Error('Transaction submission failed');
+    failure.response = {
+      status: 400,
+      data: {
+        title: 'Transaction Failed',
+        status: 400,
+        detail: 'The transaction failed when submitted to the ledger.',
+        extras: {
+          result_codes: { transaction: 'tx_failed', operations: ['op_no_trust'] },
+        },
+      },
+    };
+    const fetchWithPayment = vi.fn().mockRejectedValue(failure);
+    const { callTool } = createHarness(fetchWithPayment);
+
+    const response = await callTool('paid_call', { url: TARGET_URL });
+
+    expect(response.isError).toBe(true);
+    const payload = JSON.parse(response.content[0].text);
+    expect(payload.code).not.toBe(MCP_ERROR_CODES.ERR_MISSING_TRUSTLINE);
+    expect(payload).toEqual({
+      isError: true,
+      code: MCP_ERROR_CODES.ERR_INTERNAL_FAILURE,
+      reason: 'Transaction submission failed',
+    });
+  });
+});
+
+describe('ListTools', () => {
+  it('advertises exactly bazaar_search and paid_call', async () => {
+    const { listTools } = createHarness();
+
+    const result = await listTools();
+
+    expect(result.tools.map((tool: any) => tool.name)).toEqual(['bazaar_search', 'paid_call']);
+  });
+
+  it('returns a result a client can parse with the SDK ListTools schema', async () => {
+    const { listTools } = createHarness();
+
+    const result = await listTools();
+    const parsed = ListToolsResultSchema.safeParse(result);
+
+    expect(parsed.success, parseFailure(parsed)).toBe(true);
+  });
+
+  it('declares a valid inputSchema for every advertised tool', async () => {
+    const { listTools } = createHarness();
+
+    const { tools } = await listTools();
+    expect(tools).toHaveLength(2);
+
+    for (const tool of tools) {
+      const parsed = ToolSchema.safeParse(tool);
+      expect(parsed.success, `${tool.name}: ${parseFailure(parsed)}`).toBe(true);
+      expect(tool.inputSchema.type, `${tool.name}: MCP requires an object inputSchema`).toBe(
+        'object'
+      );
+
+      const declared = Object.keys(tool.inputSchema.properties ?? {});
+      // Both tools read arguments.url unconditionally; an agent that omits it
+      // would otherwise get a request to the literal string "undefined".
+      expect(tool.inputSchema.required, `${tool.name}: url must be required`).toContain('url');
+      for (const required of tool.inputSchema.required ?? []) {
+        expect(declared, `${tool.name}: "${required}" is required but undeclared`).toContain(
+          required
+        );
+      }
+    }
+  });
+});
+
+describe('unknown tool', () => {
+  it('answers with a structured error carrying a code, not a raw exception', async () => {
+    const { callTool } = createHarness();
+
+    // This asserted the opposite until #415: the handler threw, the SDK
+    // surfaced a JSON-RPC transport error, and the agent got no code to branch
+    // on. The assertion is inverted rather than deleted, because the old
+    // behaviour is precisely the bug.
+    const result = await callTool('bazaar_refund');
+
+    expect(result.isError).toBe(true);
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.code).toBe('ERR_UNKNOWN_TOOL');
+    expect(payload.reason).toContain('bazaar_refund');
+  });
+});
 
 /**
  * x402 v2 payment header as the client's transport sends it: the seller's own
@@ -911,6 +1365,18 @@ describe('payment audit ledger (#406)', () => {
     if (ledgerDir) {
       rmSync(ledgerDir, { recursive: true, force: true });
       ledgerDir = undefined;
+describe('payment audit ledger', () => {
+  const PAID_URL = 'https://ledger-audit.test/api/v1/price';
+
+  let ledgerDir: string | undefined;
+
+  beforeEach(() => {
+    ledgerDir = undefined;
+  });
+
+  afterEach(() => {
+    if (ledgerDir) {
+      rmSync(ledgerDir, { recursive: true, force: true });
     }
   });
 
@@ -945,6 +1411,15 @@ describe('payment audit ledger (#406)', () => {
 
     const callTool = (name: string, args: Record<string, unknown> = {}) => handler({ params: { name, arguments: args } });
     return { server, ledger, callTool };
+   * Discovery goes through the SSRF-safe fetch, so it needs a lookup and a
+   * transport of its own to stay off DNS and sockets.
+   */
+  function discoveryStub(body: unknown = { resources: [{ name: 'Mock Price Feed', url: PAID_URL }] }) {
+    return {
+      allowedHosts: [],
+      lookup: async () => ['93.184.216.34'],
+      fetchImpl: async () => jsonResponse(body),
+    };
   }
 
   /**
@@ -954,6 +1429,7 @@ describe('payment audit ledger (#406)', () => {
    * back a plain Response with no amount on it.
    */
   function createPaidTransport(ledger: PaymentLedger, respond: () => Response, offer = PAYMENT_OFFER) {
+  function createPaidTransport(ledger: PaymentLedger, respond: () => Response) {
     const instrumented = ledger.instrumentFetch(
       vi.fn().mockImplementation(async () => respond()) as unknown as typeof fetch
     );
@@ -961,17 +1437,23 @@ describe('payment audit ledger (#406)', () => {
       instrumented(url, { ...init, headers: { 'payment-signature': base64Json(offer) } })
     );
     return createHarness(transport as unknown as any, ledger);
+      instrumented(url, { ...init, headers: { 'payment-signature': base64Json(PAYMENT_OFFER) } })
+    );
+    return createHarness(transport as unknown as Mock, undefined, ledger);
   }
 
   it('records a failed payment as an attempt', async () => {
     const fetchWithPayment = vi.fn().mockResolvedValue(new Response('Payment Required', { status: 402 }));
     const { ledger, callTool } = createHarness(fetchWithPayment);
+    const { callTool, ledger } = createHarness(fetchWithPayment);
 
     const response = await callTool('paid_call', { url: PAID_URL });
 
     expect(response.isError).toBe(true);
     expect(ledger.records()).toHaveLength(1);
     const [record] = ledger.records();
+    const [record] = ledger.records();
+    expect(ledger.records()).toHaveLength(1);
     expect(record).toMatchObject({
       url: PAID_URL,
       host: 'ledger-audit.test',
@@ -985,6 +1467,7 @@ describe('payment audit ledger (#406)', () => {
   });
 
   it('records every paid call, whatever the transport did with it', async () => {
+    const ledger = new PaymentLedger();
     const transport = vi
       .fn()
       .mockResolvedValueOnce(settledResponse({ price: '1.00' }))
@@ -994,11 +1477,14 @@ describe('payment audit ledger (#406)', () => {
       // the message; a bare "fetch failed" carries no signal and is unclassified.
       .mockRejectedValueOnce(Object.assign(new Error('connect ECONNREFUSED 203.0.113.10:443'), { code: 'ECONNREFUSED' }));
     const { ledger, callTool } = createHarness(transport);
+      .mockRejectedValueOnce(transportFailure());
+    const { callTool } = createHarness(transport, undefined, ledger);
 
     await callTool('paid_call', { url: PAID_URL, method: 'POST' });
     await callTool('paid_call', { url: PAID_URL });
     await callTool('paid_call', { url: 'https://ledger-audit.test/api/v1/other' });
     await callTool('paid_call', { url: 'https://ledger-audit.test/api/v1/throws' });
+    await callTool('paid_call', { url: PAID_URL });
 
     expect(ledger.records().map((record) => [record.outcome, record.errorCode])).toEqual([
       ['success', null],
@@ -1016,6 +1502,23 @@ describe('payment audit ledger (#406)', () => {
 
   it('records the transaction hash the seller echoes on settlement', async () => {
     const { ledger, callTool } = createHarness(vi.fn().mockResolvedValue(settledResponse({ price: '1.00' })));
+      ['failure', MCP_ERROR_CODES.ERR_INTERNAL_FAILURE],
+    ]);
+    // The method the agent asked for, carried through to the record.
+    expect(ledger.records()[0].method).toBe('POST');
+    // A call that threw before any response existed cannot be proved unspent.
+    expect(ledger.records()[3].spend).toBe('possible');
+
+    // A url the argument schema rejects is refused before anything is spent, so
+    // there is no attempt for the ledger to record — and none appears.
+    const refused = await callTool('paid_call', { url: 'not a url at all' });
+    expect(JSON.parse(refused.content[0].text).code).toBe(MCP_ERROR_CODES.ERR_BAD_REQUEST);
+    expect(ledger.records()).toHaveLength(4);
+  });
+
+  it('records the transaction hash the seller echoes on settlement', async () => {
+    const ledger = new PaymentLedger();
+    const { callTool } = createHarness(vi.fn().mockResolvedValue(settledResponse({ price: '1.00' })), undefined, ledger);
 
     await callTool('paid_call', { url: PAID_URL });
 
@@ -1047,12 +1550,14 @@ describe('payment audit ledger (#406)', () => {
   it('records no secret material from the payment header', async () => {
     const filePath = tempLedgerFile('payments.jsonl');
     const ledger = new PaymentLedger({ filePath });
+    const ledger = new PaymentLedger({ filePath: tempLedgerFile('payments.jsonl') });
     const { callTool } = createPaidTransport(ledger, () => settledResponse({ price: '1.00' }));
 
     await callTool('paid_call', { url: 'https://ledger-offer.test/api/v1/price' });
 
     const record = JSON.stringify(ledger.records()[0]);
     const file = readFileSync(filePath, 'utf8');
+    const file = readFileSync(ledgerDir + '/payments.jsonl', 'utf8');
     for (const stored of [record, file]) {
       expect(stored).not.toContain(ENVELOPE_MARKER);
       expect(stored).not.toContain('txEnvelopeXdr');
@@ -1073,6 +1578,11 @@ describe('payment audit ledger (#406)', () => {
 
     await callTool('paid_call', { url: PAID_URL });
     await callTool('paid_call', { url: PAID_URL });
+    const { callTool } = createHarness(fetchWithPayment, undefined, ledger, discoveryStub());
+
+    await callTool('paid_call', { url: PAID_URL });
+    await callTool('paid_call', { url: PAID_URL });
+    await callTool('bazaar_search', { url: 'https://ledger-audit.test' });
 
     const lines = readFileSync(filePath, 'utf8').trimEnd().split('\n').map((line) => JSON.parse(line));
     expect(lines).toHaveLength(2);
@@ -1091,6 +1601,13 @@ describe('payment audit ledger (#406)', () => {
     const { callTool } = createHarness(fetchWithPayment, ledger);
 
     expect(ledger.durable).toBe(false);
+  it('refuses to spend once the audit trail cannot be written', async () => {
+    const ledger = new PaymentLedger({ filePath: tempLedgerFile('payments.jsonl') });
+    const fetchWithPayment = vi.fn().mockResolvedValue(settledResponse({ price: '1.00' }));
+    const { callTool } = createHarness(fetchWithPayment, undefined, ledger);
+
+    // Stand in for a write that failed mid-run; the ledger marks itself not durable.
+    ledger.durable = false;
 
     const refusal = await callTool('paid_call', { url: PAID_URL });
 
@@ -1124,6 +1641,7 @@ describe('payment audit ledger (#406)', () => {
     const refusal = await callTool('paid_call', { url: PAID_URL });
     expect(JSON.parse(refusal.content[0].text).code).toBe(MCP_ERROR_CODES.ERR_INTERNAL_FAILURE);
     expect(fetchWithPayment).toHaveBeenCalledTimes(2);
+    expect(fetchWithPayment).not.toHaveBeenCalled();
   });
 
   it('sums settled spend and flags spend it cannot price', async () => {
@@ -1140,6 +1658,7 @@ describe('payment audit ledger (#406)', () => {
       return instrumented(url, { ...init, headers: { 'payment-signature': base64Json(offer) } });
     });
     const { callTool } = createHarness(transport as unknown as any, ledger);
+    const { callTool } = createHarness(transport as unknown as Mock, undefined, ledger);
 
     await callTool('paid_call', { url: 'https://ledger-sum.test/api/v1/price' });
     await callTool('paid_call', { url: 'https://ledger-sum.test/api/v1/unpriced' });
@@ -1165,6 +1684,7 @@ describe('payment audit ledger (#406)', () => {
 
     await callTool('paid_call', { url: 'https://ledger-metrics.test/api/v1/price' });
     await callTool('paid_call', { url: 'https://other-metrics.test/api/v1/price' });
+    await callTool('paid_call', { url: 'https://not-allow-listed.test/api/v1/price' });
 
     const attempts = await register.getSingleMetricAsString('mcp_payment_attempts_total');
     expect(attempts).toMatch(/mcp_payment_attempts_total\{[^}]*host="ledger-metrics\.test"[^}]*network="stellar:testnet"[^}]*outcome="success"[^}]*\} 1/);
@@ -1206,6 +1726,46 @@ describe('payment audit ledger (#406)', () => {
     // Discovery reads a catalog and never pays, so it has no place in a spend trail.
     const search = await callTool('bazaar_search', { url: 'https://ledger-audit.test' });
     expect(search.isError).toBeFalsy();
+    expect(attempts).not.toContain('not-allow-listed.test');
+
+    const settled = await register.getSingleMetricAsString('mcp_payment_amount_usd_total');
+    expect(settled).toMatch(/mcp_payment_amount_usd_total\{[^}]*host="ledger-metrics\.test"[^}]*\} 0\.1/);
+    expect(settled).not.toContain('not-allow-listed.test');
+  });
+
+  it('surfaces the running total to the budget tool', async () => {
+    const ledger = new PaymentLedger();
+    const instrumented = ledger.instrumentFetch(
+      vi.fn().mockResolvedValue(settledResponse({ price: '1.00' })) as unknown as typeof fetch
+    );
+    const transport = vi.fn(async (url: string, init?: RequestInit) =>
+      instrumented(url, { ...init, headers: { 'payment-signature': base64Json(PAYMENT_OFFER) } })
+    );
+    const budget = new SpendBudget({
+      perCallMax: '$1.00',
+      dailyCeiling: '$10.00',
+      stateFilePath: tempLedgerFile('spend-state.json'),
+    });
+    const { callTool } = createHarness(transport as unknown as Mock, budget, ledger);
+
+    await callTool('paid_call', { url: 'https://ledger-offer.test/api/v1/price' });
+
+    const reported = JSON.parse((await callTool('payment_budget')).content[0].text);
+    expect(reported.recordedSpend).toEqual({
+      attempts: 1,
+      settledNanodollars: '100000000',
+      possibleNanodollars: '0',
+      unquantifiedPayments: 0,
+    });
+    // The two views disagree on purpose: the budget can only hold the worst case
+    // it reserved before paying, while the ledger reports the price it actually saw.
+    expect(reported.spentToday).toBe('$1.00');
+  });
+
+  it('records nothing for discovery, which never pays', async () => {
+    const { callTool, ledger } = createHarness(vi.fn(), undefined, undefined, discoveryStub());
+
+    await callTool('bazaar_search', { url: 'https://ledger-audit.test' });
 
     expect(ledger.records()).toEqual([]);
     expect(ledger.totalSpend().attempts).toBe(0);
