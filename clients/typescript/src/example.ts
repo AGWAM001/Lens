@@ -44,7 +44,13 @@ async function main(): Promise<void> {
   if (snapshots.error) {
     throw new Error(`GET /prices/history failed with ${snapshots.response.status}`);
   }
-  console.log(`${snapshots.data?.count ?? 0} snapshots returned`);
+  // This route answers text/csv as well as application/json, so the generated
+  // types give a union of `string | { count?: number, ... }` and a field read
+  // has to narrow first. That the compiler insists on it is the point of
+  // generating the client from the spec rather than hand-writing it.
+  const body = snapshots.data;
+  const count = typeof body === "object" && body !== null ? (body.count ?? 0) : 0;
+  console.log(`${count} snapshots returned`);
 }
 
 void main();
