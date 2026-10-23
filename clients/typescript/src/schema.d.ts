@@ -1203,11 +1203,19 @@ export interface components {
             volume?: number;
             price?: number;
             change_24h?: number;
+            /** @description Total liquidity across all active AMM pools for this pair on the network, computed as sum(reserve_a * spot_price + reserve_b), valued in the quote asset (asset_b) at each pool's latest snapshot spot price. */
             liquidity?: number;
+            /** @description The asset symbol/identifier that liquidity is denominated in, corresponding to the counter/quote asset (asset_b) of the pair (the asset after the slash in pair_key). */
+            liquidity_unit?: string;
         } & {
             [key: string]: unknown;
         };
         ScreenerResponse: {
+            /**
+             * @description The network answered for.
+             * @enum {string}
+             */
+            network?: "testnet" | "mainnet";
             data: components["schemas"]["ScreenerRow"][];
             nextCursor: string | null;
             hasMore: boolean;
@@ -2452,6 +2460,7 @@ export interface operations {
                 change_24h_max?: number;
                 price_min?: number;
                 price_max?: number;
+                /** @description Filter for pairs with total AMM pool liquidity greater than or equal to this value. Liquidity is defined as the sum across all active AMM pools for the pair of (reserve_a * spot_price + reserve_b), valued in the quote asset (asset_b) at the latest snapshot spot price. */
                 liquidity?: number;
                 sortBy?: "volume" | "change_24h" | "price" | "liquidity";
                 order?: "asc" | "desc";

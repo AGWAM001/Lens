@@ -1213,6 +1213,11 @@ paths:
         - name: liquidity
           in: query
           required: false
+          description: >-
+            Filter for pairs with total AMM pool liquidity greater than or equal to this value.
+            Liquidity is defined as the sum across all active AMM pools for the pair of
+            (reserve_a * spot_price + reserve_b), valued in the quote asset (asset_b) at the
+            latest snapshot spot price.
           schema:
             type: number
         - name: sortBy
@@ -3023,12 +3028,25 @@ components:
           type: number
         liquidity:
           type: number
+          description: >-
+            Total liquidity across all active AMM pools for this pair on the network,
+            computed as sum(reserve_a * spot_price + reserve_b), valued in the quote
+            asset (asset_b) at each pool's latest snapshot spot price.
+        liquidity_unit:
+          type: string
+          description: >-
+            The asset symbol/identifier that liquidity is denominated in, corresponding
+            to the counter/quote asset (asset_b) of the pair (the asset after the slash in pair_key).
 
     ScreenerResponse:
       type: object
       required: [data, nextCursor, hasMore, total]
       additionalProperties: false
       properties:
+        network:
+          type: string
+          enum: [testnet, mainnet]
+          description: The network answered for.
         data:
           type: array
           items:
