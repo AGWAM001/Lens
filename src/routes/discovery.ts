@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify'
+import type { BazaarResource, Prisma } from '@prisma/client'
 import { parseDiscoveryFilters, queryDiscoveryResources } from '../bazaar/catalog'
 import { prisma } from '../db'
 import { activeNetwork } from '../config'
@@ -23,7 +24,13 @@ export interface RankedSearchResult {
 /**
  * Calculates quality score based on metadata completeness (0.0 to 1.0).
  */
-export function calculateQualityScore(res: any): number {
+export function calculateQualityScore(res: {
+  serviceName?: string | null
+  description?: string | null
+  tags?: string[]
+  iconUrl?: string | null
+  bazaarSchema?: unknown
+}): number {
   let score = 0.2 // baseline for existing
   if (res.serviceName && res.serviceName.length > 2) score += 0.2
   if (res.description && res.description.length > 10) score += 0.25
@@ -36,7 +43,15 @@ export function calculateQualityScore(res: any): number {
 /**
  * Calculates text relevance score against query terms.
  */
-export function calculateRelevanceScore(query: string, res: any): { score: number; reasons: string[] } {
+export function calculateRelevanceScore(
+  query: string,
+  res: {
+    serviceName?: string | null
+    description?: string | null
+    url?: string
+    tags?: string[]
+  },
+): { score: number; reasons: string[] } {
   const terms = query.toLowerCase().split(/\s+/).filter(t => t.length > 0)
   if (terms.length === 0) return { score: 1.0, reasons: ['empty_query_match'] }
 
@@ -88,18 +103,34 @@ export async function registerDiscoveryRoutes(app: FastifyInstance) {
     const networkFilter = req.query.network ?? activeNetwork
     const typeFilter = req.query.type
 
-    let resources: any[] = []
+    const whereClause: Prisma.BazaarResourceWhereInput = {
+      network: networkFilter,
+      ...(typeFilter ? { type: typeFilter } : {}),
+    }
+
+    if (query.length > 0) {
+      whereClause.OR = [
+        { serviceName: { contains: query, mode: 'insensitive' } },
+        { description: { contains: query, mode: 'insensitive' } },
+        { url: { contains: query, mode: 'insensitive' } },
+        { tags: { has: query } },
+      ]
+    }
+
+    let resources: BazaarResource[]
     try {
       resources = await prisma.bazaarResource.findMany({
-        where: {
-          network: networkFilter,
-          ...(typeFilter ? { type: typeFilter } : {}),
-        },
-        take: 200, // Search sample space
+        where: whereClause,
+        orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+        take: Math.min(limit * 5, 500),
       })
-    } catch {
-      // Return empty in mock/in-memory environments without Postgres
-      resources = []
+    } catch (err: unknown) {
+      req.log.error({ err }, '[discovery] Database error during search')
+      return reply.code(503).send({
+        error: 'Service Unavailable',
+        code: 'discovery_database_unavailable',
+        message: 'Discovery search database query failed.',
+      })
     }
 
     const scored: RankedSearchResult[] = []
@@ -149,7 +180,7 @@ export async function registerDiscoveryRoutes(app: FastifyInstance) {
       totalMatched: scored.length,
       limit,
       nextCursor,
-      results: items,
+      items,
     }
   })
 }
