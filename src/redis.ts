@@ -1,5 +1,5 @@
 import Redis from 'ioredis'
-import { config, activeNetwork } from './config'
+import { config, activeNetwork, type NetworkName } from './config'
 import { createLogger } from './logger'
 
 const log = createLogger('redis')
@@ -59,6 +59,29 @@ export async function getCachedPrice(pairKey: string): Promise<string | null> {
 export async function setCachedPrice(pairKey: string, data: object, ttlSeconds: number): Promise<void> {
   try {
     await redis.set(`lens:${activeNetwork}:price:${pairKey}`, JSON.stringify(data), 'EX', ttlSeconds)
+  } catch {
+    // Redis cache miss is non-fatal
+  }
+}
+
+/**
+ * Read a cached `GET /snapshot` response for a network. The network is part of
+ * the key so a testnet snapshot is never served to a mainnet caller. The whole
+ * response is cached (not the raw rows) so a hit is one Redis GET and no
+ * Postgres work at all. Errors are swallowed: a cache outage degrades to a
+ * normal recompute, never a failed request.
+ */
+export async function getCachedSnapshot(network: NetworkName): Promise<string | null> {
+  try {
+    return await redis.get(`lens:snapshot:${network}`)
+  } catch {
+    return null
+  }
+}
+
+export async function setCachedSnapshot(network: NetworkName, data: object, ttlSeconds: number): Promise<void> {
+  try {
+    await redis.set(`lens:snapshot:${network}`, JSON.stringify(data), 'EX', ttlSeconds)
   } catch {
     // Redis cache miss is non-fatal
   }

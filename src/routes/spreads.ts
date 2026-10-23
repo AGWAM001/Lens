@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 import { pgPool } from '../db'
 import { activeNetwork, type NetworkName } from '../config'
+import { sendInternalError } from '../errors'
 
 // Supported windows → lookback in minutes. A spread is a statement about *now*,
 // so these are deliberately short: widen the window far enough and you stop
@@ -17,7 +18,7 @@ type SpreadWindow = keyof typeof WINDOW_MINUTES
 const WINDOWS = Object.keys(WINDOW_MINUTES) as SpreadWindow[]
 
 /** A venue needs at least this many observations before its spread means anything. */
-const MIN_OBSERVATIONS = 2
+export const MIN_OBSERVATIONS = 2
 
 interface VenueSpread {
   venue: string
@@ -69,7 +70,7 @@ export async function registerSpreadsRoutes(app: FastifyInstance) {
   app.get<{
     Params: { asset: string }
     Querystring: { window?: string; network?: string }
-  }>('/spreads/:asset', async (req, reply) => {
+  }>('/spreads/:asset', { config: { scope: 'read:prices' } }, async (req, reply) => {
     const { asset } = req.params
     const window = req.query.window ?? '5m'
 
@@ -157,9 +158,7 @@ export async function registerSpreadsRoutes(app: FastifyInstance) {
         tightest: venues[0] ?? null,
       }
     } catch (err) {
-      return reply
-        .status(500)
-        .send({ error: `Spread aggregation failed: ${(err as Error).message}` })
+      return sendInternalError(reply, req, err, 'Spread aggregation failed')
     }
   })
 }

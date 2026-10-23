@@ -36,13 +36,54 @@ export interface AggregatedPrice {
   stale: boolean
 }
 
+export interface RouteHop {
+  assetIn: AssetId
+  assetOut: AssetId
+  venue: 'SDEX' | 'AMM'
+  poolId?: string
+  inputAmount: number
+  outputAmount: number
+  price: number
+  spotPrice: number
+  slippagePct: number
+}
+
+export interface RouteOption {
+  hops: RouteHop[]
+  hopCount: number
+  estimatedOutput: number
+  effectivePrice: number
+  slippagePct: number
+}
+
+export interface RouteProvenance {
+  sampledAt: string
+  network: string
+  venuesQueried: string[]
+  sampleCount: number
+  freshnessSeconds: number | null
+}
+
 export interface RouteInfo {
-  route: 'SDEX' | 'AMM' | 'SPLIT' | 'UNKNOWN'
+  route: 'SDEX' | 'AMM' | 'SPLIT' | 'MULTI_HOP' | 'UNKNOWN'
   sdexPrice: number
   ammPrice: number
   estimatedOutput: number
   slippagePct: number
   recommendation: string
+  network?: string
+  hops?: RouteHop[]
+  comparison?: {
+    direct: {
+      route: 'SDEX' | 'AMM' | 'SPLIT' | 'UNKNOWN'
+      sdexPrice: number
+      ammPrice: number
+      estimatedOutput: number
+      slippagePct: number
+    }
+    multiHop: RouteOption | null
+  }
+  provenance?: RouteProvenance
 }
 
 export interface WatchedPair {

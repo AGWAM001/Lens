@@ -3,6 +3,7 @@ import { getActivePairs, parseAssetStr, makePairKey, registerPair, persistPair, 
 import { pgPool } from '../db'
 import { activeNetwork } from '../config'
 import '../middleware/network' // declares req.network on the FastifyRequest type
+import { admin_auth_failures_total } from '../metrics'
 
 export async function registerPairsRoutes(app: FastifyInstance) {
   // GET /pairs — list all active pairs with latest price metadata
@@ -16,7 +17,7 @@ export async function registerPairsRoutes(app: FastifyInstance) {
   // the probe still finds its last print, and the response carries that print's
   // real `lastUpdated`, so a caller can see it is old. A pair with no rows on
   // this network at all comes back with null price and timestamp.
-  app.get('/pairs', async (req) => {
+  app.get('/pairs', { config: { scope: 'read:prices' } }, async (req) => {
     const activePairs = getActivePairs()
     const network = req.network ?? activeNetwork
 
@@ -65,7 +66,12 @@ export async function registerPairsRoutes(app: FastifyInstance) {
     const ADMIN_API_KEY = process.env.ADMIN_API_KEY
     const key = req.headers['x-admin-key'] ?? req.headers['authorization']?.replace(/^Bearer /, '')
     if (!ADMIN_API_KEY || key !== ADMIN_API_KEY) {
-      return reply.status(401).send({ error: 'Unauthorized — provide a valid X-Admin-Key header' })
+      admin_auth_failures_total.inc()
+      return reply.status(401).send({
+        error: 'Unauthorized',
+        code: 'admin_unauthorized',
+        message: 'Provide valid admin authentication.',
+      })
     }
 
     const { assetA: assetAStr, assetB: assetBStr } = req.body ?? {}

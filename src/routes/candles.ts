@@ -6,7 +6,7 @@ export async function registerCandleRoutes(app: FastifyInstance) {
   app.get<{
     Params: { assetA: string; assetB: string }
     Querystring: { interval?: string; from?: string; to?: string }
-  }>('/candles/:assetA/:assetB', async (req, reply) => {
+  }>('/candles/:assetA/:assetB', { config: { scope: 'read:history' } }, async (req, reply) => {
     const { assetA, assetB } = req.params
     const interval = req.query.interval ?? '1h'
     const intervalSecs = INTERVAL_SECONDS[interval]

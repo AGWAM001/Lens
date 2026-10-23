@@ -9,6 +9,22 @@ datasource db {
   directUrl = env("DIRECT_DATABASE_URL")
 }
 
+/// A single observed price — a trade, or a snapshot of a pool's state.
+///
+/// Identity (#237): a retried ingest batch, or two ingester instances
+/// overlapping during a deploy, must not store the same observation twice —
+/// duplicated trades inflate volume and skew the volume-weighted VWAP. The
+/// unique index below makes a duplicate impossible rather than unlikely.
+///
+/// eventId is nullable, and Postgres treats NULLs as distinct in a unique
+/// index, so the constraint only binds "where eventId exists". That is why
+/// upsertPricePoints (src/db.ts) never stores a null: venues that hand back a
+/// natural id (SDEX/AMM trade TOIDs, Horizon trade ids) keep it verbatim, and
+/// sources with none — AMM/Soroswap pool snapshots, Aquarius, anything added
+/// later — get a key synthesized deterministically from the row's content,
+/// never from a clock. See synthesizeEventId in src/db.ts and
+/// scripts/migrations/2026-10-17-price-point-identity.sql, which removes rows
+/// already duplicated on this identity before the index is created.
 model PricePoint {
   id            String   @default(uuid())
   network       String   @default("testnet")
@@ -25,6 +41,7 @@ model PricePoint {
   eventId       String?  @map("event_id")
 
   @@id([id, timestamp])
+  @@unique([network, source, eventId], map: "price_point_identity")
   @@index([network, pairKey, timestamp(sort: Desc)])
   @@index([network, pairKey, source, timestamp(sort: Desc)])
   @@map("price_points")
@@ -256,6 +273,23 @@ model Webhook {
   @@map("webhooks")
 }
 
+/// Permanent webhook failures are retained for 30-day diagnosis only; replay is
+/// not automatic because a delayed alert may no longer describe the current price.
+model WebhookDeliveryFailure {
+  id             String   @id @default(uuid())
+  endpoint       String
+  payload        Json
+  attemptCount   Int      @map("attempt_count")
+  lastStatus     Int?     @map("last_status")
+  errorCategory  String   @map("error_category")
+  firstAttemptAt DateTime @map("first_attempt_at")
+  lastAttemptAt  DateTime @map("last_attempt_at")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt(sort: Desc)])
+  @@map("webhook_delivery_failures")
+}
+
 model ApiKey {
   id               String    @id @default(uuid())
   hash             String    @unique
@@ -263,10 +297,80 @@ model ApiKey {
   ratePerMin       Int       @default(60) @map("rate_per_min")
   ratePerDay       Int       @default(10000) @map("rate_per_day")
   revokedAt        DateTime? @map("revoked_at")
+  expiresAt        DateTime? @map("expires_at")
   createdAt        DateTime  @default(now()) @map("created_at")
   monthlyQuotaCents Int?     @default(10000) @map("monthly_quota_cents")
   dailyQuotaCents  Int?      @default(500) @map("daily_quota_cents")
   overagePolicy    String    @default("block") @map("overage_policy")
+  scopes           String[]  @default([])
 
   @@map("api_keys")
+}
+
+/// One value Lens put on chain through its SEP-40 feed (#222).
+///
+/// Rows exist for WRITES, not for decisions: a blocked tick is a log line, and
+/// a table that recorded every "below_deviation" would hold ~2,880 rows per
+/// pair per day and say nothing an operator could not read from the trigger
+/// code in the logs. What this table proves is the opposite direction — every
+/// number a contract was told, with the venues that produced it, which is the
+/// evidence that "a price you cannot source is worse than no price" was
+/// actually enforced.
+model OraclePublication {
+  id      String @id @default(uuid())
+  network String @default("testnet")
+
+  /// The Lens pair this came from. Kept alongside the feed asset because one
+  /// pair can only ever feed one quoted asset, but the reverse is not true:
+  /// without pairKey you cannot trace a published number back to a trade.
+  pairKey String @map("pair_key")
+
+  /// SEP-40 identifier of the asset whose price in `base` this is: a C...
+  /// Stellar Asset Contract id, or the code for native XLM. Never a bare code
+  /// for an anchored asset — a code is not an issuer, and two tokens share one
+  /// code in the wild.
+  quotedAsset String @map("quoted_asset")
+  baseAsset   String @map("base_asset")
+
+  /// "published" | "failed". "published" is written only after the transaction
+  /// finalized, so a row here is a claim about the ledger, not about intent.
+  state String
+
+  /// Why the write happened: "first_report" | "deviation" | "max_interval".
+  trigger String?
+
+  /// Human-readable price, the same number /api/price would return for the
+  /// pair at that moment, oriented against the feed's base.
+  price Decimal? @db.Decimal(36, 18)
+
+  /// The exact i128 written on chain, as text. Prisma's Decimal cannot hold an
+  /// i128 range, and re-deriving it from `price` would defeat the point of
+  /// keeping it.
+  scaledPrice String? @map("scaled_price")
+  decimals    Int?
+  /// Feed tick the value was written at (`floor(unix_now()/resolution)*resolution`).
+  feedTimestamp BigInt? @map("feed_timestamp")
+  resolution    Int?
+
+  /// Every venue behind the number, joined with ','. This is the provenance
+  /// guarantee: a row without venues should not exist, and `sourceCount` is
+  /// `venues.length` because the contract derives it from the same list.
+  venues      String?
+  sourceCount Int?    @map("source_count")
+
+  /// Percent moved against the value that was on chain, when there was one.
+  deviationPct Float? @map("deviation_pct")
+
+  /// The publisher's own sentence for the decision — the same string that went
+  /// to the log, so a log grep and a table query agree.
+  reason String?
+
+  txHash       String? @map("tx_hash")
+  errorMessage String? @map("error_message")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([network, pairKey, createdAt(sort: Desc)])
+  @@index([network, quotedAsset, feedTimestamp(sort: Desc)])
+  @@map("oracle_publications")
 }
