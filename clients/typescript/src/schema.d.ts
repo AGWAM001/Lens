@@ -1068,6 +1068,8 @@ export interface components {
             assetA: string;
             assetB: string;
             pairKey: string;
+            /** @enum {string} */
+            network: "testnet" | "mainnet";
             vwap: number | string;
             windowMinutes: number;
             source: string;
@@ -2252,6 +2254,8 @@ export interface operations {
                 /** @description Restrict to a single venue (omitted pools every venue). */
                 source?: "SDEX" | "AMM";
                 method?: "iqr" | "modified_zscore";
+                /** @description Stellar network to answer for — `testnet` or `mainnet`. Defaults to this instance's configured `STELLAR_NETWORK`. An unrecognised value is rejected with 400. DB-backed reads are currently served from whichever network this instance indexes, even when another is requested. */
+                network?: components["parameters"]["NetworkQuery"];
             };
             header?: {
                 /** @description Formatting for decimal quantities (prices, volumes, reserves). Set to `string` to serialize high-precision `Decimal(36,18)` quantities as exact strings, preventing IEEE-754 floating-point precision loss. Defaults to `number`. Can also be negotiated via `Accept: application/json; decimals=strings` or query parameter `?decimals=strings`. */

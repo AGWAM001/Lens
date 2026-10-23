@@ -32,6 +32,7 @@ const VwapQuerySchema = z.object({
   method: z.enum(['iqr', 'modified_zscore']).default('iqr'),
   decimals: z.string().optional(),
   decimalFormat: z.string().optional(),
+  network: z.enum(['testnet', 'mainnet']).optional(),
 })
 
 /**
@@ -111,6 +112,7 @@ export async function registerPriceRoutes(app: FastifyInstance) {
       method?: 'iqr' | 'modified_zscore'
       decimals?: string
       decimalFormat?: string
+      network?: string
     }
   }>(
     '/price/vwap/:assetA/:assetB',
@@ -127,6 +129,7 @@ export async function registerPriceRoutes(app: FastifyInstance) {
       if (decimalFormat === 'string') {
         reply.header('x-decimal-format', 'string')
       }
+      const network: NetworkName = req.network ?? parsed.data.network ?? activeNetwork
 
       const pairKey = [assetA, assetB].sort().join('/')
 
@@ -135,12 +138,14 @@ export async function registerPriceRoutes(app: FastifyInstance) {
           source,
           outlierMethod: method,
           decimalFormat,
+          network,
         })
 
         return {
           assetA,
           assetB,
           pairKey,
+          network: result.network,
           vwap: result.vwap,
           windowMinutes,
           source: source ?? 'all',
