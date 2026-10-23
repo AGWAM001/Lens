@@ -27,6 +27,7 @@ const VwapQuerySchema = z.object({
   window: z.coerce.number().int().min(VWAP_WINDOW_MIN_MINUTES).max(VWAP_WINDOW_MAX_MINUTES).default(VWAP_WINDOW_DEFAULT_MINUTES),
   source: z.enum(['SDEX', 'AMM']).optional(),
   method: z.enum(['iqr', 'modified_zscore']).default('iqr'),
+  network: z.enum(['testnet', 'mainnet']).optional(),
 })
 
 /**
@@ -97,6 +98,7 @@ export async function registerPriceRoutes(app: FastifyInstance) {
       window?: string
       source?: 'SDEX' | 'AMM'
       method?: 'iqr' | 'modified_zscore'
+      network?: string
     }
   }>(
     '/price/vwap/:assetA/:assetB',
@@ -109,6 +111,7 @@ export async function registerPriceRoutes(app: FastifyInstance) {
         return reply.status(400).send(formatValidationError(parsed.error))
       }
       const { window: windowMinutes, source, method } = parsed.data
+      const network: NetworkName = req.network ?? parsed.data.network ?? activeNetwork
 
       const pairKey = [assetA, assetB].sort().join('/')
 
@@ -116,12 +119,14 @@ export async function registerPriceRoutes(app: FastifyInstance) {
         const result = await computeVWAP(pairKey, windowMinutes, {
           source,
           outlierMethod: method,
+          network,
         })
 
         return {
           assetA,
           assetB,
           pairKey,
+          network: result.network,
           vwap: result.vwap,
           windowMinutes,
           source: source ?? 'all',

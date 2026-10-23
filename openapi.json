@@ -1423,6 +1423,9 @@
               ],
               "default": "iqr"
             }
+          },
+          {
+            "$ref": "#/components/parameters/NetworkQuery"
           }
         ],
         "responses": {
@@ -3929,6 +3932,7 @@
           "assetA",
           "assetB",
           "pairKey",
+          "network",
           "vwap",
           "windowMinutes",
           "source",
@@ -3949,6 +3953,13 @@
           },
           "pairKey": {
             "type": "string"
+          },
+          "network": {
+            "type": "string",
+            "enum": [
+              "testnet",
+              "mainnet"
+            ]
           },
           "vwap": {
             "type": "number"
