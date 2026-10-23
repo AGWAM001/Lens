@@ -468,7 +468,7 @@
             }
           },
           "400": {
-            "$ref": "#/components/responses/BadRequest"
+            "description": "Invalid parameters"
           },
           "429": {
             "$ref": "#/components/responses/TooManyRequests"
