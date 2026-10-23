@@ -135,4 +135,16 @@ describe('GET /candles/:assetA/:assetB', () => {
     expect(new Date(params[2]).toISOString()).toBe(from)
     expect(new Date(params[3]).toISOString()).toBe(to)
   })
+
+  it('uses half-open interval [from, to) in SQL query', async () => {
+    const app = await buildApp()
+    mockQuery.mockResolvedValue({ rows: [] })
+
+    await app.inject({ method: 'GET', url: '/candles/XLM/USDC?interval=1h&from=2025-01-01T00:00:00Z&to=2025-01-01T01:00:00Z' })
+
+    // The SQL query should use < (exclusive) for the upper bound, not <=
+    const sql = mockQuery.mock.calls[0][0]
+    expect(sql).toMatch(/AND timestamp < \$4/)
+    expect(sql).not.toMatch(/AND timestamp <= \$4/)
+  })
 })

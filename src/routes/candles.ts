@@ -1,7 +1,27 @@
 import type { FastifyInstance } from 'fastify'
 import { pgPool } from '../db'
-import { INTERVAL_SECONDS } from '../candleIntervals'
+import { activeNetwork, type NetworkName } from '../config'
+import '../middleware/network' // declares req.network on the FastifyRequest type
 
+const INTERVAL_SECONDS: Record<string, number> = {
+  '1m': 60,
+  '5m': 300,
+  '15m': 900,
+  '1h': 3600,
+  '4h': 14_400,
+  '1d': 86_400,
+}
+
+/**
+ * Register the OHLCV candle endpoint.
+ *
+ * GET /candles/:assetA/:assetB?interval=1h&from=…&to=…
+ *
+ * The query window is half-open — [from, to). `from` is inclusive, `to` is
+ * exclusive — so two adjacent windows [T0, T1) and [T1, T2) share no boundary
+ * and a sample landing exactly on T1 is counted exactly once across the pair.
+ * An inclusive-at-both-ends window double-counted every such sample.
+ */
 export async function registerCandleRoutes(app: FastifyInstance) {
   app.get<{
     Params: { assetA: string; assetB: string }
@@ -18,6 +38,12 @@ export async function registerCandleRoutes(app: FastifyInstance) {
     }
 
     const pairKey = [assetA, assetB].sort().join('/')
+
+    // `price_points` indexes `network` as the leading column of
+    // (network, pair_key, timestamp), so the predicate has to be there for the
+    // range scan to be an index scan. It is also the difference between one
+    // chain's candles and a blend of two chains' candles.
+    const network: NetworkName = req.network ?? activeNetwork
 
     const fromRaw = req.query.from
     const toRaw = req.query.to
@@ -41,16 +67,18 @@ export async function registerCandleRoutes(app: FastifyInstance) {
          SUM(base_volume::float)                              AS volume
        FROM price_points
        WHERE pair_key = $2
+         AND network = $5
          AND timestamp >= $3
-         AND timestamp <= $4
+         AND timestamp < $4
        GROUP BY floor(EXTRACT(EPOCH FROM timestamp) / $1)
        ORDER BY time ASC`,
-      [intervalSecs, pairKey, from, to]
+      [intervalSecs, pairKey, from, to, network]
     )
 
     return {
       pairKey,
       interval,
+      network,
       from: from.toISOString(),
       to: to.toISOString(),
       candles: result.rows.map(r => ({

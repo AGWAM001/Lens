@@ -1,5 +1,5 @@
 import { pgPool } from '../db'
-import { activeNetwork, NetworkName } from '../config'
+import { activeNetwork, type NetworkName } from '../config'
 
 export interface DepthLevel {
   price: number
@@ -208,21 +208,22 @@ export function generateAMMDepthLevels(
 export async function getAMMDepth(
   pairKey: string,
   amount: number,
-  network: NetworkName = activeNetwork
+  network: NetworkName = activeNetwork,
 ): Promise<DepthResult | null> {
-  // Always network-scoped. `network` defaults to `activeNetwork`, so there is
-  // no caller that can ask for an unscoped read — which is the point: these
-  // tables carry rows for every network the process indexes, and an unfiltered
-  // read mixed testnet reserves into a mainnet depth answer.
+  // Both halves of the lookup are network-scoped: the pool_snapshots scan and
+  // the price_points subquery that names which pools hold this pair. Pool ids
+  // are only unique within a network, so filtering just the outer scan would
+  // happily price a mainnet pair off a testnet pool's reserves.
   const result = await pgPool.query(
     `SELECT DISTINCT ON (ps.pool_id) ps.reserve_a, ps.reserve_b, ps.fee_bp
-       FROM pool_snapshots ps
-       WHERE ps.network = $2 AND ps.pool_id IN (
+     FROM pool_snapshots ps
+     WHERE ps.network = $2
+       AND ps.pool_id IN (
          SELECT DISTINCT pool_id FROM price_points
          WHERE pair_key = $1 AND network = $2 AND source = 'AMM' AND pool_id IS NOT NULL
        )
-       ORDER BY ps.pool_id, ps.timestamp DESC
-       LIMIT 1`,
+     ORDER BY ps.pool_id, ps.timestamp DESC
+     LIMIT 1`,
     [pairKey, network]
   )
   if (!result.rows[0]) return null
@@ -250,10 +251,10 @@ export async function getAMMDepth(
 export async function getDepth(
   pairKey: string,
   amount: number,
-  network: NetworkName = activeNetwork
+  network: NetworkName = activeNetwork,
 ): Promise<DepthResult> {
   const ammDepth = await getAMMDepth(pairKey, amount, network)
-  
+
   if (ammDepth) {
     return ammDepth
   }

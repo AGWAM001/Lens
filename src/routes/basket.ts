@@ -1,17 +1,21 @@
+
+import { formatValidationError } from "../validation"
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { pgPool } from '../db'
-import { formatValidationError } from '../validation'
+import { activeNetwork, type NetworkName } from '../config'
+import '../middleware/network' // declares req.network on the FastifyRequest type
 
-async function fetchAssetVWAP(asset: string): Promise<number | null> {
+async function fetchAssetVWAP(asset: string, network: NetworkName): Promise<number | null> {
   const result = await pgPool.query(
     `SELECT
        COALESCE(SUM(price::numeric * base_volume::numeric), 0)
        / NULLIF(SUM(base_volume::numeric), 0) AS vwap
      FROM price_points
      WHERE (asset_a = $1 OR asset_b = $1)
+       AND network = $2
        AND timestamp > NOW() - INTERVAL '5 minutes'`,
-    [asset.toUpperCase()]
+    [asset.toUpperCase(), network]
   )
   const vwap = result.rows[0]?.vwap
   if (vwap === null || vwap === undefined) return null
@@ -77,7 +81,12 @@ export async function registerBasketRoutes(app: FastifyInstance) {
     const weightSum = rawWeightValues.reduce((a, b) => a + b, 0)
     const normalizedWeights = rawWeightValues.map((w) => w / weightSum)
 
-    const prices = await Promise.all(assets.map((a) => fetchAssetVWAP(a)))
+    // `price_points` indexes `network` as the leading column of
+    // (network, pair_key, timestamp): without the predicate the range scan
+    // cannot use the index, and a basket would blend two chains' prices.
+    const network: NetworkName = req.network ?? activeNetwork
+
+    const prices = await Promise.all(assets.map(a => fetchAssetVWAP(a, network)))
 
     const components = assets.map((asset, i) => ({
       asset: asset.toUpperCase(),
