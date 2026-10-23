@@ -120,6 +120,55 @@ describe('FanOutManager', () => {
     unsubscribe()
   })
 
+  it('cleans up both internal maps on unregister', () => {
+    const mockSocket = {
+      id: 'client-3',
+      send: vi.fn(),
+      close: vi.fn(),
+    }
+
+    expect(fanOutManager.getClientCount()).toBe(0)
+    expect(fanOutManager.getPairClientCount('XLM/USDC')).toBe(0)
+
+    const unsubscribe = fanOutManager.register('XLM/USDC', mockSocket)
+    expect(fanOutManager.getClientCount()).toBe(1)
+    expect(fanOutManager.getPairClientCount('XLM/USDC')).toBe(1)
+    expect(fanOutManager.hasClient('client-3')).toBe(true)
+    expect(fanOutManager.hasPairClient('XLM/USDC', 'client-3')).toBe(true)
+
+    unsubscribe()
+
+    expect(fanOutManager.getClientCount()).toBe(0)
+    expect(fanOutManager.getPairClientCount('XLM/USDC')).toBe(0)
+    expect(fanOutManager.hasClient('client-3')).toBe(false)
+    expect(fanOutManager.hasPairClient('XLM/USDC', 'client-3')).toBe(false)
+  })
+
+  it('unregisters client and leaves remaining clients in pairClients correctly', () => {
+    const clientA = { id: 'client-a', send: vi.fn(), close: vi.fn() }
+    const clientB = { id: 'client-b', send: vi.fn(), close: vi.fn() }
+
+    const unsubA = fanOutManager.register('XLM/USDC', clientA)
+    const unsubB = fanOutManager.register('XLM/USDC', clientB)
+
+    expect(fanOutManager.getClientCount()).toBe(2)
+    expect(fanOutManager.getPairClientCount('XLM/USDC')).toBe(2)
+
+    unsubA()
+
+    expect(fanOutManager.getClientCount()).toBe(1)
+    expect(fanOutManager.getPairClientCount('XLM/USDC')).toBe(1)
+    expect(fanOutManager.hasClient('client-a')).toBe(false)
+    expect(fanOutManager.hasClient('client-b')).toBe(true)
+    expect(fanOutManager.hasPairClient('XLM/USDC', 'client-a')).toBe(false)
+    expect(fanOutManager.hasPairClient('XLM/USDC', 'client-b')).toBe(true)
+
+    unsubB()
+
+    expect(fanOutManager.getClientCount()).toBe(0)
+    expect(fanOutManager.getPairClientCount('XLM/USDC')).toBe(0)
+  })
+
   it('multiple clients on different pairs register correctly', () => {
     const client1 = { id: 'client-5', send: vi.fn(), close: vi.fn() }
     const client2 = { id: 'client-6', send: vi.fn(), close: vi.fn() }

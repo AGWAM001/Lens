@@ -519,6 +519,10 @@ const globalConfig = {
   http: {
     timeoutMs: parseInt(process.env.HTTP_TIMEOUT_MS ?? '10000', 10),
   },
+  ws: {
+    pingIntervalMs: parseInt(process.env.WS_PING_INTERVAL_MS ?? '30000', 10),
+    maxMissedPings: parseInt(process.env.WS_MAX_MISSED_PINGS ?? '2', 10),
+  },
   outbound: {
     // One operator-maintained list for every outbound fetch the app makes to a
     // caller-supplied target (Bazaar MCP discovery now, payment endpoints later).
@@ -627,6 +631,7 @@ export const config = {
   cache:   globalConfig.cache,
   plausibility: globalConfig.plausibility,
   http:    globalConfig.http,
+  ws:      globalConfig.ws,
   outbound: globalConfig.outbound,
   mcp: globalConfig.mcp,
 }
