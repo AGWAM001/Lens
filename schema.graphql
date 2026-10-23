@@ -1,3 +1,17 @@
+type Asset {
+  code: String!
+  issuer: String
+}
+
+type Pair {
+  pairKey: String!
+  network: String!
+  assetA: Asset!
+  assetB: Asset!
+  latestPrice: Float
+  lastUpdated: String
+}
+
 type AggregatedPrice {
   assetA: String!
   assetB: String!
@@ -27,6 +41,7 @@ type RouteInfo {
   estimatedOutput: Float!
   slippagePct: Float!
   recommendation: String!
+  network: String
 }
 
 type PriceBucket {
@@ -109,7 +124,8 @@ type Query {
   return the boundary bucket at t1 in both results.
   """
   getPriceHistory(assetA: String!, assetB: String!, window: String!, limit: Int, from: String, to: String): [PriceBucket]
-  listPairs: [String]!
+  listPairs: [String]! @deprecated(reason: "Use 'pairs' instead")
+  pairs: [Pair!]!
 
   """
   Compares the Lens price for an asset against every configured oracle.

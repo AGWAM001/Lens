@@ -36,14 +36,62 @@ export interface NetworkConfig {
     /** Aquarius AMM pools API base URL for this network. */
     apiUrl: string
   }
+  defindex: {
+    /** Whether DeFindex has a usable deployment on this network. */
+    enabled: boolean
+    /**
+     * DeFindex factory contract id — the on-chain registry used to enumerate
+     * vaults (56-char `C...`). Sourced from the protocol's own
+     * `*.contracts.json`; a malformed id disables the venue.
+     */
+    factoryAddress: string
+    /** How often to poll DeFindex vault share prices in ms. */
+    pollIntervalMs: number
+  }
+  phoenix: {
+    /** Whether Phoenix has a usable deployment on this network. */
+    enabled: boolean
+    /**
+     * Phoenix factory contract id for this network. Pools are enumerated from
+     * it (`query_pools`) rather than from a list kept in this repo.
+     */
+    factoryAddress: string
+    /** How often to poll Phoenix pool reserves in ms. */
+    pollIntervalMs: number
+    /** How long the discovered pool list is reused before re-enumerating, in ms. */
+    poolCacheTtlMs: number
+  }
   oracle: {
     /** Whether the Reflector oracle is deployed on this network. */
     enabled: boolean
     /** Reflector oracle contract ID for this network. */
     reflectorContractId: string
   }
+  /**
+   * The SEP-40 publisher — the one direction that writes. `oracle` above is
+   * Lens reading somebody else's feed; this is Lens pushing its own aggregate
+   * on chain for contracts to read.
+   */
+  publisher: {
+    /** Whether Lens publishes to a SEP-40 feed on this network. */
+    enabled: boolean
+    /** Deployed SEP-40 oracle contract the aggregate is pushed into. */
+    contractId: string
+    /**
+     * Secret key of the account authorized on the contract as publisher. Never
+     * committed; see docs/sep40-oracle-publisher.md for how it is funded and
+     * rotated. Unset means the publisher cannot sign, so publication stays off.
+     */
+    secretKey?: string
+  }
   /** Watched asset pairs for this network. */
   pairs: WatchedPair[]
+  routing: {
+    /** Maximum hop depth for multi-hop routing (default: 3) */
+    maxHops: number
+    /** Configured intermediate assets for multi-hop routing */
+    intermediates: AssetId[]
+  }
   facilitator: {
     /** Secret key for the facilitator's fee-paying account */
     secretKey?: string
@@ -67,6 +115,21 @@ function makePairKey(a: AssetId, b: AssetId): string {
   const bStr = b.issuer ? `${b.code}:${b.issuer}` : b.code
   // Alphabetical sort so XLM/USDC and USDC/XLM resolve to the same key
   return [aStr, bStr].sort().join('/')
+}
+
+/**
+ * Read a positive numeric env var, falling back when it is unset, blank, not a
+ * number, or not positive.
+ *
+ * The publisher thresholds below are used as divisors, comparison bases and
+ * `setInterval` delays. A typo'd `SEP40_MAX_INTERVAL_MS=abc` would otherwise
+ * arrive there as `NaN`, and `NaN` comparisons are false — which reads as
+ * "never trigger", silently turning the feed off. Refusing the value and using
+ * the documented default keeps a bad env var loud instead of inert.
+ */
+function positiveNumber(raw: string | undefined, fallback: number): number {
+  const parsed = Number(raw)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
 }
 
 /**
@@ -97,6 +160,17 @@ function clampInt(raw: string | undefined, fallback: number, min: number, max: n
 
 const MAINNET_DEFAULT_PAIRS =
   'USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN/XLM'
+
+const TESTNET_DEFAULT_INTERMEDIATES =
+  'XLM:native,USDC:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5'
+
+const MAINNET_DEFAULT_INTERMEDIATES =
+  'XLM:native,USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN'
+
+function parseIntermediateAssets(raw: string): AssetId[] {
+  if (!raw.trim()) return []
+  return raw.split(',').map(a => parseAsset(a.trim()))
+}
 
 function parseWatchedPairs(raw: string): WatchedPair[] {
   if (!raw.trim()) return []
@@ -201,6 +275,64 @@ function buildNetworkConfig(network: NetworkName): NetworkConfig {
   const aquariusEnabled =
     (process.env[`AQUARIUS_ENABLED_${suffix}`] ?? (network === 'mainnet' ? 'true' : 'false')).toLowerCase() !== 'false'
 
+  // ── DeFindex vault factory ────────────────────────────────────────────────
+  // DeFindex vaults are enumerable from the factory contract. The factory ids
+  // below are copied whole from the protocol's published deployments —
+  // https://github.com/defindex-io/stellar-contracts (public/mainnet.contracts.json
+  // and public/testnet.contracts.json). Testnet redeploys often, so override
+  // with DEFINDEX_FACTORY_ADDRESS_TESTNET when the published id changes.
+  const defindexFactory =
+    process.env[`DEFINDEX_FACTORY_ADDRESS_${suffix}`] ||
+    process.env.DEFINDEX_FACTORY_ADDRESS ||
+    (network === 'mainnet'
+      ? 'CDKFHFJIET3A73A2YN4KV7NSV32S6YGQMUFH3DNJXLBWL4SKEGVRNFKI'
+      : 'CDSCWE4GLNBYYTES2OCYDFQA2LLY4RBIAX6ZI32VSUXD7GO6HRPO4A32')
+
+  const defindexEnabled =
+    (process.env[`DEFINDEX_ENABLED_${suffix}`] ?? 'true').toLowerCase() !== 'false' &&
+    isUsableContractId(defindexFactory, `DEFINDEX_FACTORY_ADDRESS_${suffix}`)
+
+  const defindexPollMs = parseInt(
+    process.env[`DEFINDEX_POLL_INTERVAL_MS_${suffix}`] ||
+    process.env.DEFINDEX_POLL_INTERVAL_MS ||
+    '60000',
+    10
+  )
+
+  // ── Phoenix AMM (Soroban) ─────────────────────────────────────────────────
+  // Mainnet factory id taken verbatim from Phoenix's own repository —
+  // scripts/extend-queries.sh and scripts/deploy_pool.sh both set
+  // FACTORY="CB4SVAWJA6TSRNOJZ7W2AWFW46D5VR4ZMFZKDIKXEINZCZEGZCJZCKMI"
+  // alongside RPC_URL=https://mainnet.sorobanrpc.com and the public-network
+  // passphrase (https://github.com/Phoenix-Protocol-Group/phoenix-contracts).
+  //
+  // There is no built-in testnet id: Phoenix does not publish a testnet
+  // deployment, so a testnet factory only exists if an operator deploys one and
+  // names it here. An id that is empty or malformed leaves the venue disabled
+  // on that network rather than pointing the ingester at something invented.
+  const phoenixFactory =
+    process.env[`PHOENIX_FACTORY_ADDRESS_${suffix}`] ||
+    (network === 'testnet' ? process.env.PHOENIX_FACTORY_ADDRESS : undefined) ||
+    (network === 'mainnet'
+      ? 'CB4SVAWJA6TSRNOJZ7W2AWFW46D5VR4ZMFZKDIKXEINZCZEGZCJZCKMI'
+      : '')
+
+  const phoenixEnabled =
+    (process.env[`PHOENIX_ENABLED_${suffix}`] ?? 'true').toLowerCase() !== 'false' &&
+    isUsableContractId(phoenixFactory, `PHOENIX_FACTORY_ADDRESS_${suffix}`)
+
+  const phoenixPollMs = parseInt(
+    process.env.PHOENIX_POLL_INTERVAL_MS || '60000',
+    10
+  )
+
+  // Pool enumeration is one RPC read of the whole factory, so it is reused
+  // across pairs and cycles instead of being paid for on every price poll.
+  const phoenixPoolCacheTtlMs = parseInt(
+    process.env.PHOENIX_POOL_CACHE_TTL_MS || '600000',
+    10
+  )
+
   // ── Reflector oracle ──────────────────────────────────────────────────────
   // No built-in default: the previous mainnet literal was a malformed
   // (55-character) id and a replacement could not be verified against
@@ -215,6 +347,39 @@ function buildNetworkConfig(network: NetworkName): NetworkConfig {
     (process.env[`REFLECTOR_ENABLED_${suffix}`] ?? 'true').toLowerCase() !== 'false' &&
     isUsableContractId(reflectorContractId, `REFLECTOR_CONTRACT_ID_${suffix}`)
 
+  // ── SEP-40 publisher ──────────────────────────────────────────────────────
+  // Off unless a contract is deployed AND a key is provided. There is no
+  // default contract id: the feed is deployed by the operator (see
+  // oracle/contract/), and a guessed id would push Lens's aggregate into
+  // somebody else's contract — or nowhere. `isUsableContractId` rejects a
+  // malformed id the same way every other contract address in this file does.
+  const sep40ContractId =
+    process.env[`SEP40_CONTRACT_ID_${suffix}`] ||
+    process.env.SEP40_CONTRACT_ID ||
+    ''
+
+  const sep40SecretKey =
+    process.env[`SEP40_PUBLISHER_SECRET_KEY_${suffix}`] ||
+    (network === 'testnet' ? process.env.SEP40_PUBLISHER_SECRET_KEY : undefined)
+
+  // A key with no contract, or a contract with no key, is an incomplete
+  // deployment rather than a mistake worth crashing on — publication stays off
+  // and says so.
+  const publisherEnabled =
+    (process.env[`SEP40_ENABLED_${suffix}`] ?? 'false').toLowerCase() !== 'false' &&
+    isUsableContractId(sep40ContractId, `SEP40_CONTRACT_ID_${suffix}`) &&
+    Boolean(sep40SecretKey)
+
+  if (
+    (process.env[`SEP40_ENABLED_${suffix}`] ?? '').toLowerCase() === 'true' &&
+    !publisherEnabled
+  ) {
+    log.warn(
+      { network, envVar: `SEP40_ENABLED_${suffix}`, contractId: sep40ContractId || undefined },
+      `SEP40_ENABLED_${suffix}=true but publication is disabled on ${network}: it needs a valid SEP40_CONTRACT_ID_${suffix} and a SEP40_PUBLISHER_SECRET_KEY_${suffix}`
+    )
+  }
+
   // ── Watched pairs ─────────────────────────────────────────────────────────
   // Mainnet gets a default for the same reason every field above does: turning
   // it on should not require knowing an issuer address by heart. USDC/XLM is
@@ -227,6 +392,21 @@ function buildNetworkConfig(network: NetworkName): NetworkConfig {
     process.env[`WATCHED_PAIRS_${suffix}`] ||
     (network === 'testnet' ? process.env.WATCHED_PAIRS : undefined) ||
     (network === 'mainnet' ? MAINNET_DEFAULT_PAIRS : '')
+
+  // ── Multi-hop Routing ───────────────────────────────────────────────────
+  const maxHopsRaw =
+    process.env[`ROUTING_MAX_HOPS_${suffix}`] ||
+    (network === 'testnet' ? process.env.ROUTING_MAX_HOPS : undefined) ||
+    '3'
+  const maxHops = Math.max(1, parseInt(maxHopsRaw, 10) || 3)
+
+  const defaultIntermediates =
+    network === 'mainnet' ? MAINNET_DEFAULT_INTERMEDIATES : TESTNET_DEFAULT_INTERMEDIATES
+  const rawIntermediates =
+    process.env[`ROUTING_INTERMEDIATES_${suffix}`] ||
+    (network === 'testnet' ? process.env.ROUTING_INTERMEDIATES : undefined) ||
+    defaultIntermediates
+  const intermediates = parseIntermediateAssets(rawIntermediates)
 
   // ── Facilitator ───────────────────────────────────────────────────────────
   const facilitatorSecretKey =
@@ -254,8 +434,25 @@ function buildNetworkConfig(network: NetworkName): NetworkConfig {
       enabled: aquariusEnabled,
       apiUrl: aquariusApiUrl,
     },
+    defindex: {
+      enabled: defindexEnabled,
+      factoryAddress: defindexFactory,
+      pollIntervalMs: defindexPollMs,
+    },
+    phoenix: {
+      enabled: phoenixEnabled,
+      factoryAddress: phoenixFactory,
+      pollIntervalMs: phoenixPollMs,
+      poolCacheTtlMs: phoenixPoolCacheTtlMs,
+    },
     oracle: { enabled: oracleEnabled, reflectorContractId },
+    publisher: {
+      enabled: publisherEnabled,
+      contractId: sep40ContractId,
+      secretKey: sep40SecretKey,
+    },
     pairs: parseWatchedPairs(rawPairs),
+    routing: { maxHops, intermediates },
     facilitator: { secretKey: facilitatorSecretKey, feeStroops: facilitatorFeeStroops },
   }
 }
@@ -265,6 +462,8 @@ function buildNetworkConfig(network: NetworkName): NetworkConfig {
 const globalConfig = {
   db: {
     url: process.env.DATABASE_URL ?? 'postgresql://lens:lens@localhost:5432/lens',
+    connectionLimit: parseInt(process.env.DB_POOL_SIZE ?? '10', 10),
+    poolTimeoutMs: parseInt(process.env.DB_POOL_TIMEOUT_MS ?? '5000', 10),
   },
   redis: {
     url: process.env.REDIS_URL ?? 'redis://localhost:6379',
@@ -277,6 +476,35 @@ const globalConfig = {
     pollIntervalMs: parseInt(process.env.POLL_INTERVAL_MS ?? '5000', 10),
     sdexPageSize: parseInt(process.env.SDEX_PAGE_SIZE ?? '200', 10),
     ammPageSize: parseInt(process.env.AMM_PAGE_SIZE ?? '200', 10),
+  },
+  /**
+   * When the publisher writes to the SEP-40 feed.
+   *
+   * Cost is the reason an oracle batches: a write per tick would put one
+   * transaction per pair per poll interval on chain, which is why every feed
+   * that charges for gas publishes on CHANGE. These are the three knobs that
+   * make that true, and the ceiling that keeps a bad change off chain:
+   *
+   * - `deviationPct`     — publish when the aggregate has moved at least this
+   *                        much from the value already on chain.
+   * - `maxIntervalMs`    — and publish even without movement once this long has
+   *                        passed, so a quiet market does not leave consumers
+   *                        reading a feed with no recent timestamp.
+   * - `minWriteIntervalMs` — the floor between two writes for the same asset,
+   *                        whatever triggered them. This is the rate limit:
+   *                        it bounds the transaction count during a fast market
+   *                        to one per floor, not one per sample.
+   * - `maxAgeSeconds`    — the aggregate itself must be younger than this.
+   *                        Stricter than the API's own stale flag on purpose:
+   *                        the HTTP price can afford to be "as good as we have
+   *                        it", a price a contract settles against cannot.
+   */
+  publisher: {
+    deviationPct: positiveNumber(process.env.SEP40_DEVIATION_PCT, 0.5),
+    maxIntervalMs: positiveNumber(process.env.SEP40_MAX_INTERVAL_MS, 15 * 60 * 1000),
+    minWriteIntervalMs: positiveNumber(process.env.SEP40_MIN_WRITE_INTERVAL_MS, 60 * 1000),
+    maxAgeSeconds: positiveNumber(process.env.SEP40_MAX_AGE_SECONDS, 120),
+    pollIntervalMs: positiveNumber(process.env.SEP40_POLL_INTERVAL_MS, 30 * 1000),
   },
   cache: {
     priceTtl: parseInt(process.env.PRICE_CACHE_TTL ?? '10', 10),
@@ -292,6 +520,10 @@ const globalConfig = {
   },
   http: {
     timeoutMs: parseInt(process.env.HTTP_TIMEOUT_MS ?? '10000', 10),
+  },
+  ws: {
+    pingIntervalMs: parseInt(process.env.WS_PING_INTERVAL_MS ?? '30000', 10),
+    maxMissedPings: parseInt(process.env.WS_MAX_MISSED_PINGS ?? '2', 10),
   },
   outbound: {
     // One operator-maintained list for every outbound fetch the app makes to a
@@ -381,8 +613,11 @@ export const config = {
   get network()  { return resolveNetwork(activeNetwork).network },
   get soroswap() { return resolveNetwork(activeNetwork).soroswap },
   get aquarius() { return resolveNetwork(activeNetwork).aquarius },
+  get defindex() { return resolveNetwork(activeNetwork).defindex },
+  get phoenix()  { return resolveNetwork(activeNetwork).phoenix },
   get oracle()   { return resolveNetwork(activeNetwork).oracle },
   get pairs()    { return resolveNetwork(activeNetwork).pairs },
+  get routing()  { return resolveNetwork(activeNetwork).routing },
   get facilitator() { return resolveNetwork(activeNetwork).facilitator },
 
   // ── Global / network-agnostic ──────────────────────────────────────────────
@@ -390,9 +625,15 @@ export const config = {
   redis:   globalConfig.redis,
   api:     globalConfig.api,
   indexer: globalConfig.indexer,
+  // WHEN to publish, shared by both networks. WHICH contract to publish to is
+  // per-network and lives at `getNetworkConfig(network).publisher` — there is
+  // deliberately no active-network `publisher` shortcut, because the two blocks
+  // are different things and one name for both would be read wrongly.
+  publisher: globalConfig.publisher,
   cache:   globalConfig.cache,
   plausibility: globalConfig.plausibility,
   http:    globalConfig.http,
+  ws:      globalConfig.ws,
   outbound: globalConfig.outbound,
   mcp: globalConfig.mcp,
 }

@@ -41,16 +41,18 @@ describe('GET /screener', () => {
     mockQuery.mockResolvedValue({ rows: [] })
   })
 
-  it('returns rows without a market_cap field', async () => {
+  it('returns rows without a market_cap field, with liquidity_unit and network', async () => {
     mockQuery.mockResolvedValue({ rows: [makeRow()] })
     const app = await buildApp()
     const res = await app.inject({ method: 'GET', url: '/screener' })
 
     expect(res.statusCode).toBe(200)
     const body = res.json()
+    expect(body.network).toBe('testnet')
     expect(body.data).toHaveLength(1)
     expect(body.data[0]).not.toHaveProperty('market_cap')
     expect(body.data[0].liquidity).toBe(50000)
+    expect(body.data[0].liquidity_unit).toBe('USDC')
     expect(lastCall().sql).not.toMatch(/market_cap/)
     await app.close()
   })
@@ -230,11 +232,53 @@ describe('GET /screener', () => {
       await app.close()
     })
 
+    it('echoes the requested network in the response', async () => {
+      mockQuery.mockResolvedValue({ rows: [makeRow()] })
+      const app = await buildApp()
+      const res = await app.inject({ method: 'GET', url: '/screener?network=mainnet' })
+      expect(res.statusCode).toBe(200)
+      expect(res.json().network).toBe('mainnet')
+      await app.close()
+    })
+
     it('rejects an unknown network before querying', async () => {
       const app = await buildApp()
       const res = await app.inject({ method: 'GET', url: '/screener?network=devnet' })
       expect(res.statusCode).toBe(400)
       expect(mockQuery).not.toHaveBeenCalled()
+      await app.close()
+    })
+  })
+
+  describe('liquidity definition', () => {
+    it('defines liquidity in the SQL query as reserve_a * spot_price + reserve_b summed over active AMM pool snapshots', async () => {
+      const app = await buildApp()
+      await app.inject({ method: 'GET', url: '/screener' })
+
+      const { sql } = lastCall()
+      // Verifies SQL computes pool_liq exactly as reserve_a * spot_price + reserve_b
+      expect(sql).toMatch(/\(ps\.reserve_a\s*\*\s*ps\.spot_price\s*\+\s*ps\.reserve_b\)\s+AS\s+pool_liq/)
+      // Verifies sources are AMM pools
+      expect(sql).toMatch(/FROM price_points\s+WHERE network = \$1 AND source = 'AMM' AND pool_id IS NOT NULL/)
+      // Verifies summed across pools per pair
+      expect(sql).toMatch(/SELECT pp\.pair_key,\s*SUM\(ls\.pool_liq\)\s+AS\s+liquidity/)
+      await app.close()
+    })
+
+    it('names the unit as the quote asset in pair_key', async () => {
+      mockQuery.mockResolvedValue({
+        rows: [
+          makeRow({ pair_key: 'XLM/USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN' }),
+          makeRow({ pair_key: 'BTC/EURC' }),
+        ],
+      })
+      const app = await buildApp()
+      const res = await app.inject({ method: 'GET', url: '/screener' })
+
+      expect(res.statusCode).toBe(200)
+      const body = res.json()
+      expect(body.data[0].liquidity_unit).toBe('USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN')
+      expect(body.data[1].liquidity_unit).toBe('EURC')
       await app.close()
     })
   })

@@ -1,10 +1,14 @@
+import { redis } from '../redis'
+import { createLogger } from '../logger'
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { createHash, timingSafeEqual } from 'crypto'
 import fp from 'fastify-plugin'
 import { prisma } from '../db'
 import { api_key_auth_failures_total } from '../metrics'
 
-type ApiKeyAuthFailureReason = 'missing' | 'malformed' | 'unknown' | 'revoked' | 'expired'
+const log = createLogger('auth')
+
+type ApiKeyAuthFailureReason = 'missing' | 'malformed' | 'unknown' | 'revoked' | 'expired' | 'insufficient_scope'
 
 /**
  * Metadata for an authenticated API key, attached to each request as
@@ -15,6 +19,7 @@ export interface ApiKeyContext {
   label: string
   ratePerMin: number
   ratePerDay: number
+  scopes: string[]
 }
 
 declare module 'fastify' {
@@ -24,12 +29,29 @@ declare module 'fastify' {
   interface FastifyContextConfig {
     /** When true, the API-key auth hook skips this route (e.g. health, admin). */
     public?: boolean
+    /** Required scope to access this route (e.g. 'read:prices', 'read:history', 'subscribe'). */
+    scope?: string
+    /** Required scopes to access this route. */
+    scopes?: string[]
   }
 }
 
 /** SHA-256 hex digest of a plaintext API key. We only ever store/compare hashes. */
 export function hashApiKey(key: string): string {
   return createHash('sha256').update(key, 'utf8').digest('hex')
+}
+
+/**
+ * Checks whether an API key context satisfies the required scope.
+ *
+ * A key with no scopes recorded (empty or undefined) means "everything"
+ * so that existing integrations continue to work without disruption.
+ */
+export function hasScope(key: ApiKeyContext, requiredScope?: string): boolean {
+  if (!requiredScope) return true
+  // A key with no scopes recorded means "everything"
+  if (!key.scopes || key.scopes.length === 0) return true
+  return key.scopes.includes(requiredScope) || key.scopes.includes('*')
 }
 
 /** Extracts the bearer token from an Authorization header, or null. */
@@ -63,6 +85,7 @@ async function lookupApiKeyResult(
       label: record.label,
       ratePerMin: record.ratePerMin,
       ratePerDay: record.ratePerDay,
+      scopes: record.scopes ?? [],
     },
   }
 }
@@ -90,6 +113,71 @@ export function isAdminAuthorized(req: FastifyRequest): boolean {
 }
 
 /**
+ * Seconds remaining until UTC midnight.
+ * Used for both Redis TTL and the HTTP Retry-After response header.
+ */
+export function getSecondsUntilUtcMidnight(now = new Date()): number {
+  const tomorrow = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1))
+  return Math.max(1, Math.floor((tomorrow.getTime() - now.getTime()) / 1000))
+}
+
+// In-memory fallback daily request tracker (keyed by apiKeyId), used if Redis is unreachable or in tests
+const inMemoryDailyUsage = new Map<string, { count: number; date: string }>()
+
+/**
+ * Checks and increments the daily request count for an authenticated API key.
+ *
+ * Uses Redis (ratelimit:day:{apiKeyId}:{YYYY-MM-DD}) with an expiration set to
+ * the remaining seconds until UTC midnight.
+ *
+ * On Redis being unreachable, allow the request and log it — do not fail closed.
+ * Unlike x402 metering which guards an actual payment and must fail closed,
+ * a rate limiter failing closed would turn a cache/Redis outage into a total API
+ * outage for every authenticated caller, which is a far worse trade.
+ */
+export async function checkAndIncrementDailyUsage(
+  apiKeyId: string,
+  ratePerDay: number,
+): Promise<{ allowed: boolean; remaining: number }> {
+  const now = new Date()
+  const today = now.toISOString().slice(0, 10)
+  const redisKey = `ratelimit:day:${apiKeyId}:${today}`
+
+  try {
+    if (redis && redis.status === 'ready') {
+      const count = await redis.incr(redisKey)
+      if (count === 1) {
+        const ttl = getSecondsUntilUtcMidnight(now)
+        await redis.expire(redisKey, ttl)
+      }
+      if (count > ratePerDay) {
+        return { allowed: false, remaining: 0 }
+      }
+      return { allowed: true, remaining: Math.max(0, ratePerDay - count) }
+    }
+  } catch (err) {
+    // Fail-open: allow request and log warning
+    log.warn({ err, apiKeyId }, 'redis rate limiter unreachable; failing open')
+  }
+
+  // In-memory fallback when Redis is offline or during testing
+  const entry = inMemoryDailyUsage.get(apiKeyId)
+  if (!entry || entry.date !== today) {
+    inMemoryDailyUsage.set(apiKeyId, { count: 1, date: today })
+    return { allowed: true, remaining: Math.max(0, ratePerDay - 1) }
+  }
+  if (entry.count >= ratePerDay) {
+    return { allowed: false, remaining: 0 }
+  }
+  entry.count++
+  return { allowed: true, remaining: Math.max(0, ratePerDay - entry.count) }
+}
+
+export function resetDailyUsage(): void {
+  inMemoryDailyUsage.clear()
+}
+
+/**
  * Fastify plugin that authenticates requests via `Authorization: Bearer <key>`.
  *
  * A request without a valid, non-revoked, unexpired key gets 401. Valid requests have
@@ -108,7 +196,11 @@ async function apiKeyAuthPlugin(app: FastifyInstance) {
 
   app.addHook('onRequest', async (req: FastifyRequest, reply: FastifyReply) => {
     // Allow routes to mark themselves public (no auth required).
-    const routeConfig = (req.routeOptions?.config ?? {}) as { public?: boolean }
+    const routeConfig = (req.routeOptions?.config ?? {}) as {
+      public?: boolean
+      scope?: string
+      scopes?: string[]
+    }
     if (routeConfig.public) return
 
     const authorization = req.headers['authorization']
@@ -157,6 +249,37 @@ async function apiKeyAuthPlugin(app: FastifyInstance) {
     }
 
     req.apiKey = keyContext
+
+    const requiredScopes = routeConfig.scopes ?? (routeConfig.scope ? [routeConfig.scope] : [])
+    for (const scope of requiredScopes) {
+      if (!hasScope(keyContext, scope)) {
+        api_key_auth_failures_total.inc({ reason: 'insufficient_scope' })
+        return reply.status(403).send({
+          error: 'Forbidden',
+          code: 'insufficient_scope',
+          message: `Missing required scope: ${scope}`,
+          requiredScope: scope,
+          scope,
+        })
+      }
+    }
+
+    // The per-minute limiter cannot express a daily cap, so this runs alongside it
+    if (keyContext.ratePerDay && keyContext.ratePerDay > 0) {
+      const { allowed, remaining } = await checkAndIncrementDailyUsage(keyContext.id, keyContext.ratePerDay)
+      const retryAfterSec = getSecondsUntilUtcMidnight()
+      reply.header('X-RateLimit-Limit-Day', keyContext.ratePerDay)
+      reply.header('X-RateLimit-Remaining-Day', remaining)
+      if (!allowed) {
+        reply.header('Retry-After', retryAfterSec)
+        return reply.status(429).send({
+          statusCode: 429,
+          error: 'Too Many Requests',
+          message: `Daily rate limit of ${keyContext.ratePerDay} requests exceeded for this API key. Quota resets at UTC midnight.`,
+          retryAfter: retryAfterSec,
+        })
+      }
+    }
   })
 }
 

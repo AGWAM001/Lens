@@ -147,7 +147,7 @@ When a data quality guarantee is breached, Lens behaves deterministically:
 | `screener_default_limit` | [`20`](../src/routes/screener.ts#L22) | pairs | [`src/routes/screener.ts:22`](../src/routes/screener.ts#L22) | Default limit of pairs returned by screener |
 | `screener_max_limit` | [`100`](../src/routes/screener.ts#L23) | pairs | [`src/routes/screener.ts:23`](../src/routes/screener.ts#L23) | Maximum clamped limit of pairs returned by screener |
 | `spread_min_observations` | [`2`](../src/routes/spreads.ts#L20) | observations | [`src/routes/spreads.ts:20`](../src/routes/spreads.ts#L20) | Minimum observations required before a venue spread is reported |
-| `registered_venues_count` | [`4`](../src/ingest/venues/index.ts#L19) | adapters | [`src/ingest/venues/index.ts:19`](../src/ingest/venues/index.ts#L19) | Total number of registered venue adapters |
+| `registered_venues_count` | [`6`](../src/ingest/venues/index.ts#L23) | adapters | [`src/ingest/venues/index.ts:23`](../src/ingest/venues/index.ts#L23) | Total number of registered venue adapters |
 | `database_price_precision` | [`36`](../prisma/schema.prisma#L20) | digits | [`prisma/schema.prisma:20`](../prisma/schema.prisma#L20) | Total numeric precision in PostgreSQL decimal columns |
 | `database_price_scale` | [`18`](../prisma/schema.prisma#L20) | decimals | [`prisma/schema.prisma:20`](../prisma/schema.prisma#L20) | Decimal places stored for pricing in PostgreSQL |
 | `stellar_native_scale` | [`7`](../prisma/schema.prisma#L21) | decimals | [`prisma/schema.prisma:21`](../prisma/schema.prisma#L21) | Native Stellar stroop scale (one stroop equals ten to the negative seven XLM) |

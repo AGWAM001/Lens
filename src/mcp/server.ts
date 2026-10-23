@@ -18,6 +18,13 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { MCP_ERROR_CODES, McpErrorCode, classifyPaidCallError } from './codes.js';
 import { DEFAULT_MCP_HTTP_HOST, DEFAULT_MCP_HTTP_PORT, DEFAULT_MCP_HTTP_PATH, DEFAULT_MCP_METRICS_PATH, normalizeMcpHttpPath } from './config.js';
+import {
+  DEFAULT_MCP_HTTP_HOST,
+  DEFAULT_MCP_HTTP_PORT,
+  DEFAULT_MCP_HTTP_PATH,
+  DEFAULT_MCP_METRICS_PATH,
+  normalizeMcpHttpPath,
+} from './config.js';
 import { SpendBudget } from './budget.js';
 import { PaymentLedger } from './ledger.js';
 import { getMetrics, register } from '../metrics.js';
@@ -82,6 +89,9 @@ function hostOf(url: string): string {
     return 'unknown host';
   }
 }
+
+export const VALID_TOOL_NAMES = ['bazaar_search', 'paid_call'] as const;
+export type ValidToolName = (typeof VALID_TOOL_NAMES)[number];
 
 export interface McpServerConfig {
   fetchWithPayment: typeof fetch;
@@ -269,6 +279,8 @@ export class BazaarMcpServer {
   readonly paymentLedger: PaymentLedger;
   private limits: McpLimits;
   private resources: LensResourceDescriptor[];
+  /** The audit trail this server writes to. Public so embedders can read spend without parsing the file. */
+  readonly paymentLedger: PaymentLedger;
 
   constructor(config_: McpServerConfig) {
     this.fetchWithPayment = config_.fetchWithPayment;
@@ -571,6 +583,15 @@ export class BazaarMcpServer {
           offset: 0,
           notice: `The spend budget was truncated to fit a ${this.limits.maxResultBytes}-byte tool output limit.`,
         });
+        return this.createBoundedResult(
+          { ...this.budget.snapshot(), recordedSpend: this.paymentLedger.totalSpend() },
+          {
+            maxBytes: this.limits.maxResultBytes,
+            maxItems: Number.MAX_SAFE_INTEGER,
+            offset: 0,
+            notice: `The spend budget was truncated to fit a ${this.limits.maxResultBytes}-byte tool output limit.`,
+          }
+        );
       }
 
       if (request.params.name === 'paid_call') {
@@ -665,6 +686,7 @@ export class BazaarMcpServer {
           return this.createBoundedResult(parsed, budget);
         } catch (e: any) {
           const code = classifyPaidCallError(e).code;
+          const code = this.classifyPaidCallFailure(e);
           const mayHaveSettled = !this.paymentCouldNotHaveSettled(e);
           this.settleReservation(reservationId, mayHaveSettled);
           // No Response reached this process, so the ledger cannot read the offer
@@ -680,7 +702,12 @@ export class BazaarMcpServer {
         }
       }
 
-      throw new Error(`Unknown tool: ${request.params.name}`);
+      const rawName = String(request.params.name ?? '');
+      const boundedName = rawName.slice(0, 64).replace(/[\r\n\t]/g, ' ');
+      return this.createErrorResponse(
+        'ERR_UNKNOWN_TOOL',
+        `Unknown tool '${boundedName}'. Valid tools are: ${VALID_TOOL_NAMES.join(', ')}.`
+      );
     });
   }
 
@@ -731,6 +758,15 @@ export class BazaarMcpServer {
 
     const { code, reason } = classifyPaidCallError(e);
     return this.createErrorResponse(code, reason);
+  }
+
+  /**
+   * The code a thrown paid call maps to, for the audit record. Same answer
+   * {@link handlePaidCallError} shows the agent, so the ledger and the reply can
+   * never disagree about why a payment failed.
+   */
+  private classifyPaidCallFailure(e: unknown): McpErrorCode {
+    return isTimeoutError(e) ? 'ERR_SERVICE_UNREACHABLE' : classifyPaidCallError(e).code;
   }
 
   /**
@@ -846,6 +882,9 @@ export class BazaarMcpServer {
     httpConfig: { authToken: string; path: string }
   ): Promise<void> {
     if (!hasValidBearerToken(req.headers.authorization, httpConfig.authToken)) {
+    settings: { authToken: string; path: string }
+  ): Promise<void> {
+    if (!hasValidBearerToken(req.headers.authorization, settings.authToken)) {
       sendJsonRpcError(
         res,
         401,
@@ -866,6 +905,7 @@ export class BazaarMcpServer {
     }
 
     if (pathname !== httpConfig.path) {
+    if (pathname !== settings.path) {
       if (pathname === DEFAULT_MCP_METRICS_PATH) {
         if (req.method !== 'GET') {
           sendJsonRpcError(

@@ -18,6 +18,12 @@ jobs:
           cache: npm
       - run: npm ci || npm install
       - run: node node_modules/prisma/build/index.js generate
+      - name: Generate TypeScript client from openapi.yaml
+        run: npm run client:gen
+      - name: Fail if the committed client is out of date
+        run: git diff --exit-code -- clients/typescript
+      - name: Typecheck the generated TypeScript client
+        run: npm run client:typecheck
       - run: npx tsc --noEmit
       - run: npm run build
       - run: npm test --if-present

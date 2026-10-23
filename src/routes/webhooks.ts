@@ -17,7 +17,7 @@ export async function registerWebhookRoutes(app: FastifyInstance) {
   // POST /webhooks — subscribe to a price threshold event
   app.post<{
     Body: { url: string; assetA: string; assetB: string; threshold: number; direction: string; network?: string }
-  }>('/webhooks', async (req, reply) => {
+  }>('/webhooks', { config: { scope: 'subscribe' } }, async (req, reply) => {
     const { url, assetA, assetB, threshold, direction, network: bodyNetwork } = req.body ?? {}
 
     if (!url || !isValidHttpsUrl(url)) {
@@ -63,7 +63,7 @@ export async function registerWebhookRoutes(app: FastifyInstance) {
   })
 
   // DELETE /webhooks/:id — unsubscribe
-  app.delete<{ Params: { id: string } }>('/webhooks/:id', async (req, reply) => {
+  app.delete<{ Params: { id: string } }>('/webhooks/:id', { config: { scope: 'subscribe' } }, async (req, reply) => {
     const { id } = req.params
 
     try {

@@ -12,6 +12,7 @@ export async function registerOracleRoutes(
 ) {
   app.get<{ Params: { asset: string }; Querystring: { network?: NetworkName } }>(
     '/compare/:asset',
+    { config: { scope: 'read:prices' } },
     async (req, reply) => {
       const assetCode = req.params.asset.toUpperCase()
       const requestedNetwork = req.query.network

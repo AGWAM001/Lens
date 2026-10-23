@@ -71,6 +71,10 @@ export function historyToCsv(points: HistoryPoint[]): string {
  * bucket) and the summed volume. Buckets are aligned to the Unix epoch so that
  * e.g. a 1h bucket always starts on the hour, independent of the query window.
  * With intervalSecs=60 this returns the raw snapshots unchanged.
+ *
+ * The window is half-open — [from, to). `from` is inclusive, `to` is exclusive
+ * — so two adjacent windows [T0, T1) and [T1, T2) share no boundary and a
+ * snapshot landing exactly on T1 is counted exactly once across the pair.
  */
 export async function queryHistory(
   pair: string,
@@ -87,7 +91,7 @@ export async function queryHistory(
      FROM price_snapshots
      WHERE pair = $2 AND network = $5
        AND ts >= $3
-       AND ts <= $4
+       AND ts < $4
      GROUP BY floor(EXTRACT(EPOCH FROM ts) / $1)
      ORDER BY bucket ASC`,
     [intervalSecs, pair, from, to, network]
@@ -103,8 +107,9 @@ export async function queryHistory(
 /**
  * GET /prices/history?pair=XLM/USDC&from=…&to=…&interval=1m|5m|1h
  *
- * Returns historical price snapshots for a pair over [from, to], optionally
- * aggregated into 5m or 1h buckets. Defaults to the last 24h at 1m resolution.
+ * Returns historical price snapshots for a pair over the half-open window
+ * [from, to) — `from` inclusive, `to` exclusive — optionally aggregated into 5m
+ * or 1h buckets. Defaults to the last 24h at 1m resolution.
  *
  * The network is resolved by the network selector (`?network=` / `x-network`,
  * defaulting to this deployment's active network) and echoed in the response.
@@ -119,7 +124,7 @@ export async function queryHistory(
 export async function registerHistoryRoutes(app: FastifyInstance) {
   app.get<{
     Querystring: { pair?: string; from?: string; to?: string; interval?: string; format?: string }
-  }>('/prices/history', async (req, reply) => {
+  }>('/prices/history', { config: { scope: 'read:history' } }, async (req, reply) => {
     const { pair } = req.query
     if (!pair) {
       return reply.status(400).send({ error: 'pair query parameter is required' })

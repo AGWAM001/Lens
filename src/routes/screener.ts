@@ -11,6 +11,19 @@ import '../middleware/network' // declares req.network on the FastifyRequest typ
 const MARKET_CAP_UNSUPPORTED =
   'market_cap is not supported: Lens has no circulating supply data to compute it from. Use liquidity instead'
 
+/**
+ * Liquidity Definition for /screener:
+ * - Sources/Venues: Stellar AMM liquidity pools (source = 'AMM' in price_points,
+ *   mapped to pool_snapshots for the pair).
+ * - Valuation & Formula: Summed across all active AMM pools for the pair of
+ *   `(reserve_a * spot_price + reserve_b)`. Since spot_price is quoted in
+ *   `asset_b` per unit of `asset_a` (i.e. reserve_b / reserve_a), `reserve_a * spot_price`
+ *   evaluates to the value of reserve_a denominated in asset_b.
+ * - Unit: Denominated in the quote asset (counter asset, `asset_b`, the second asset
+ *   in `pair_key` "BASE/QUOTE"). Named explicitly as `liquidity_unit` in each row.
+ * - Prices: Spot price from the latest snapshot of each liquidity pool on the requested network.
+ */
+
 /** Machine-readable code for the market_cap rejection (not a validation error). */
 const MARKET_CAP_CODE = 'UNSUPPORTED_PARAMETER'
 
@@ -87,7 +100,7 @@ export async function registerScreenerRoutes(app: FastifyInstance) {
       cursor?: string
       limit?: string
     }
-  }>('/screener', async (req, reply) => {
+  }>('/screener', { config: { scope: 'read:prices' } }, async (req, reply) => {
     const log = req.log.child({ component: 'route:screener' })
     try {
       const q = req.query
@@ -235,7 +248,11 @@ export async function registerScreenerRoutes(app: FastifyInstance) {
       }
 
       return {
-        data,
+        network: req.network ?? activeNetwork,
+        data: data.map((row) => ({
+          ...row,
+          liquidity_unit: row.pair_key.split('/')[1] ?? 'quote',
+        })),
         nextCursor,
         hasMore,
         total: null,

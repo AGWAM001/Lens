@@ -66,9 +66,16 @@ const { fakeTable, mockCreateMany } = vi.hoisted(() => {
 })
 
 vi.mock('pg', () => ({
+  // `on` as well as `query`: src/db.ts subscribes to the pool's 'error' and
+  // 'acquire' events at module load to feed the pool metrics, so a double that
+  // only answers queries makes this file fail to import rather than fail a
+  // test. A fake should look like the thing it replaces.
   Pool: class FakePool {
     query() {
       return Promise.resolve({ rows: [] })
+    }
+    on() {
+      return this
     }
   },
 }))

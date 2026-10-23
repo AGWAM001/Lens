@@ -38,6 +38,14 @@ const PAID_URL = 'https://bazaar.example/api/v1/price';
 // hosts the paid calls below are allowed to reach.
 const ALLOWED_PAID_HOSTS = ['bazaar.example', 'spend-export.test'];
 
+/**
+ * `paid_call` pays only for hosts the operator allow-listed (#404), and in these
+ * tests the harness is the operator. The spend-metrics case below deliberately
+ * calls a host that is NOT here, to prove an unlisted host can never become a
+ * metric series of its own.
+ */
+const PAID_CALL_ALLOWLIST = ['bazaar.example', 'spend-export.test'];
+
 const openHandles: McpHttpServerHandle[] = [];
 
 afterEach(async () => {
@@ -61,6 +69,9 @@ async function startHttp(
     ...(budget ? { budget } : {}),
     ...(paymentLedger ? { paymentLedger } : {}),
     paidCallAllowlist: ALLOWED_PAID_HOSTS,
+    paidCallAllowlist: PAID_CALL_ALLOWLIST,
+    ...(budget ? { budget } : {}),
+    ...(paymentLedger ? { paymentLedger } : {}),
   });
   const handle = await server.runHttp({
     host: '127.0.0.1',
@@ -337,6 +348,7 @@ describe('MCP HTTP transport parity', () => {
     const directServer = new BazaarMcpServer({
       fetchWithPayment: directFetch as unknown as typeof fetch,
       paidCallAllowlist: ALLOWED_PAID_HOSTS,
+      paidCallAllowlist: PAID_CALL_ALLOWLIST,
     });
     const [directClientTransport, directServerTransport] = InMemoryTransport.createLinkedPair();
     await (directServer as any).server.connect(directServerTransport);
@@ -355,6 +367,9 @@ describe('MCP HTTP transport parity', () => {
       method: 'GET',
       signal: expect.any(AbortSignal),
     });
+    // objectContaining, not an exact match: the request also carries an
+    // AbortSignal deadline.
+    expect(httpFetch).toHaveBeenCalledWith(PAID_URL, expect.objectContaining({ method: 'GET' }));
   });
 
   it('advertises the budget tool over HTTP exactly as it does in-process', async () => {

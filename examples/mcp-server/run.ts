@@ -120,6 +120,8 @@ async function main() {
     paidCallAllowlist,
     // Lens's own aggregated prices, read from the same Postgres the API serves.
     priceQueries: createLensPriceQueries(),
+  const server = new BazaarMcpServer({
+    fetchWithPayment,
     budget,
     paymentLedger
   });
@@ -137,11 +139,31 @@ async function main() {
       '[mcp-server] MCP_METRIC_HOSTS is empty, so every spend series is labelled host="unknown". Set it to the nodes this agent pays to get per-host spend.'
     );
   }
+  console.error(`[mcp-server] Spend limits: ${budget.describeLimits()}`);
+  // The audit file records where money went, never the key that signed it.
+  console.error(`[mcp-server] Payment audit trail: ${ledgerFile}`);
   console.error(
-    paidCallAllowlist.length > 0
-      ? `[mcp-server] paid_call may pay these allow-listed origins: ${paidCallAllowlist.join(', ')}`
-      : '[mcp-server] paid_call allow-list is empty: every paid call will be refused. Set MCP_PAID_CALL_ALLOWED_HOSTS to allow hosts.'
+    `[mcp-server] Spend metric labels — host: ${formatLabelDomain(labelHosts)}; network: ${formatLabelDomain(labelNetworks)}`
   );
+  if (!labelHosts.length) {
+    console.error(
+      '[mcp-server] MCP_METRIC_HOSTS is empty, so every spend series is labelled host="unknown". Set it to the nodes this agent pays to get per-host spend.'
+    );
+  }
+
+  if (transportConfig.transport === 'http') {
+    console.error('[mcp-server] Starting Bazaar MCP server on streamable HTTP...');
+    const handle = await server.runHttp(transportConfig);
+    const address = handle.server.address();
+    const host = address && typeof address === 'object' ? address.address : transportConfig.host;
+    const port = address && typeof address === 'object' ? address.port : transportConfig.port;
+    console.error(`[mcp-server] Listening at ${formatHttpUrl(host, port, transportConfig.path)}`);
+    console.error('[mcp-server] Bearer token authentication is required for every request');
+    console.error(
+      `[mcp-server] Payment spend metrics: GET ${formatHttpUrl(host, port, DEFAULT_MCP_METRICS_PATH)} with the same bearer token`
+    );
+    return;
+  }
 
   if (transportConfig.transport === 'http') {
     console.error('[mcp-server] Starting Bazaar MCP server on streamable HTTP...');

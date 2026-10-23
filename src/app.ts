@@ -1,6 +1,8 @@
 import Fastify, { type FastifyInstance, type RouteOptions } from 'fastify'
+import { randomUUID } from 'node:crypto'
 import cors from '@fastify/cors'
 import compress from '@fastify/compress'
+import { sendInternalError } from './errors'
 import rateLimit from '@fastify/rate-limit'
 import { registerRESTRoutes } from './api/rest'
 import { registerGraphQL } from './api/graphql'
@@ -23,6 +25,7 @@ import { registerPriceRoutes } from './routes/price'
 import { registerVolumeRoutes } from './routes/volumes'
 import { registerBookRoutes } from './routes/book'
 import { registerSpreadsRoutes } from './routes/spreads'
+import { registerRateRoutes } from './routes/rates'
 import { registerBenchmarkRoutes } from './routes/benchmark'
 import { registerOracleRoutes } from './routes/oracle'
 import { registerBasketRoutes } from './routes/basket'
@@ -32,11 +35,13 @@ import { registerSnapshotRoutes } from './routes/snapshot'
 import { registerVenueRoutes } from './routes/venues'
 import { registerSettleRoute } from './routes/facilitator'
 import { registerHealthRoutes } from './routes/health'
+import { registerTvlRoutes } from './routes/tvl'
 import { registerCachePolicy } from './middleware/cachePolicy'
 import { registerFiatRoutes } from './routes/fiat'
 import { registerGlobalRateLimit, parseGlobalRateLimit } from './middleware/globalRateLimit'
 import { getMetrics, rate_limit_rejections_total } from './metrics'
 import { loggerOptions, createDestination } from './logger'
+import { isPoolExhaustionError, recordPoolExhaustion } from './db'
 
 /**
  * Routes the rate limiter skips.
@@ -82,6 +87,15 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   // printing) with Fastify so `req.log` is scrubbed the same way.
   const app = Fastify({
     logger: { ...loggerOptions(), stream: createDestination() },
+    genReqId: () => randomUUID(),
+  })
+
+  app.setErrorHandler((error: any, req, reply) => {
+    const statusCode = typeof error?.statusCode === 'number' ? error.statusCode : 500
+    if (statusCode < 500) {
+      return reply.status(statusCode).send(error)
+    }
+    return sendInternalError(reply, req, error, 'Unhandled server error')
   })
 
   // Capture route registrations first, so it observes every route below
@@ -203,6 +217,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   await registerVolumeRoutes(app)
   await registerBookRoutes(app)
   await registerSpreadsRoutes(app)
+  await registerRateRoutes(app)
   await registerBenchmarkRoutes(app)
   await registerOracleRoutes(app)
   await registerBasketRoutes(app)
@@ -213,8 +228,24 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   await registerFiatRoutes(app)
   await registerSettleRoute(app)
   await registerHealthRoutes(app)
+  await registerTvlRoutes(app)
   await registerGraphQL(app)
   await registerWebSocket(app)
+
+  // Global error handler: catches unhandled errors, ensuring database pool exhaustion
+  // is diagnosed with distinct logging and metric incrementation rather than a generic 500.
+  app.setErrorHandler((error, req, reply) => {
+    if (isPoolExhaustionError(error)) {
+      recordPoolExhaustion(error, `http:${req.method}:${req.url}`)
+      return reply.status(503).send({
+        error: 'Service Unavailable',
+        message: 'Database connection pool exhausted. Please retry shortly.',
+        code: 'DB_POOL_EXHAUSTED',
+      })
+    }
+    req.log.error(error)
+    return reply.send(error)
+  })
 
   // Prometheus metrics endpoint (un-gated, public — no API key required)
   app.get('/metrics', { config: { public: true } }, async (req, reply) => {

@@ -3,6 +3,7 @@ import { pgPool } from '../db'
 import { getCachedSnapshot, setCachedSnapshot } from '../redis'
 import { config, getNetworkConfig, activeNetwork, type NetworkName } from '../config'
 import { snapshotResponseSchema } from '../api/schemas'
+import { sendInternalError } from '../errors'
 import type { AssetId, WatchedPair } from '../types'
 
 /**
@@ -328,9 +329,7 @@ export async function registerSnapshotRoutes(app: FastifyInstance) {
         latest = Array.isArray(row.latest) ? row.latest : []
         pools = Array.isArray(row.pools) ? row.pools : []
       } catch (err) {
-        return reply
-          .status(500)
-          .send({ error: `Snapshot aggregation failed: ${(err as Error).message}` })
+        return sendInternalError(reply, req, err, 'Snapshot aggregation failed')
       }
 
       const asOfMs = asOf.getTime()
