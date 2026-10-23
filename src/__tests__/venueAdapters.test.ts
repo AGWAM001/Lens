@@ -6,6 +6,7 @@ import {
   soroswapAdapter,
   aquariusAdapter,
   defindexAdapter,
+  phoenixAdapter,
   startVenueAdapter,
   startAllVenueAdapters,
   writeVenuePricePoints,
@@ -39,7 +40,10 @@ describe('VenueAdapter Interface and Runner (#218)', () => {
     expect(venueAdapters).toContain(soroswapAdapter)
     expect(venueAdapters).toContain(aquariusAdapter)
     expect(venueAdapters).toContain(defindexAdapter)
-    expect(venueAdapters.length).toBe(5)
+    // Registration is what makes index.ts start one Phoenix instance per entry
+    // in ENABLED_NETWORKS, each writing the network it read from.
+    expect(venueAdapters).toContain(phoenixAdapter)
+    expect(venueAdapters.length).toBe(6)
   })
 
   it('ensures each adapter implements the VenueAdapter contract', () => {
@@ -62,6 +66,9 @@ describe('VenueAdapter Interface and Runner (#218)', () => {
     expect(soroswapAdapter.source).toBe('soroswap_amm')
     expect(aquariusAdapter.source).toBe('aquarius_amm')
     expect(defindexAdapter.source).toBe('defindex_vault')
+    // Phoenix gets its own source: a price that cannot be attributed to a venue
+    // is worse than no price, so it must never share a row label.
+    expect(phoenixAdapter.source).toBe('phoenix_amm')
   })
 
   it('manages last-price tracking with network and pairKey isolation in runner', () => {

@@ -48,6 +48,19 @@ export interface NetworkConfig {
     /** How often to poll DeFindex vault share prices in ms. */
     pollIntervalMs: number
   }
+  phoenix: {
+    /** Whether Phoenix has a usable deployment on this network. */
+    enabled: boolean
+    /**
+     * Phoenix factory contract id for this network. Pools are enumerated from
+     * it (`query_pools`) rather than from a list kept in this repo.
+     */
+    factoryAddress: string
+    /** How often to poll Phoenix pool reserves in ms. */
+    pollIntervalMs: number
+    /** How long the discovered pool list is reused before re-enumerating, in ms. */
+    poolCacheTtlMs: number
+  }
   oracle: {
     /** Whether the Reflector oracle is deployed on this network. */
     enabled: boolean
@@ -286,6 +299,40 @@ function buildNetworkConfig(network: NetworkName): NetworkConfig {
     10
   )
 
+  // ── Phoenix AMM (Soroban) ─────────────────────────────────────────────────
+  // Mainnet factory id taken verbatim from Phoenix's own repository —
+  // scripts/extend-queries.sh and scripts/deploy_pool.sh both set
+  // FACTORY="CB4SVAWJA6TSRNOJZ7W2AWFW46D5VR4ZMFZKDIKXEINZCZEGZCJZCKMI"
+  // alongside RPC_URL=https://mainnet.sorobanrpc.com and the public-network
+  // passphrase (https://github.com/Phoenix-Protocol-Group/phoenix-contracts).
+  //
+  // There is no built-in testnet id: Phoenix does not publish a testnet
+  // deployment, so a testnet factory only exists if an operator deploys one and
+  // names it here. An id that is empty or malformed leaves the venue disabled
+  // on that network rather than pointing the ingester at something invented.
+  const phoenixFactory =
+    process.env[`PHOENIX_FACTORY_ADDRESS_${suffix}`] ||
+    (network === 'testnet' ? process.env.PHOENIX_FACTORY_ADDRESS : undefined) ||
+    (network === 'mainnet'
+      ? 'CB4SVAWJA6TSRNOJZ7W2AWFW46D5VR4ZMFZKDIKXEINZCZEGZCJZCKMI'
+      : '')
+
+  const phoenixEnabled =
+    (process.env[`PHOENIX_ENABLED_${suffix}`] ?? 'true').toLowerCase() !== 'false' &&
+    isUsableContractId(phoenixFactory, `PHOENIX_FACTORY_ADDRESS_${suffix}`)
+
+  const phoenixPollMs = parseInt(
+    process.env.PHOENIX_POLL_INTERVAL_MS || '60000',
+    10
+  )
+
+  // Pool enumeration is one RPC read of the whole factory, so it is reused
+  // across pairs and cycles instead of being paid for on every price poll.
+  const phoenixPoolCacheTtlMs = parseInt(
+    process.env.PHOENIX_POOL_CACHE_TTL_MS || '600000',
+    10
+  )
+
   // ── Reflector oracle ──────────────────────────────────────────────────────
   // No built-in default: the previous mainnet literal was a malformed
   // (55-character) id and a replacement could not be verified against
@@ -391,6 +438,12 @@ function buildNetworkConfig(network: NetworkName): NetworkConfig {
       enabled: defindexEnabled,
       factoryAddress: defindexFactory,
       pollIntervalMs: defindexPollMs,
+    },
+    phoenix: {
+      enabled: phoenixEnabled,
+      factoryAddress: phoenixFactory,
+      pollIntervalMs: phoenixPollMs,
+      poolCacheTtlMs: phoenixPoolCacheTtlMs,
     },
     oracle: { enabled: oracleEnabled, reflectorContractId },
     publisher: {
@@ -555,6 +608,7 @@ export const config = {
   get soroswap() { return resolveNetwork(activeNetwork).soroswap },
   get aquarius() { return resolveNetwork(activeNetwork).aquarius },
   get defindex() { return resolveNetwork(activeNetwork).defindex },
+  get phoenix()  { return resolveNetwork(activeNetwork).phoenix },
   get oracle()   { return resolveNetwork(activeNetwork).oracle },
   get pairs()    { return resolveNetwork(activeNetwork).pairs },
   get routing()  { return resolveNetwork(activeNetwork).routing },

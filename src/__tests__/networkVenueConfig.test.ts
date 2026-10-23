@@ -1,5 +1,5 @@
 /**
- * Unit tests for per-network venue configuration (Soroswap / Aquarius / Reflector).
+ * Unit tests for per-network venue configuration (Soroswap / Aquarius / Phoenix / Reflector).
  *
  * Each test resets modules and re-imports `../config` after mutating
  * `process.env` so the lazy per-network cache in config.ts is rebuilt from
@@ -45,6 +45,13 @@ const ENV_KEYS = [
   'SOROSWAP_FACTORY_ADDRESS',
   'SOROSWAP_FACTORY_ADDRESS_TESTNET',
   'SOROSWAP_FACTORY_ADDRESS_MAINNET',
+  'PHOENIX_FACTORY_ADDRESS',
+  'PHOENIX_FACTORY_ADDRESS_TESTNET',
+  'PHOENIX_FACTORY_ADDRESS_MAINNET',
+  'PHOENIX_ENABLED_TESTNET',
+  'PHOENIX_ENABLED_MAINNET',
+  'PHOENIX_POLL_INTERVAL_MS',
+  'PHOENIX_POOL_CACHE_TTL_MS',
   'WATCHED_PAIRS',
   'WATCHED_PAIRS_TESTNET',
   'WATCHED_PAIRS_MAINNET',
@@ -241,5 +248,104 @@ describe('per-network venue config', () => {
 
     expect(getNetworkConfig('testnet').aquarius.apiUrl).toBe('https://example.com/aquarius/')
     expect(getNetworkConfig('mainnet').aquarius.apiUrl).toBe('https://example.com/aquarius/')
+  })
+
+  // ── Phoenix ────────────────────────────────────────────────────────────────
+
+  it('ships the Phoenix mainnet factory id published by Phoenix itself', async () => {
+    delete process.env.PHOENIX_FACTORY_ADDRESS
+    delete process.env.PHOENIX_FACTORY_ADDRESS_TESTNET
+    delete process.env.PHOENIX_FACTORY_ADDRESS_MAINNET
+
+    const { getNetworkConfig } = await loadConfig()
+    const { phoenix } = getNetworkConfig('mainnet')
+
+    // scripts/extend-queries.sh and scripts/deploy_pool.sh in
+    // github.com/Phoenix-Protocol-Group/phoenix-contracts both set FACTORY to
+    // exactly this id, next to mainnet.sorobanrpc.com and the public
+    // passphrase. Pinned whole: an elided or invented id would decode fine for
+    // one network and quote nothing, or worse, someone else's contracts.
+    expect(phoenix.factoryAddress).toBe('CB4SVAWJA6TSRNOJZ7W2AWFW46D5VR4ZMFZKDIKXEINZCZEGZCJZCKMI')
+    expect(phoenix.factoryAddress).toHaveLength(56)
+    expect(StrKey.isValidContract(phoenix.factoryAddress)).toBe(true)
+    expect(phoenix.enabled).toBe(true)
+  })
+
+  it('has no built-in Phoenix testnet factory: the venue stays disabled until one is configured', async () => {
+    delete process.env.PHOENIX_FACTORY_ADDRESS
+    delete process.env.PHOENIX_FACTORY_ADDRESS_TESTNET
+
+    const { getNetworkConfig } = await loadConfig()
+
+    // Phoenix publishes no testnet deployment. Defaulting to something
+    // "plausible" here would ingest a contract that does not exist and label the
+    // resulting absence of prices as a live market.
+    const { phoenix } = getNetworkConfig('testnet')
+    expect(phoenix.factoryAddress).toBe('')
+    expect(phoenix.enabled).toBe(false)
+  })
+
+  it('enables Phoenix on testnet when a valid factory id is configured', async () => {
+    process.env.PHOENIX_FACTORY_ADDRESS_TESTNET = VALID_CONTRACT_ID
+
+    const { getNetworkConfig } = await loadConfig()
+    const { phoenix } = getNetworkConfig('testnet')
+
+    expect(phoenix.enabled).toBe(true)
+    expect(phoenix.factoryAddress).toBe(VALID_CONTRACT_ID)
+  })
+
+  it('rejects a malformed Phoenix factory id, disabling the venue and naming the env var', async () => {
+    // config.ts warns through the structured logger, not console — same shape
+    // the Reflector and Soroswap cases above assert.
+    configLogger.warn.mockClear()
+    const MALFORMED = 'CB4SVAWJA6TSRNOJZ7W2AWFW46D5VR4ZMFZKDIKXEINZCZEGZCJZCKM'
+    process.env.PHOENIX_FACTORY_ADDRESS_MAINNET = MALFORMED
+
+    const { getNetworkConfig } = await loadConfig()
+
+    expect(MALFORMED).toHaveLength(55)
+    expect(getNetworkConfig('mainnet').phoenix.enabled).toBe(false)
+    expect(configLogger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ envVar: 'PHOENIX_FACTORY_ADDRESS_MAINNET', value: MALFORMED }),
+      expect.stringContaining('invalid Soroban contract id')
+    )
+  })
+
+  it('applies the unsuffixed PHOENIX_FACTORY_ADDRESS to testnet only', async () => {
+    // A single-network deployment sets the generic var. Letting it reach mainnet
+    // would aim the mainnet ingester at a testnet contract and merge the two
+    // markets into one series under a real-looking source label.
+    process.env.PHOENIX_FACTORY_ADDRESS = VALID_CONTRACT_ID
+    delete process.env.PHOENIX_FACTORY_ADDRESS_TESTNET
+    delete process.env.PHOENIX_FACTORY_ADDRESS_MAINNET
+
+    const { getNetworkConfig } = await loadConfig()
+
+    expect(getNetworkConfig('testnet').phoenix.factoryAddress).toBe(VALID_CONTRACT_ID)
+    expect(getNetworkConfig('mainnet').phoenix.factoryAddress).toBe(
+      'CB4SVAWJA6TSRNOJZ7W2AWFW46D5VR4ZMFZKDIKXEINZCZEGZCJZCKMI'
+    )
+  })
+
+  it('disables Phoenix when PHOENIX_ENABLED_MAINNET=false even with a valid factory', async () => {
+    process.env.PHOENIX_ENABLED_MAINNET = 'false'
+
+    const { getNetworkConfig } = await loadConfig()
+
+    expect(getNetworkConfig('mainnet').phoenix.enabled).toBe(false)
+  })
+
+  it('resolves Phoenix poll and pool-cache intervals', async () => {
+    delete process.env.PHOENIX_POLL_INTERVAL_MS
+    delete process.env.PHOENIX_POOL_CACHE_TTL_MS
+
+    const { getNetworkConfig } = await loadConfig()
+    expect(getNetworkConfig('mainnet').phoenix.pollIntervalMs).toBe(60_000)
+    expect(getNetworkConfig('mainnet').phoenix.poolCacheTtlMs).toBe(600_000)
+
+    process.env.PHOENIX_POOL_CACHE_TTL_MS = '90000'
+    const reloaded = await loadConfig()
+    expect(reloaded.getNetworkConfig('mainnet').phoenix.poolCacheTtlMs).toBe(90_000)
   })
 })
