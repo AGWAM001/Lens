@@ -26,6 +26,7 @@ export const MCP_ERROR_CODES = {
   //                        paid_call allow-list — #487
   ERR_URL_BLOCKED: 'ERR_URL_BLOCKED',
   ERR_HOST_NOT_ALLOWED: 'ERR_HOST_NOT_ALLOWED',
+  ERR_UNKNOWN_TOOL: 'ERR_UNKNOWN_TOOL',
   ERR_INTERNAL_FAILURE: 'ERR_INTERNAL_FAILURE'
 } as const;
 

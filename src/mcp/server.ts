@@ -89,6 +89,9 @@ function hostOf(url: string): string {
   }
 }
 
+export const VALID_TOOL_NAMES = ['bazaar_search', 'paid_call'] as const;
+export type ValidToolName = (typeof VALID_TOOL_NAMES)[number];
+
 export interface McpServerConfig {
   fetchWithPayment: typeof fetch;
   /**
@@ -681,7 +684,12 @@ export class BazaarMcpServer {
         }
       }
 
-      throw new Error(`Unknown tool: ${request.params.name}`);
+      const rawName = String(request.params.name ?? '');
+      const boundedName = rawName.slice(0, 64).replace(/[\r\n\t]/g, ' ');
+      return this.createErrorResponse(
+        'ERR_UNKNOWN_TOOL',
+        `Unknown tool '${boundedName}'. Valid tools are: ${VALID_TOOL_NAMES.join(', ')}.`
+      );
     });
   }
 
