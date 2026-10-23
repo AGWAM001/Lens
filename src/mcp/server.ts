@@ -334,13 +334,18 @@ export class BazaarMcpServer {
           name: 'bazaar_search',
           description:
             'Search for resources in a Stellar Bazaar node. The result is a bounded page: ' +
-            'check "truncated" and "total", and re-ask with limit and offset to page through the rest.',
+            'check "truncated" and "total", and re-ask with limit and offset to page through the rest. ' +
+            'Cost: free — this tool spends nothing and needs no payment key. ' +
+            'Requires a reachable HTTP or HTTPS base URL of a Bazaar catalog node; pass the root URL, not a resource path. ' +
+            'Do not use it to make a paid request (use paid_call), or to read order books or prices (use the Lens REST and GraphQL APIs).',
           inputSchema: zodToToolInputSchema(BAZAAR_SEARCH_ARGUMENTS_SCHEMA),
         },
         {
           name: 'paid_call',
           description:
             'Make a paid API call to a Bazaar resource, handling the 402 loop automatically. ' +
+            'Cost: this spends real funds from the operator key, and needs a funded signer with the right trustlines. ' +
+            'Do not use it for free discovery (use bazaar_search), and do not use it when you do not intend to spend. ' +
             (this.budget
               ? this.budget.describeLimits() + ' '
               : 'No cumulative spend ceiling is configured for this server; payments are bounded per call only. ') +

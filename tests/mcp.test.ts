@@ -288,6 +288,24 @@ describe('BazaarMcpServer argument validation (#411)', () => {
   }
 
   describe('advertised schema', () => {
+    it('tells the caller what each tool costs and when not to reach for it', async () => {
+      const server = new BazaarMcpServer({ paidCallAllowlist: ['example.com'] });
+      const { listHandler } = captureHandlers(server);
+      const res = await listHandler({});
+      const tools = res.tools as Array<{ name: string; description: string }>;
+
+      // A model picks a tool from its description alone. Saying bazaar_search
+      // is free and paid_call spends real funds — and naming the other tool to
+      // reach for instead — is what stops a free lookup being made as a payment.
+      const search = tools.find((t) => t.name === 'bazaar_search')
+      expect(search?.description).toContain('free')
+      expect(search?.description).toContain('paid_call')
+
+      const paid = tools.find((t) => t.name === 'paid_call')
+      expect(paid?.description).toContain('spends real funds')
+      expect(paid?.description).toContain('bazaar_search')
+    })
+
     it('advertises schemas derived from Zod definitions', async () => {
       const server = new BazaarMcpServer({ paidCallAllowlist: ['example.com'] });
       const { listHandler } = captureHandlers(server);
