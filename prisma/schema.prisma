@@ -47,6 +47,40 @@ model PricePoint {
   @@map("price_points")
 }
 
+/// Latest supply/borrow interest rate an asset earns or costs at one lending
+/// venue, written by the rate ingester (Blend, see L079) and read verbatim by
+/// GET /rates/:asset.
+///
+/// Every row is scoped to a `network` exactly like price_points: mainnet and
+/// testnet rates are separate series and are never pooled. `venue` and `source`
+/// name where the number came from, and `poolId`/`poolName` record the specific
+/// market it came from so a response can attribute each rate instead of
+/// silently averaging a live market with a dead one.
+model LendingRate {
+  id          String   @default(uuid())
+  network     String   @default("testnet")
+  asset       String
+  assetIssuer String?  @map("asset_issuer")
+  /// Lending venue the rate was read from (e.g. "blend").
+  venue       String
+  /// Distinct source tag stored on the row, mirroring price_points.source.
+  source      String
+  /// Contract id of the pool/market the rate came from — never elided.
+  poolId      String   @map("pool_id")
+  poolName    String?  @map("pool_name")
+  /// APY earned by supplying the asset, as a fraction (0.05 == 5%).
+  supplyRate  Decimal  @map("supply_rate") @db.Decimal(18, 8)
+  /// APY charged to borrow the asset, as a fraction (0.07 == 7%).
+  borrowRate  Decimal  @map("borrow_rate") @db.Decimal(18, 8)
+  ledger      Int
+  timestamp   DateTime
+
+  @@id([id, timestamp])
+  @@index([network, asset, timestamp(sort: Desc)])
+  @@index([network, asset, venue, timestamp(sort: Desc)])
+  @@map("lending_rates")
+}
+
 model PoolSnapshot {
   id          String   @default(uuid())
   network     String   @default("testnet")

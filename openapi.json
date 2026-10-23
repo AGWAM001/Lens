@@ -1595,6 +1595,49 @@
         }
       }
     },
+    "/rates/{asset}": {
+      "get": {
+        "operationId": "getLendingRates",
+        "summary": "Get supply and borrow rates for an asset across lending venues",
+        "description": "Answers what `asset` earns when supplied and costs to borrow at every lending venue Lens ingests, one entry per venue sorted best-first (highest supply rate first). Each entry names the venue, the source it was read from and the specific pool/market it came from, so a rate is always attributable and venues are never silently averaged.\nAn asset with no lending market returns an empty `venues` list with a 200, not a 404.",
+        "security": [],
+        "parameters": [
+          {
+            "name": "asset",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "USDC"
+          },
+          {
+            "$ref": "#/components/parameters/NetworkQuery"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Per-venue lending rates, best-first (empty when no market)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RatesResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid network"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "description": "Rate lookup failed"
+          }
+        }
+      }
+    },
     "/compare/{asset}": {
       "get": {
         "operationId": "compareAsset",
@@ -4212,6 +4255,101 @@
                 "$ref": "#/components/schemas/SpreadVenue"
               }
             ]
+          }
+        }
+      },
+      "RateVenue": {
+        "type": "object",
+        "required": [
+          "venue",
+          "source",
+          "pool",
+          "poolName",
+          "supplyRate",
+          "borrowRate",
+          "ledger",
+          "updatedAt"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "venue": {
+            "type": "string",
+            "description": "Lending venue the rate was read from (e.g. \"blend\")."
+          },
+          "source": {
+            "type": "string",
+            "description": "Distinct source tag stored on the row."
+          },
+          "pool": {
+            "type": "string",
+            "description": "Pool / market contract id the rate came from, never elided."
+          },
+          "poolName": {
+            "type": "string",
+            "nullable": true,
+            "description": "Human-readable pool name, when the venue publishes one."
+          },
+          "supplyRate": {
+            "type": "number",
+            "description": "APY earned by supplying the asset, as a fraction (0.05 == 5%)."
+          },
+          "borrowRate": {
+            "type": "number",
+            "description": "APY charged to borrow the asset, as a fraction (0.07 == 7%)."
+          },
+          "ledger": {
+            "type": "integer"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "RatesResponse": {
+        "type": "object",
+        "required": [
+          "asset",
+          "network",
+          "venues",
+          "best",
+          "count",
+          "computedAt"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "asset": {
+            "type": "string"
+          },
+          "network": {
+            "type": "string",
+            "enum": [
+              "testnet",
+              "mainnet"
+            ]
+          },
+          "venues": {
+            "type": "array",
+            "description": "One entry per venue, sorted best-first (highest supply rate). Empty when no venue lists the asset.",
+            "items": {
+              "$ref": "#/components/schemas/RateVenue"
+            }
+          },
+          "best": {
+            "nullable": true,
+            "description": "The highest-supply venue, or null when nothing lends the asset.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/RateVenue"
+              }
+            ]
+          },
+          "count": {
+            "type": "integer"
+          },
+          "computedAt": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       },
