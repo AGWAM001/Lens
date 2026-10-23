@@ -2195,6 +2195,54 @@
         }
       }
     },
+    "/discovery/search": {
+      "get": {
+        "operationId": "searchDiscoveryResources",
+        "summary": "Natural language search with ranking and quality evaluation for discoverable resources",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 20
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Search results with relevance ranking and metadata quality",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
     "/webhooks": {
       "post": {
         "operationId": "createWebhook",
