@@ -120,8 +120,6 @@ async function main() {
     paidCallAllowlist,
     // Lens's own aggregated prices, read from the same Postgres the API serves.
     priceQueries: createLensPriceQueries(),
-  const server = new BazaarMcpServer({
-    fetchWithPayment,
     budget,
     paymentLedger
   });
@@ -138,31 +136,6 @@ async function main() {
     console.error(
       '[mcp-server] MCP_METRIC_HOSTS is empty, so every spend series is labelled host="unknown". Set it to the nodes this agent pays to get per-host spend.'
     );
-  }
-  console.error(`[mcp-server] Spend limits: ${budget.describeLimits()}`);
-  // The audit file records where money went, never the key that signed it.
-  console.error(`[mcp-server] Payment audit trail: ${ledgerFile}`);
-  console.error(
-    `[mcp-server] Spend metric labels — host: ${formatLabelDomain(labelHosts)}; network: ${formatLabelDomain(labelNetworks)}`
-  );
-  if (!labelHosts.length) {
-    console.error(
-      '[mcp-server] MCP_METRIC_HOSTS is empty, so every spend series is labelled host="unknown". Set it to the nodes this agent pays to get per-host spend.'
-    );
-  }
-
-  if (transportConfig.transport === 'http') {
-    console.error('[mcp-server] Starting Bazaar MCP server on streamable HTTP...');
-    const handle = await server.runHttp(transportConfig);
-    const address = handle.server.address();
-    const host = address && typeof address === 'object' ? address.address : transportConfig.host;
-    const port = address && typeof address === 'object' ? address.port : transportConfig.port;
-    console.error(`[mcp-server] Listening at ${formatHttpUrl(host, port, transportConfig.path)}`);
-    console.error('[mcp-server] Bearer token authentication is required for every request');
-    console.error(
-      `[mcp-server] Payment spend metrics: GET ${formatHttpUrl(host, port, DEFAULT_MCP_METRICS_PATH)} with the same bearer token`
-    );
-    return;
   }
 
   if (transportConfig.transport === 'http') {
@@ -183,7 +156,6 @@ async function main() {
   console.error(
     '[mcp-server] stdio serves no HTTP listener, so the spend metrics of this process cannot be scraped; read the running total with the payment_budget tool or from the audit file above.'
   );
-
   await server.run();
 }
 

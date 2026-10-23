@@ -17,7 +17,6 @@ import {
   McpError,
 } from '@modelcontextprotocol/sdk/types.js';
 import { MCP_ERROR_CODES, McpErrorCode, classifyPaidCallError } from './codes.js';
-import { DEFAULT_MCP_HTTP_HOST, DEFAULT_MCP_HTTP_PORT, DEFAULT_MCP_HTTP_PATH, DEFAULT_MCP_METRICS_PATH, normalizeMcpHttpPath } from './config.js';
 import {
   DEFAULT_MCP_HTTP_HOST,
   DEFAULT_MCP_HTTP_PORT,
@@ -279,8 +278,6 @@ export class BazaarMcpServer {
   readonly paymentLedger: PaymentLedger;
   private limits: McpLimits;
   private resources: LensResourceDescriptor[];
-  /** The audit trail this server writes to. Public so embedders can read spend without parsing the file. */
-  readonly paymentLedger: PaymentLedger;
 
   constructor(config_: McpServerConfig) {
     this.fetchWithPayment = config_.fetchWithPayment;
@@ -573,16 +570,6 @@ export class BazaarMcpServer {
         // recordedSpend is what the ledger actually saw, as distinct from the
         // budget's worst-case reservations: the ceiling holds per-call maxima,
         // this is the priced offer of each attempt that reached the transport.
-        const reported = {
-          ...this.budget.snapshot(),
-          recordedSpend: this.paymentLedger.totalSpend(),
-        };
-        return this.createBoundedResult(reported, {
-          maxBytes: this.limits.maxResultBytes,
-          maxItems: Number.MAX_SAFE_INTEGER,
-          offset: 0,
-          notice: `The spend budget was truncated to fit a ${this.limits.maxResultBytes}-byte tool output limit.`,
-        });
         return this.createBoundedResult(
           { ...this.budget.snapshot(), recordedSpend: this.paymentLedger.totalSpend() },
           {
@@ -685,7 +672,6 @@ export class BazaarMcpServer {
 
           return this.createBoundedResult(parsed, budget);
         } catch (e: any) {
-          const code = classifyPaidCallError(e).code;
           const code = this.classifyPaidCallFailure(e);
           const mayHaveSettled = !this.paymentCouldNotHaveSettled(e);
           this.settleReservation(reservationId, mayHaveSettled);
@@ -879,9 +865,6 @@ export class BazaarMcpServer {
   private async handleHttpRequest(
     req: IncomingMessage,
     res: ServerResponse,
-    httpConfig: { authToken: string; path: string }
-  ): Promise<void> {
-    if (!hasValidBearerToken(req.headers.authorization, httpConfig.authToken)) {
     settings: { authToken: string; path: string }
   ): Promise<void> {
     if (!hasValidBearerToken(req.headers.authorization, settings.authToken)) {
@@ -904,7 +887,6 @@ export class BazaarMcpServer {
       return;
     }
 
-    if (pathname !== httpConfig.path) {
     if (pathname !== settings.path) {
       if (pathname === DEFAULT_MCP_METRICS_PATH) {
         if (req.method !== 'GET') {
