@@ -46,6 +46,39 @@ missing from the spec. Operator-only and non-HTTP routes (`/admin/keys*`,
 `/admin/usage*`, `/metrics`, `/ws`, `/graphiql*`) are deliberately excluded via
 the commented allow-list in [`src/openapi/coverage.ts`](src/openapi/coverage.ts).
 
+## API-key authentication
+
+Most API endpoints require an API key in the **`Authorization`** HTTP header:
+
+```http
+Authorization: Bearer lens_0123456789abcdef0123456789abcdef0123456789abcdef
+```
+
+The key shown above is an illustrative, non-working value. **`X-API-Key` is not supported**: Lens intentionally accepts only the Bearer scheme for client API keys. Do not send a client key as a URL parameter. The admin API is separate: it uses the server's `ADMIN_TOKEN` via `X-Admin-Token` (or Bearer with the *admin* token), not a client API key. The admin routes use `config.public = true` only to bypass client-key authentication, and still enforce the admin token.
+
+An operator creates a key with `POST /admin/keys` and the required `label` field. For a local instance with its database configured, start the server with `ADMIN_TOKEN` set, then run these commands in a shell with **the same admin token** in its environment:
+
+```bash
+export LENS_URL="http://localhost:3002"
+# ADMIN_TOKEN must match the value configured on the running Lens server.
+test -n "$ADMIN_TOKEN" || { echo "Set ADMIN_TOKEN first" >&2; exit 1; }
+RESPONSE="$(curl --fail-with-body -sS -X POST "$LENS_URL/admin/keys" \
+  -H "X-Admin-Token: $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  --data '{"label":"example-client","ratePerMin":60,"ratePerDay":10000}')"
+API_KEY="$(printf '%s' "$RESPONSE" | node -e 'let s=""; process.stdin.on("data",c=>s+=c); process.stdin.on("end",()=>process.stdout.write(JSON.parse(s).key))')"
+curl --fail-with-body -sS "$LENS_URL/usage/me" -H "Authorization: Bearer $API_KEY"
+```
+
+The creation response contains the plaintext `key` **once**; only its SHA-256 hash is saved. Store the returned key securely, because it cannot be retrieved later. An administrator can revoke it with `DELETE /admin/keys/:id` using the returned `id` and the admin token. A revoked key cannot authenticate again.
+
+Key settings and usage have two distinct quota dimensions:
+
+- `ratePerMin` (default **60**) limits API requests per minute; exceeding it yields **429**. `ratePerDay` (default **10000**) is the stored per-day request allowance; do not confuse it with the monetary spending limits.
+- `dailyQuotaCents` (default **500**) and `monthlyQuotaCents` (default **10000**) govern metered charges in cents. `overagePolicy` defaults to `block` and can be `charge_402` or `allow_overage`. See `GET /usage/me` for usage and remaining spending allowance. Payment/metering responses depend on the configured policy.
+
+**401 responses:** a missing or malformed `Authorization: Bearer <key>` header returns `{"error":"Unauthorized","message":"Missing API key. Provide an Authorization: Bearer <key> header."}`. An unknown or revoked key returns `{"error":"Unauthorized","message":"Invalid or revoked API key."}`. An absent or invalid admin token on an admin endpoint returns `{"error":"Unauthorized","message":"Provide a valid X-Admin-Token header."}`. An `X-API-Key` header without the required `Authorization` header is treated as a missing key.
+
 The `?network=testnet\|mainnet` query param (or `x-network` header) selects the
 Stellar network. It is validated on every request — an unrecognised value gets a
 `400` — and defaults to this instance's `STELLAR_NETWORK`. Only the routes whose

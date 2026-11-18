@@ -98,7 +98,19 @@ describe('API key auth hook', () => {
     const res = await app.inject({ method: 'GET', url: '/price/test' })
     expect(res.statusCode).toBe(401)
     expect(res.json()).toMatchObject({ error: 'Unauthorized' })
+    expect(res.json().message).toBe('Missing API key. Provide an Authorization: Bearer <key> header.')
     expect(mockFindUnique).not.toHaveBeenCalled()
+  })
+
+  it('does not accept X-API-Key as an alternative to Authorization Bearer', async () => {
+    const app = await buildAuthedApp()
+    const res = await app.inject({
+      method: 'GET', url: '/price/test', headers: { 'x-api-key': 'lens_not-a-real-key' },
+    })
+    expect(res.statusCode).toBe(401)
+    expect(res.json().message).toBe('Missing API key. Provide an Authorization: Bearer <key> header.')
+    expect(mockFindUnique).not.toHaveBeenCalled()
+    await app.close()
   })
 
   it('returns 401 for an invalid key', async () => {
