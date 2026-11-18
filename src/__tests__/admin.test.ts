@@ -149,7 +149,15 @@ describe('admin key security contract', () => {
       expect(again.statusCode).toBe(200)
       expect(again.json()).toEqual({ id: body.id, revoked: true, alreadyRevoked: true })
       expect(JSON.stringify(again.json())).not.toContain(plaintext)
-      expect(update).toHaveBeenCalledTimes(1)
+      // Authentication may also update lastUsedAt; only revocation must be idempotent.
+      const revocationCalls = update.mock.calls.filter(
+        ([args]) => Object.prototype.hasOwnProperty.call(args.data, 'revokedAt'),
+      )
+      expect(revocationCalls).toHaveLength(1)
+      expect(revocationCalls[0][0]).toMatchObject({
+        where: { id: body.id },
+        data: { revokedAt: expect.any(Date) },
+      })
     } finally {
       await app.close()
     }
