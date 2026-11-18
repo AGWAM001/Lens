@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import fp from 'fastify-plugin'
 import { activeNetwork, type NetworkName } from '../config'
 
+import { apiError } from '../errors'
 const VALID_NETWORKS: readonly NetworkName[] = ['testnet', 'mainnet']
 
 declare module 'fastify' {
@@ -60,7 +61,7 @@ async function networkSelectorPlugin(app: FastifyInstance) {
   app.addHook('onRequest', async (req: FastifyRequest, reply: FastifyReply) => {
     const resolved = resolveNetworkName(rawNetworkFromRequest(req))
     if (!resolved.ok) {
-      reply.status(400).send({ error: resolved.error })
+      reply.status(400).send(apiError('bad_network', resolved.error))
       return
     }
     req.network = resolved.network

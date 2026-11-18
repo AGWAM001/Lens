@@ -19,12 +19,38 @@ register.setDefaultLabels({
 // Do NOT add `issuer` or a raw pool id here — the cardinality notes in that
 // doc explain why those labels do not belong on these metrics.
 
+export const ingesterRestarts = new Counter({
+  name: 'ingester_restarts_total',
+  help: 'Times an ingester crashed and was restarted, by ingester and network',
+  // Bounded: one series per (venue, network) pair the process actually runs,
+  // the same shape as the metrics below. A crash message is deliberately NOT a
+  // label — it is unbounded and arrives from upstream.
+  labelNames: ['ingester', 'network'],
+  registers: [register]
+})
+
 export const trades_ingested_total = new Counter({
   name: 'trades_ingested_total',
   help: 'Total number of trades ingested from SDEX/AMM',
   labelNames: ['pair', 'network'],
   registers: [register]
 })
+
+export const price_points_accepted_total = new Counter({
+  name: 'price_points_accepted_total',
+  help: 'Total number of price points accepted by ingest plausibility checks',
+  labelNames: ['source', 'network'],
+  registers: [register]
+})
+
+export const price_points_quarantined_total = new Counter({
+  name: 'price_points_quarantined_total',
+  help: 'Total number of price points quarantined by ingest plausibility checks',
+  labelNames: ['source', 'network'],
+  registers: [register]
+})
+
+export const price_points_rejected_total = price_points_quarantined_total
 
 export const amm_snapshots_total = new Counter({
   name: 'amm_snapshots_total',
@@ -40,9 +66,106 @@ export const price_snapshots_total = new Counter({
   registers: [register]
 })
 
+export const blend_pool_errors_total = new Counter({
+  name: 'blend_pool_errors_total',
+  help: 'Total number of Blend pool read failures',
+  labelNames: ['pool', 'network'],
+  registers: [register],
+})
+
+export const blend_rates_ingested_total = new Counter({
+  name: 'blend_rates_ingested_total',
+  help: 'Total number of Blend pool rate records ingested',
+  labelNames: ['pool', 'network'],
+  registers: [register],
+})
+
+export const ingester_abandoned_cycles_total = new Counter({
+  name: 'ingester_abandoned_cycles_total',
+  help: 'Total number of ingester cycles abandoned after exceeding their per-cycle deadline',
+  // `venue` is the ingester loop's own name (SDEX, AMM, Soroswap, Aquarius,
+  // Snapshot) — a bounded set hard-coded in the adapter registry, exactly like
+  // the network factor above. Together they give `venues x networks` series:
+  // this is the label #351 asks for, so an on-call can tell WHICH loop is
+  // stalling on WHICH network without an unbounded dimension ever appearing.
+  labelNames: ['venue', 'network'],
+  registers: [register]
+})
+
+export const price_points_pruned_total = new Counter({
+  name: 'price_points_pruned_total',
+  help: 'Total number of old price points pruned from the database',
+  labelNames: ['network'],
+  registers: [register]
+})
+
+export const price_points_rolled_up_total = new Counter({
+  name: 'price_points_rolled_up_total',
+  help: 'Total number of old price points rolled up into aggregates before pruning',
+  labelNames: ['network'],
+  registers: [register]
+})
+
 export const price_requests_total = new Counter({
   name: 'price_requests_total',
   help: 'Total number of price API requests served',
+  registers: [register]
+})
+
+export const active_subscriptions = new Gauge({
+  name: 'active_subscriptions',
+  help: 'Currently active GraphQL priceUpdated subscriptions, by pair',
+  // Deliberately the only label. `pair` is what the subscriber asked for, so
+  // the distribution across pairs is visible; `network` stays out because the
+  // gauge would double the series for the same routing decision (#373).
+  // Unlike the ws_* metrics in ws/fanout.ts this label is subscriber-supplied
+  // and theoretically unbounded — a client can mint one series per distinct
+  // pair string. Guarded in practice: only registered deployments accept
+  // subscriptions, and a pair that is not watched never receives data.
+  labelNames: ['pair'],
+  registers: [register]
+})
+
+export const price_rejected_total = new Counter({
+  name: 'price_rejected_total',
+  help: 'Total number of prices rejected due to plausibility sanity bounds',
+  labelNames: ['pair', 'network', 'venue', 'reason'],
+  registers: [register]
+})
+
+export const api_key_auth_failures_total = new Counter({
+  name: 'api_key_auth_failures_total',
+  help: 'Total number of API key authentication failures, by bounded reason',
+  labelNames: ['reason'],
+  registers: [register]
+})
+
+export const admin_auth_failures_total = new Counter({
+  name: 'admin_auth_failures_total',
+  help: 'Total number of admin authentication failures',
+  registers: [register]
+})
+
+export const api_key_cache_lookups_total = new Counter({
+  name: 'api_key_cache_lookups_total',
+  help: 'API key auth cache lookups by result. Hit rate = hit / (hit + miss).',
+  // `result` is bounded to hit|miss, so cardinality is fixed at two series.
+  // A hit is served entirely from the in-process cache with no Postgres query;
+  // a miss falls through to `prisma.apiKey.findUnique`.
+  labelNames: ['result'],
+  registers: [register]
+})
+
+export const rate_limit_rejections_total = new Counter({
+  name: 'rate_limit_rejections_total',
+  help: 'Total number of requests rejected by the per-key or fallback IP rate limiter',
+  labelNames: ['scope'],
+  registers: [register]
+})
+
+export const global_shed_requests_total = new Counter({
+  name: 'global_shed_requests_total',
+  help: 'Total number of requests shed by the per-instance global request ceiling',
   registers: [register]
 })
 
@@ -52,11 +175,71 @@ export const x402_payments_received_total = new Counter({
   registers: [register]
 })
 
+export const webhook_delivery_failures_total = new Counter({
+  name: 'webhook_delivery_failures_total',
+  help: 'Permanent webhook delivery failures by bounded failure category',
+  labelNames: ['category'],
+  registers: [register]
+})
+
+export const process_crashes_total = new Counter({
+  name: 'process_crashes_total',
+  help: 'Total number of fatal process errors, by event',
+  labelNames: ['event'],
+  registers: [register]
+})
+
 export const last_trade_timestamp = new Gauge({
   name: 'last_trade_timestamp',
   help: 'Unix timestamp of the last trade ingested for a pair',
   labelNames: ['pair', 'network'],
   registers: [register]
+})
+
+export const horizon_rate_limit_remaining = new Gauge({
+  name: 'horizon_rate_limit_remaining',
+  help: 'Remaining Horizon API requests in the current rate-limit window',
+  labelNames: ['network'],
+  registers: [register],
+})
+
+// Ingestion health is labelled only by the finite adapter registry and the
+// two supported networks. Do not add pair or pool identifiers here: they make
+// the series count grow with user configuration and on-chain pool creation.
+export const ingest_last_success_timestamp = new Gauge({
+  name: 'ingest_last_success_timestamp',
+  help: 'Unix timestamp of the last successful price write by venue and network',
+  labelNames: ['venue', 'network'],
+  registers: [register],
+})
+
+export const ingest_cycle_duration_seconds = new Histogram({
+  name: 'ingest_cycle_duration_seconds',
+  help: 'Duration of a venue ingestion cycle in seconds',
+  labelNames: ['venue', 'network'],
+  // Venue polls are mostly sub-second, but Horizon and Soroswap requests can
+  // take several seconds. These buckets expose normal cycles and slow calls.
+  buckets: [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60],
+  registers: [register],
+})
+
+export const ingest_errors_total = new Counter({
+  name: 'ingest_errors_total',
+  help: 'Ingestion cycle errors by venue, network and bounded error category',
+  labelNames: ['venue', 'network', 'category'],
+  registers: [register],
+})
+
+/** Record a successful persisted price write without high-cardinality labels. */
+export function markIngestSuccess(venue: string, network: string): void {
+  ingest_last_success_timestamp.set({ venue, network }, Math.floor(Date.now() / 1000))
+}
+
+export const snapshot_retention_path = new Gauge({
+  name: 'snapshot_retention_path',
+  help: 'Active snapshot retention scheduler (one-hot path labels)',
+  labelNames: ['path'],
+  registers: [register],
 })
 
 export const http_requests_total = new Counter({
@@ -98,6 +281,44 @@ export const db_query_duration_seconds = new Histogram({
   registers: [register]
 })
 
+// Database connection pool utilisation metrics
+export const db_pool_connections_in_use = new Gauge({
+  name: 'db_pool_connections_in_use',
+  help: 'Number of database connections currently checked out / in use',
+  registers: [register],
+})
+
+export const db_pool_connections_idle = new Gauge({
+  name: 'db_pool_connections_idle',
+  help: 'Number of idle database connections available in the pool',
+  registers: [register],
+})
+
+export const db_pool_connections_waiting = new Gauge({
+  name: 'db_pool_connections_waiting',
+  help: 'Number of queued requests currently waiting for a database connection',
+  registers: [register],
+})
+
+export const db_pool_exhaustion_errors_total = new Counter({
+  name: 'db_pool_exhaustion_errors_total',
+  help: 'Total number of database pool acquisition timeouts or exhaustion errors',
+  registers: [register],
+})
+
+let _poolMetricsUpdater: (() => void) | null = null
+
+export function setPoolMetricsUpdater(updater: () => void) {
+  _poolMetricsUpdater = updater
+}
+
 export async function getMetrics() {
+  if (_poolMetricsUpdater) {
+    try {
+      _poolMetricsUpdater()
+    } catch {
+      // Best-effort metric collection
+    }
+  }
   return await register.metrics()
 }

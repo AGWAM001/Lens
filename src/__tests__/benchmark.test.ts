@@ -37,7 +37,7 @@ describe('GET /benchmark/:asset', () => {
     })
 
     expect(res.statusCode).toBe(404)
-    expect(res.json()).toEqual({ error: 'Pair USDC/USD not watched' })
+    expect(res.json()).toEqual({ error: 'Pair USDC/USD not watched', code: 'unwatched_pair' })
   })
 
   it('calculates benchmark deviation correctly when asset is assetB in the pair (e.g. USD/USDC)', async () => {

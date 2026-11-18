@@ -1,5 +1,8 @@
 import Redis from 'ioredis'
-import { config, activeNetwork } from './config'
+import { config, activeNetwork, type NetworkName } from './config'
+import { createLogger } from './logger'
+
+const log = createLogger('redis')
 
 export const redis = new Redis(config.redis.url, {
   maxRetriesPerRequest: 3,
@@ -40,8 +43,7 @@ redis.on('error', (err) => {
     suppressedRedisErrors++
     return
   }
-  const suffix = suppressedRedisErrors > 0 ? ` (${suppressedRedisErrors} more since last report)` : ''
-  console.error('[redis] Connection error:', err.message + suffix)
+  log.error({ err, suppressed: suppressedRedisErrors }, 'redis connection error')
   lastRedisErrorLog = now
   suppressedRedisErrors = 0
 })
@@ -57,6 +59,58 @@ export async function getCachedPrice(pairKey: string): Promise<string | null> {
 export async function setCachedPrice(pairKey: string, data: object, ttlSeconds: number): Promise<void> {
   try {
     await redis.set(`lens:${activeNetwork}:price:${pairKey}`, JSON.stringify(data), 'EX', ttlSeconds)
+  } catch {
+    // Redis cache miss is non-fatal
+  }
+}
+
+/**
+ * Read a cached `GET /snapshot` response for a network. The network is part of
+ * the key so a testnet snapshot is never served to a mainnet caller. The whole
+ * response is cached (not the raw rows) so a hit is one Redis GET and no
+ * Postgres work at all. Errors are swallowed: a cache outage degrades to a
+ * normal recompute, never a failed request.
+ */
+export async function getCachedSnapshot(network: NetworkName): Promise<string | null> {
+  try {
+    return await redis.get(`lens:snapshot:${network}`)
+  } catch {
+    return null
+  }
+}
+
+export async function setCachedSnapshot(network: NetworkName, data: object, ttlSeconds: number): Promise<void> {
+  try {
+    await redis.set(`lens:snapshot:${network}`, JSON.stringify(data), 'EX', ttlSeconds)
+  } catch {
+    // Redis cache miss is non-fatal
+  }
+}
+
+/**
+ * Asset metadata cache (#301). Keyed by network and asset so a testnet issuer
+ * is never served for a mainnet lookup, and held far longer than the price
+ * caches above — an issuer's home domain and toml do not move minute to minute.
+ *
+ * Both sides swallow their errors: an unreachable Redis means a slower lookup,
+ * never a failed one.
+ */
+export async function getCachedAsset(network: string, assetKey: string): Promise<string | null> {
+  try {
+    return await redis.get(`lens:${network}:asset:${assetKey}`)
+  } catch {
+    return null
+  }
+}
+
+export async function setCachedAsset(
+  network: string,
+  assetKey: string,
+  data: object,
+  ttlSeconds: number
+): Promise<void> {
+  try {
+    await redis.set(`lens:${network}:asset:${assetKey}`, JSON.stringify(data), 'EX', ttlSeconds)
   } catch {
     // Redis cache miss is non-fatal
   }

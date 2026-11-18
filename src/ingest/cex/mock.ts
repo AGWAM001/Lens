@@ -34,6 +34,7 @@ const DEFAULT_SEED: MockTickerSeed = {
  */
 export class MockCexAdapter implements CexAdapter {
   readonly name: string
+  readonly sourceTimeCapability = { status: 'provided', semantic: 'exchange_timestamp' } as const
 
   private readonly seeds = new Map<string, MockTickerSeed>()
   private readonly unknownPairs = new Set<string>()

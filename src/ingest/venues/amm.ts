@@ -1,17 +1,24 @@
-import { amm_snapshots_total, trades_ingested_total, last_trade_timestamp } from '../../metrics'
+import { amm_snapshots_total, trades_ingested_total, last_trade_timestamp, markIngestSuccess } from '../../metrics'
 import { config, activeNetwork, getNetworkConfig, type NetworkName } from '../../config'
 import { upsertPricePoints, getIndexerState, setIndexerCursor, prisma } from '../../db'
-import { resolvePageLedgers } from '../../ingesters/toid'
+import { resolvePageLedgers } from '../toid'
 import { dispatchPriceUpdate } from '../../webhookDispatcher'
 import { publishPriceUpdate } from '../../events'
+import { createLogger } from '../../logger'
 import type { WatchedPair } from '../../types'
 import type { VenueAdapter, VenuePricePoint } from './types'
+import { fetchHorizonJson, HorizonRateLimitError } from './horizon'
 import {
   getLastPrice,
   resetLastPrice,
   setLastPrice,
   startVenueAdapter,
 } from './runner'
+import { fetchWithTimeout } from '../../fetch'
+import { fetchOk, fetchFailed, type FetchResult } from '../fetchResult'
+import { recordSourceFailure, clearSourceFailure } from '../sourceFailures'
+
+const log = createLogger('ingester:amm')
 
 export function _resetLastPrice(): void {
   resetLastPrice('AMM')
@@ -21,8 +28,26 @@ export function _getLastPrice(network: NetworkName, pairKey: string): number | u
   return getLastPrice('AMM', network, pairKey)
 }
 
-export async function fetchPools(pair: WatchedPair, network: NetworkName = activeNetwork): Promise<any[]> {
+/** `price_points.source` for the Horizon AMM, and its key in the source-failure record. */
+export const AMM_SOURCE = 'AMM'
+
+/**
+ * Fetch the Horizon liquidity pools for a pair (#329).
+ *
+ * `{ ok: true, data: [] }` means Horizon answered and there are no pools.
+ * `{ ok: false }` means it did not answer usefully (network error, timeout,
+ * non-2xx, a body without `_embedded.records`, or a cycle abandoned before the
+ * request went out) — never to be read as "no pools". A persistent 429 is
+ * still thrown (#348) so the runner backs the whole cycle off.
+ */
+export async function fetchPools(
+  pair: WatchedPair,
+  network: NetworkName = activeNetwork,
+  signal?: AbortSignal
+): Promise<FetchResult<any[]>> {
   try {
+    if (signal?.aborted) return fetchFailed(new Error('cycle aborted before the Horizon pools request was sent'))
+
     const assetAStr = pair.assetA.issuer
       ? `${pair.assetA.code}:${pair.assetA.issuer}`
       : 'native'
@@ -35,24 +60,39 @@ export async function fetchPools(pair: WatchedPair, network: NetworkName = activ
     params.append('reserves[]', assetBStr)
     params.set('limit', '10')
 
-    const response = await fetch(
-      `${getNetworkConfig(network).horizon.url}/liquidity_pools?${params.toString()}`
+    const data = await fetchHorizonJson<any>(
+      `${getNetworkConfig(network).horizon.url}/liquidity_pools?${params.toString()}`,
+      network,
+      { signal }
     )
-    const data = (await response.json()) as any
-    if (!data._embedded?.records) return []
-    return data._embedded.records
+    if (!Array.isArray(data?._embedded?.records)) {
+      log.error({ pair: pair.pairKey }, 'failed to fetch pools: response has no _embedded.records')
+      return fetchFailed(new Error('Horizon liquidity_pools response has no _embedded.records'))
+    }
+    return fetchOk(data._embedded.records)
   } catch (err) {
-    console.error(`[amm] Failed to fetch pools for ${pair.pairKey}:`, (err as Error).message)
-    return []
+    // A persistent 429 is raised, not logged and swallowed: the runner counts
+    // it and backs the whole cycle off, which is the point of #348.
+    if (err instanceof HorizonRateLimitError) throw err
+    log.error({ venue: 'AMM', network, pair: pair.pairKey, err }, 'failed to fetch pools')
+    return fetchFailed(err)
   }
 }
 
 export async function snapshotPool(
   pool: any,
   pair: WatchedPair,
-  network: NetworkName = activeNetwork
+  network: NetworkName = activeNetwork,
+  signal?: AbortSignal
 ): Promise<void> {
   try {
+    // Cycle-deadline checkpoint (#351): this unit makes no upstream call — it
+    // is two writes (pool snapshot + its zero-volume price point) — so an
+    // abandoned cycle skips the whole unit instead of starting it. Once begun
+    // it runs to completion; each statement is atomic and the checkpoint never
+    // sits between them.
+    if (signal?.aborted) return
+
     const r0 = pool.reserves[0]
     const r1 = pool.reserves[1]
 
@@ -84,7 +124,8 @@ export async function snapshotPool(
 
     // Also record spot price as a price point (no volume — it's a snapshot, not a trade)
     if (spotPrice > 0) {
-      await upsertPricePoints(
+      const now = new Date()
+      const res = await upsertPricePoints(
         [
           {
             assetA: pair.assetA.code,
@@ -96,50 +137,69 @@ export async function snapshotPool(
             baseVolume: 0,
             counterVolume: 0,
             ledger: pool.last_modified_ledger ?? 0,
-            timestamp: new Date(),
-            eventId: `amm-snapshot-${pool.id}-${Date.now()}`,
+            observedAt: now,
+            sourceTime: null,
+            timestamp: now,
+            // #237: snapshot price points have no trade event to key on, so
+            // the id is derived from the pool's STATE — (pool, ledger) is the
+            // version of the reserves, and two ingesters that read the same
+            // ledger hold the same spot price. A `Date.now()` id here would
+            // mint a fresh identity per attempt, which is exactly the random
+            // key the replay absorbing rejects: retried batches and overlapping
+            // instances would each insert the same observation again.
+            eventId: `amm-snapshot-${pool.id}-${pool.last_modified_ledger ?? 0}`,
           },
         ],
         network
       )
+      markIngestSuccess('AMM', network)
+      const acceptedPoints: any[] = (res && typeof res === 'object' && 'acceptedPoints' in res)
+        ? (res as any).acceptedPoints
+        : [spotPrice]
 
-      const trackerKey = pair.pairKey
-      const { previousPrice } = setLastPrice('AMM', network, trackerKey, spotPrice)
+      if (acceptedPoints.length > 0) {
+        const trackerKey = pair.pairKey
+        const { previousPrice } = setLastPrice('AMM', network, trackerKey, spotPrice)
 
-      publishPriceUpdate({
-        pair: pair.pairKey,
-        price: spotPrice,
-        ts: new Date().toISOString(),
-        network,
-      })
+        publishPriceUpdate({
+          pair: pair.pairKey,
+          price: spotPrice,
+          ts: new Date().toISOString(),
+          network,
+        })
 
-      dispatchPriceUpdate({
-        assetA: pair.assetA.code,
-        assetB: pair.assetB.code,
-        previousPrice,
-        currentPrice: spotPrice,
-        network,
-      }).catch((err) => console.error('[amm] webhook dispatch error:', err.message))
+        dispatchPriceUpdate({
+          assetA: pair.assetA.code,
+          assetB: pair.assetB.code,
+          previousPrice,
+          currentPrice: spotPrice,
+          network,
+        }).catch((err) => log.error({ pool: pool.id, err }, 'webhook dispatch error'))
+      }
     }
   } catch (err) {
-    console.error(`[amm] Snapshot error for pool ${pool.id}:`, (err as Error).message)
+    log.error({ pool: pool.id, err }, 'snapshot error')
   }
 }
 
 export async function ingestPoolTrades(
   pool: any,
   pair: WatchedPair,
-  network: NetworkName = activeNetwork
+  network: NetworkName = activeNetwork,
+  signal?: AbortSignal
 ): Promise<void> {
   const stateId = `amm:${network}:${pool.id}`
   const state = await getIndexerState(stateId, network)
   const cursor = state.cursor ?? '0'
 
   try {
-    const response = await fetch(
-      `${getNetworkConfig(network).horizon.url}/liquidity_pools/${pool.id}/trades?cursor=${cursor}&limit=${config.indexer.ammPageSize}&order=asc`
+    if (signal?.aborted) return
+
+    const data = await fetchHorizonJson<any>(
+      `${getNetworkConfig(network).horizon.url}/liquidity_pools/${pool.id}/trades?cursor=${cursor}&limit=${config.indexer.ammPageSize}&order=asc`,
+      network,
+      { signal }
     )
-    const data = (await response.json()) as any
     const records = data._embedded?.records ?? []
 
     if (!records.length) return
@@ -150,8 +210,9 @@ export async function ingestPoolTrades(
       state.ledger
     )
     if (ledgers === null) {
-      console.error(
-        `[amm] pool ${pool.id.slice(0, 8)}: no ledger derivable from ${records.length} trades; skipping batch`
+      log.error(
+        { pool: pool.id, trades: records.length },
+        'no ledger derivable from trades; skipping batch'
       )
       return
     }
@@ -163,6 +224,9 @@ export async function ingestPoolTrades(
         ? parseFloat(t.counter_amount) / parseFloat(t.base_amount)
         : parseFloat(t.base_amount) / parseFloat(t.counter_amount)
 
+      const now = new Date()
+      const sourceTime = new Date(t.ledger_close_time)
+
       return {
         assetA: pair.assetA.code,
         assetB: pair.assetB.code,
@@ -173,65 +237,113 @@ export async function ingestPoolTrades(
         baseVolume: parseFloat(t.base_amount),
         counterVolume: parseFloat(t.counter_amount),
         ledger: ledgers[i],
-        timestamp: new Date(t.ledger_close_time),
+        observedAt: now,
+        sourceTime,
+        timestamp: now,
         eventId: t.id,
       }
     })
 
     const trackerKey = pair.pairKey
-    const { previousPrice, currentPrice } = setLastPrice(
-      'AMM',
-      network,
-      trackerKey,
-      points[points.length - 1].price
-    )
 
-    await upsertPricePoints(points, network)
+    // Cycle-deadline checkpoint (#351), ahead of the write SEQUENCE: the page
+    // upsert and the cursor advance below commit together, so a cycle
+    // abandoned here skips both — never one without the other. The page is
+    // re-read from the same cursor next cycle and upsertPricePoints dedupes
+    // on conflict, so dropping out early costs nothing but a refetch.
+    if (signal?.aborted) return
 
-    trades_ingested_total.inc({ pair: pair.pairKey, network }, points.length)
-    last_trade_timestamp.set(
-      { pair: pair.pairKey, network },
-      Math.floor(points[points.length - 1].timestamp.getTime() / 1000)
-    )
+    const res = await upsertPricePoints(points, network)
+    markIngestSuccess('AMM', network)
+    const acceptedPoints: any[] = (res && typeof res === 'object' && 'acceptedPoints' in res)
+      ? (res as any).acceptedPoints
+      : points
+
+    if (acceptedPoints.length > 0) {
+      const latest = acceptedPoints[acceptedPoints.length - 1]
+      const { previousPrice, currentPrice } = setLastPrice(
+        'AMM',
+        network,
+        trackerKey,
+        latest.price
+      )
+
+      trades_ingested_total.inc({ pair: pair.pairKey, network }, acceptedPoints.length)
+      const tradeTime = latest.sourceTime ?? latest.observedAt ?? latest.timestamp
+      last_trade_timestamp.set(
+        { pair: pair.pairKey, network },
+        Math.floor(tradeTime.getTime() / 1000)
+      )
+
+      publishPriceUpdate({
+        pair: pair.pairKey,
+        price: currentPrice,
+        ts: (latest.observedAt ?? latest.timestamp).toISOString(),
+        network,
+      })
+
+      dispatchPriceUpdate({
+        assetA: pair.assetA.code,
+        assetB: pair.assetB.code,
+        previousPrice,
+        currentPrice,
+        network,
+      }).catch((err) => log.error({ pool: pool.id, err }, 'webhook dispatch error'))
+    }
 
     const lastRecord = records[records.length - 1]
     await setIndexerCursor(stateId, lastRecord.paging_token, network, ledgers[ledgers.length - 1])
-    console.log(`[amm] Pool ${pool.id.slice(0, 8)}: ingested ${points.length} trades`)
-
-    publishPriceUpdate({
-      pair: pair.pairKey,
-      price: currentPrice,
-      ts: points[points.length - 1].timestamp.toISOString(),
-      network,
-    })
-
-    dispatchPriceUpdate({
-      assetA: pair.assetA.code,
-      assetB: pair.assetB.code,
-      previousPrice,
-      currentPrice,
-      network,
-    }).catch((err) => console.error('[amm] webhook dispatch error:', err.message))
+    log.info({ pair: pair.pairKey, pool: pool.id, trades: points.length, accepted: acceptedPoints.length }, 'ingested pool trades')
   } catch (err) {
-    console.error(`[amm] Trade ingest error for pool ${pool.id}:`, (err as Error).message)
+    if (err instanceof HorizonRateLimitError) throw err
+    log.error({ pool: pool.id, err }, 'trade ingest error')
   }
 }
 
-export async function ingestPair(pair: WatchedPair, network: NetworkName = activeNetwork): Promise<void> {
-  const pools = await fetchPools(pair, network)
-  console.log(`[amm] ${pair.pairKey}: found ${pools.length} AMM pools`)
+export async function ingestPair(pair: WatchedPair, network: NetworkName = activeNetwork, signal?: AbortSignal): Promise<void> {
+  // An abandoned cycle (#351) never asked Horizon anything, so it is neither a
+  // failure nor a success and leaves the recorded state alone.
+  if (signal?.aborted) return
+
+  let fetched: FetchResult<any[]>
+  try {
+    fetched = await fetchPools(pair, network, signal)
+  } catch (err) {
+    // The rate-limit path (#348) still throws to back the cycle off, but the
+    // AMM did fail for this pair and the aggregate has to know (#329).
+    recordSourceFailure(AMM_SOURCE, network, pair.pairKey, err)
+    throw err
+  }
+  if (!fetched.ok) {
+    recordSourceFailure(AMM_SOURCE, network, pair.pairKey, fetched.error)
+    return
+  }
+  clearSourceFailure(AMM_SOURCE, network, pair.pairKey)
+
+  const pools = fetched.data
+  log.info({ pair: pair.pairKey, pools: pools.length }, 'found AMM pools')
 
   await Promise.all(
     pools.map(async (pool) => {
-      await snapshotPool(pool, pair, network)
-      await ingestPoolTrades(pool, pair, network)
+      // Cycle-deadline checkpoint (#351): skip pools whose unit has not
+      // started because the cycle was abandoned mid-flight. Each pool is one
+      // write unit, so skipping whole pools never tears a unit in half.
+      if (signal?.aborted) return
+      await snapshotPool(pool, pair, network, signal)
+      if (signal?.aborted) return
+      await ingestPoolTrades(pool, pair, network, signal)
     })
   )
 }
 
 export const ammAdapter: VenueAdapter<any, any> = {
   name: 'AMM',
+  kind: 'amm',
   source: 'AMM',
+  sourceTimeCapability: { status: 'provided', semantic: 'ledger_close' },
+  classification: 'primary',
+  type: 'Liquidity Pool',
+  description: 'Stellar native AMM liquidity pools (Horizon)',
 
   isEnabled(_network: NetworkName): boolean {
     return true
@@ -242,7 +354,9 @@ export const ammAdapter: VenueAdapter<any, any> = {
   },
 
   async discover(pair: WatchedPair, network: NetworkName): Promise<any[]> {
-    return fetchPools(pair, network)
+    const fetched = await fetchPools(pair, network)
+    if (!fetched.ok) throw fetched.error
+    return fetched.data
   },
 
   async read(pool: any, _pair: WatchedPair, _network: NetworkName): Promise<any | null> {
@@ -258,8 +372,8 @@ export const ammAdapter: VenueAdapter<any, any> = {
     await ingestPoolTrades(pool, pair, network)
   },
 
-  async ingestPair(pair: WatchedPair, network: NetworkName): Promise<void> {
-    await ingestPair(pair, network)
+  async ingestPair(pair: WatchedPair, network: NetworkName, signal?: AbortSignal): Promise<void> {
+    await ingestPair(pair, network, signal)
   },
 
   _resetLastPrice,

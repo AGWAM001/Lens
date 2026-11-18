@@ -34,6 +34,8 @@ async function main() {
   const label = args.label ?? 'default'
   const ratePerMin = args['per-min'] ? parseInt(args['per-min'], 10) : undefined
   const ratePerDay = args['per-day'] ? parseInt(args['per-day'], 10) : undefined
+  const rawScopes = args.scopes ?? args.scope
+  const scopes = rawScopes ? rawScopes.split(',').map((s) => s.trim()).filter(Boolean) : undefined
 
   const plaintext = `lens_${randomBytes(24).toString('hex')}`
   const hash = createHash('sha256').update(plaintext, 'utf8').digest('hex')
@@ -46,6 +48,7 @@ async function main() {
         label,
         ...(ratePerMin !== undefined ? { ratePerMin } : {}),
         ...(ratePerDay !== undefined ? { ratePerDay } : {}),
+        ...(scopes !== undefined ? { scopes } : {}),
       },
     })
 
@@ -54,6 +57,7 @@ async function main() {
     console.log(`   label:      ${record.label}`)
     console.log(`   ratePerMin: ${record.ratePerMin}`)
     console.log(`   ratePerDay: ${record.ratePerDay}`)
+    console.log(`   scopes:     ${record.scopes?.join(', ') || '(all)'}`)
     console.log('')
     console.log('   Plaintext key (store it now — it will not be shown again):')
     console.log(`   ${plaintext}`)

@@ -5,6 +5,8 @@ import ts from 'typescript'
 
 const rootDir = resolve(__dirname, '../..')
 const srcDir = resolve(rootDir, 'src')
+const examplesDir = resolve(rootDir, 'examples')
+const scriptsDir = resolve(rootDir, 'scripts')
 const envExamplePath = resolve(rootDir, '.env.example')
 
 /**
@@ -20,6 +22,14 @@ export const UNDOCUMENTED_ENV_ALLOW_LIST: Record<string, string> = {
   CI: 'Standard continuous integration indicator injected by CI runners (e.g. GitHub Actions); not operator-configurable.',
   GITHUB_ACTIONS: 'Platform-injected environment variable present in GitHub Actions runners; not operator-configurable.',
   RENDER: 'Platform-injected environment variable set by the Render hosting platform; not operator-configurable.',
+  GITHUB_TOKEN:
+    'Platform-injected environment variable provided by the GitHub Actions runner; not operator configuration.',
+  GH_TOKEN:
+    'Platform/CLI-injected fallback variable for GitHub API operations; not operator configuration.',
+  GITHUB_REPOSITORY:
+    'Platform-injected environment variable indicating owner/repo in GitHub Actions; not operator configuration.',
+  GITHUB_STEP_SUMMARY:
+    'Platform-injected environment variable path for CI step summary output; not operator configuration.',
 
   // Optional per-network venue overrides where the shared fallback is documented in .env.example
   SOROSWAP_TOKEN_LIST_URL_TESTNET:
@@ -30,6 +40,10 @@ export const UNDOCUMENTED_ENV_ALLOW_LIST: Record<string, string> = {
     'Optional per-network override for polling interval; shared fallback SOROSWAP_POLL_INTERVAL_MS is documented in .env.example.',
   SOROSWAP_POLL_INTERVAL_MS_MAINNET:
     'Optional per-network override for polling interval; shared fallback SOROSWAP_POLL_INTERVAL_MS is documented in .env.example.',
+  DEFINDEX_POLL_INTERVAL_MS_TESTNET:
+    'Optional per-network override for polling interval; shared fallback DEFINDEX_POLL_INTERVAL_MS is documented in .env.example.',
+  DEFINDEX_POLL_INTERVAL_MS_MAINNET:
+    'Optional per-network override for polling interval; shared fallback DEFINDEX_POLL_INTERVAL_MS is documented in .env.example.',
   AQUARIUS_API_URL_TESTNET:
     'Optional per-network venue override; shared fallback AQUARIUS_API_URL is documented in .env.example.',
   AQUARIUS_API_URL_MAINNET:
@@ -38,10 +52,18 @@ export const UNDOCUMENTED_ENV_ALLOW_LIST: Record<string, string> = {
     'Optional per-network feature flag override; enabled by default on testnet if reflectorContractId is configured.',
   REFLECTOR_ENABLED_MAINNET:
     'Optional per-network feature flag override; enabled by default on mainnet if reflectorContractId is configured.',
+  BLEND_POLL_INTERVAL_MS_TESTNET:
+    'Optional per-network override for polling interval; shared fallback BLEND_POLL_INTERVAL_MS is documented in .env.example.',
+  BLEND_POLL_INTERVAL_MS_MAINNET:
+    'Optional per-network override for polling interval; shared fallback BLEND_POLL_INTERVAL_MS is documented in .env.example.',
 
   // Legacy single-network fallbacks where paired network-specific variables are documented
   FACILITATOR_FEE_STROOPS:
     'Legacy unsuffixed fallback for testnet; FACILITATOR_FEE_STROOPS_TESTNET and FACILITATOR_FEE_STROOPS_MAINNET are documented in .env.example.',
+  API_KEY_LAST_USED_THROTTLE_SECONDS:
+    'Optional alias fallback; primary variable KEY_LAST_USED_THROTTLE_SECONDS is documented in .env.example.',
+  STALENESS_BOUND_SECONDS:
+    'Optional alias fallback; primary variable PRICE_STALE_THRESHOLD_SECONDS is documented in .env.example.',
 }
 
 /**
@@ -156,7 +178,11 @@ describe('.env.example drift guard', () => {
   // vitest's 5s default and makes this guard flaky. Give it real headroom.
   it('asserts each process.env read in source appears in .env.example or the allow-list', { timeout: 60_000 }, () => {
     const documentedVars = parseEnvExample(envExamplePath)
-    const sourceFiles = getSourceFiles(srcDir)
+    const sourceFiles = [
+      ...getSourceFiles(srcDir),
+      ...getSourceFiles(examplesDir),
+      ...getSourceFiles(scriptsDir),
+    ]
     const allReads: EnvRead[] = []
 
     for (const file of sourceFiles) {
@@ -186,7 +212,7 @@ describe('.env.example drift guard', () => {
     }
   })
 
-  it('fails when a new un-documented process.env read is encountered', () => {
+  it('fails when a new un-documented process.env read is encountered in src/', () => {
     const sampleCode = `
       export function init() {
         const secret = process.env.SOME_BRAND_NEW_SECRET_VAR
@@ -202,6 +228,24 @@ describe('.env.example drift guard', () => {
 
     expect(missing).toHaveLength(1)
     expect(missing[0].name).toBe('SOME_BRAND_NEW_SECRET_VAR')
+  })
+
+  it('fails when an un-documented process.env read is encountered in examples/ (#413)', () => {
+    const sampleExampleCode = `
+      export function runExample() {
+        const secret = process.env.MCP_UNDOCUMENTED_TEST_VAR
+        return secret
+      }
+    `
+    const reads = extractEnvReadsFromSource(sampleExampleCode, 'examples/mcp-server/sample.ts')
+    const documentedVars = parseEnvExample(envExamplePath)
+
+    const missing = reads.filter(
+      (read) => !documentedVars.has(read.name) && !(read.name in UNDOCUMENTED_ENV_ALLOW_LIST)
+    )
+
+    expect(missing).toHaveLength(1)
+    expect(missing[0].name).toBe('MCP_UNDOCUMENTED_TEST_VAR')
   })
 
   it('requires every allow-list entry to have an explicit rationale', () => {

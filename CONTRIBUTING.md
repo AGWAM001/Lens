@@ -19,12 +19,14 @@ lens/
 │   ├── db.ts               # Postgres pool / Prisma client
 │   ├── api/                # REST + GraphQL route implementations
 │   ├── routes/             # Additional REST route modules
-│   ├── ingesters/          # SDEX + AMM ingester loops
-│   ├── ingest/             # Venue/oracle adapters (Horizon AMM, Aquarius, Reflector)
+│   ├── ingest/             # Venue/oracle adapters + ingester loops (SDEX, Horizon AMM, Soroswap, Aquarius, Reflector)
+│   ├── publish/            # SEP-40 publisher: encoding, publication policy, on-chain feed
 │   ├── aggregator/         # VWAP + best-route calculation
 │   ├── pricing/            # TWAP, depth and aggregate helpers
 │   ├── middleware/         # Network selector, x402, auth, metrics
 │   └── x402/               # x402 facilitator client + metering
+├── oracle/
+│   └── contract/           # Soroban SEP-40 price feed contract (Rust, `cargo test --lib`)
 ├── prisma/
 │   └── schema.prisma       # Network-discriminated data models
 ├── tests/                  # Integration, load and property suites
@@ -46,7 +48,7 @@ git clone https://github.com/Miracle656/Lens.git
 cd Lens
 npm install
 cp .env.example .env   # fill in DATABASE_URL, REDIS_URL, WATCHED_PAIRS
-npx prisma db push
+npm run db:migrate     # apply committed migrations (prisma migrate dev) — do NOT `db push`
 npm run dev
 ```
 

@@ -13,8 +13,13 @@ interface TimedRequest extends FastifyRequest {
  * Routes excluded from HTTP metrics. `/metrics` is scraped on a fixed interval,
  * so counting it would have the scraper continuously inflate the very numbers
  * it is reading — request rate would never fall to zero on an idle service.
+ *
+ * `/live` and `/ready` are excluded for the same reason with a different
+ * poller: a platform probes them on a timer, so counting them would put a floor
+ * under the request rate that no amount of real traffic dropping could go
+ * below — and a real outage could not move the number it is meant to reveal.
  */
-const EXCLUDED_ROUTES = new Set(['/metrics'])
+const EXCLUDED_ROUTES = new Set(['/metrics', '/live', '/ready'])
 
 /**
  * Bucket a status code into a class label. Keeping 2xx/4xx/5xx rather than the

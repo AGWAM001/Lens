@@ -85,7 +85,7 @@ before loading. Delete the decrypted `.dump.gz` when you are done.
 
 4. Point the matching Lens deployment at the new instance:
    - `DATABASE_URL` — pooled URL is fine for the app
-   - `DIRECT_DATABASE_URL` — direct URL (Prisma migrations / `db push`)
+   - `DIRECT_DATABASE_URL` — direct URL (Prisma `migrate deploy` / CLI)
 5. Check `/status`, then one `/prices/history` (or GraphQL equivalent) for a
    watched pair.
 6. Rollback is swapping those two env vars back to the previous instance.

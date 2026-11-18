@@ -134,6 +134,8 @@ export function makePricePoints(network: string, pair: PairDef, anchor: Date = g
     counterVolume: Prisma.Decimal
     ledger: number
     timestamp: Date
+    observedAt: Date
+    sourceTime: Date | null
   }[] = []
 
   // 24 SDEX points, 1 per hour over the past 24h (on the hour)
@@ -142,6 +144,7 @@ export function makePricePoints(network: string, pair: PairDef, anchor: Date = g
     const priceVar = pair.basePrice * (1 + 0.03 * Math.sin((i * Math.PI) / 12))
     const price = parseFloat(priceVar.toFixed(8))
     const vol = 5000 + i * 200
+    const ts = hoursAgo(23 - i, anchor)
     points.push({
       id: `seed-${network}-sdex-${i}`,
       network,
@@ -154,7 +157,9 @@ export function makePricePoints(network: string, pair: PairDef, anchor: Date = g
       baseVolume: new Prisma.Decimal(vol),
       counterVolume: new Prisma.Decimal(parseFloat((vol * price).toFixed(7))),
       ledger: 50000000 + i * 100,
-      timestamp: hoursAgo(23 - i, anchor),
+      timestamp: ts,
+      observedAt: ts,
+      sourceTime: ts,
     })
   }
 
@@ -166,6 +171,7 @@ export function makePricePoints(network: string, pair: PairDef, anchor: Date = g
     const price = parseFloat(priceVar.toFixed(8))
     const vol = 3000 + i * 150
     const msAgo = ((22 - i * 2) * 60 + 30) * 60 * 1000
+    const ts = new Date(anchor.getTime() - msAgo)
     points.push({
       id: `seed-${network}-amm-${i}`,
       network,
@@ -178,7 +184,9 @@ export function makePricePoints(network: string, pair: PairDef, anchor: Date = g
       baseVolume: new Prisma.Decimal(vol),
       counterVolume: new Prisma.Decimal(parseFloat((vol * price).toFixed(7))),
       ledger: 50000050 + i * 200,
-      timestamp: new Date(anchor.getTime() - msAgo),
+      timestamp: ts,
+      observedAt: ts,
+      sourceTime: ts,
     })
   }
 

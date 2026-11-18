@@ -14,6 +14,27 @@ vi.mock('bullmq', () => ({
   Worker: class {},
 }))
 
+// The retention job logs batch progress through the structured logger; capture
+// those calls without touching stdout.
+const { retentionLogger } = vi.hoisted(() => ({
+  retentionLogger: {
+    trace: vi.fn(),
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    fatal: vi.fn(),
+    child: vi.fn(),
+  },
+}))
+
+vi.mock('../logger', () => ({
+  createLogger: () => retentionLogger,
+  logger: retentionLogger,
+  loggerOptions: () => ({}),
+  createDestination: () => ({ write: () => {} }),
+}))
+
 import {
   pruneOldSnapshots,
   pruneAllNetworks,
@@ -81,21 +102,20 @@ describe('pruneOldSnapshots network argument', () => {
       .mockResolvedValueOnce({ rowCount: 2 })
       .mockResolvedValueOnce({ rowCount: 1 })
       .mockResolvedValueOnce({ rowCount: 0 })
-    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    retentionLogger.info.mockClear()
     const onProgress = vi.fn()
 
-    try {
-      expect(await pruneOldSnapshots(14, 'mainnet', 2, onProgress)).toBe(3)
-      expect(mockQuery.mock.calls.map(call => call[1])).toEqual([
-        ['mainnet', 14, 2],
-        ['mainnet', 14, 2],
-        ['mainnet', 14, 2],
-      ])
-      expect(log).toHaveBeenCalledWith(expect.stringContaining('batch 2 (1 rows; 3 total)'))
-      expect(onProgress).toHaveBeenLastCalledWith({ network: 'mainnet', batch: 2, batchRows: 1, totalPruned: 3 })
-    } finally {
-      log.mockRestore()
-    }
+    expect(await pruneOldSnapshots(14, 'mainnet', 2, onProgress)).toBe(3)
+    expect(mockQuery.mock.calls.map(call => call[1])).toEqual([
+      ['mainnet', 14, 2],
+      ['mainnet', 14, 2],
+      ['mainnet', 14, 2],
+    ])
+    expect(retentionLogger.info).toHaveBeenCalledWith(
+      expect.objectContaining({ network: 'mainnet', batch: 2, rows: 1, total: 3 }),
+      'pruned retention batch'
+    )
+    expect(onProgress).toHaveBeenLastCalledWith({ network: 'mainnet', batch: 2, batchRows: 1, totalPruned: 3 })
   })
 
   it('rejects an invalid batch size before querying', async () => {

@@ -1,4 +1,4 @@
-import { ledgerFromPagingToken, resolvePageLedgers } from '../ingesters/toid'
+import { ledgerFromPagingToken, resolvePageLedgers } from '../ingest/toid'
 
 describe('ledgerFromPagingToken', () => {
   it('derives the ledger from real Horizon trade ids', () => {

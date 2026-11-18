@@ -75,14 +75,18 @@ describe('GET /basket', () => {
     const app = await buildApp()
     const res = await app.inject({ method: 'GET', url: '/basket' })
     expect(res.statusCode).toBe(400)
-    expect(res.json().error).toMatch(/asset/)
+    const body = res.json()
+    expect(body.error).toMatch(/Invalid asset: at least one asset is required/)
+    expect(body.code).toBe('VALIDATION_ERROR')
   })
 
   it('returns 400 when only one asset provided', async () => {
     const app = await buildApp()
     const res = await app.inject({ method: 'GET', url: '/basket?asset=USDC&weight=1' })
     expect(res.statusCode).toBe(400)
-    expect(res.json().error).toMatch(/2 assets/)
+    const body = res.json()
+    expect(body.error).toMatch(/Invalid asset: basket requires at least 2 assets/)
+    expect(body.code).toBe('VALIDATION_ERROR')
   })
 
   it('returns 400 when asset and weight counts do not match', async () => {
@@ -92,7 +96,9 @@ describe('GET /basket', () => {
       url: '/basket?asset=USDC&asset=XLM&weight=1',
     })
     expect(res.statusCode).toBe(400)
-    expect(res.json().error).toMatch(/must match/)
+    const body = res.json()
+    expect(body.error).toMatch(/Invalid weight: number of assets and weights must match/)
+    expect(body.code).toBe('VALIDATION_ERROR')
   })
 
   it('returns 400 when a weight is not a positive number', async () => {
@@ -102,10 +108,30 @@ describe('GET /basket', () => {
       url: '/basket?asset=USDC&weight=0&asset=XLM&weight=1',
     })
     expect(res.statusCode).toBe(400)
-    expect(res.json().error).toMatch(/positive/)
+    const body = res.json()
+    expect(body.error).toMatch(/Invalid weight: all weights must be positive numbers/)
+    expect(body.code).toBe('VALIDATION_ERROR')
   })
 
-  it('returns 404 when an asset has no price data', async () => {
+  it('returns 400 for a negative or non-numeric weight', async () => {
+    const app = await buildApp()
+    const negative = await app.inject({
+      method: 'GET',
+      url: '/basket?asset=USDC&weight=-1&asset=XLM&weight=1',
+    })
+    expect(negative.statusCode).toBe(400)
+    expect(negative.json().code).toBe('VALIDATION_ERROR')
+
+    const nonNumeric = await app.inject({
+      method: 'GET',
+      url: '/basket?asset=USDC&weight=abc&asset=XLM&weight=1',
+    })
+    expect(nonNumeric.statusCode).toBe(400)
+    expect(nonNumeric.json().code).toBe('VALIDATION_ERROR')
+    await app.close()
+  })
+
+  it('returns 200 with error and reason when an asset has no price data', async () => {
     mockQuery.mockImplementation(async (_sql: string, params: string[]) => {
       const asset = params[0]
       if (asset === 'USDC') return { rows: [{ vwap: '1.0' }] }
@@ -117,7 +143,12 @@ describe('GET /basket', () => {
       method: 'GET',
       url: '/basket?asset=USDC&weight=1&asset=UNKNOWN&weight=1',
     })
-    expect(res.statusCode).toBe(404)
+    // Changed from 404 to 200 per issue #262: the asset code is valid, the
+    // query succeeded, there is just no data. A 404 would imply the endpoint
+    // or the asset itself doesn't exist.
+    expect(res.statusCode).toBe(200)
     expect(res.json().error).toMatch(/UNKNOWN/)
+    expect(res.json().reason).toBe('missing_price_data')
+    expect(res.json().missingAssets).toContain('UNKNOWN')
   })
 })

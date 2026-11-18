@@ -14,10 +14,73 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: npm
       - run: npm ci || npm install
       - run: node node_modules/prisma/build/index.js generate
+      - name: Generate TypeScript client from openapi.yaml
+        run: npm run client:gen
+      - name: Fail if the committed client is out of date
+        run: git diff --exit-code -- clients/typescript
+      - name: Typecheck the generated TypeScript client
+        run: npm run client:typecheck
+      - name: Fail if the committed README tables are out of date with openapi.yaml
+        run: npm run readme:check
       - run: npx tsc --noEmit
       - run: npm run build
       - run: npm test --if-present
+
+  db-migrations:
+    # #233 — schema changes must be reviewable migrations, not `db push`.
+    # This job is the authority on drift: it replays every committed migration
+    # against a real Postgres and fails if the result disagrees with
+    # prisma/schema.prisma. It also proves a new migration can be generated,
+    # applied and rolled back on a clean database.
+    name: Migration drift & deploy
+    runs-on: ubuntu-latest
+    needs: build
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: lens
+          POSTGRES_PASSWORD: lens
+          POSTGRES_DB: lens
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U lens -d lens"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://lens:lens@localhost:5432/lens
+      DIRECT_DATABASE_URL: postgresql://lens:lens@localhost:5432/lens
+      SHADOW_DATABASE_URL: postgresql://lens:lens@localhost:5432/lens_shadow
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci || npm install
+      - run: node node_modules/prisma/build/index.js generate
+
+      - name: Create empty shadow database
+        run: |
+          node -e '
+            const { Client } = require("pg");
+            (async () => {
+              const c = new Client({ connectionString: process.env.DATABASE_URL });
+              await c.connect();
+              await c.query("DROP DATABASE IF EXISTS lens_shadow");
+              await c.query("CREATE DATABASE lens_shadow");
+              await c.end();
+            })();
+          '
+
+      - name: Fail on drift between schema.prisma and prisma/migrations
+        run: bash scripts/db-drift-check.sh
+
+      - name: Prove generate / apply / rollback on a clean database
+        run: bash scripts/db-migration-cycle.sh

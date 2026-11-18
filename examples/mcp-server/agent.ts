@@ -52,10 +52,20 @@ async function main() {
 
   console.log('[agent] Starting MCP server child process...');
   
-  // Start the MCP server as a child process
+  // Start the MCP server as a child process.
+  // paid_call spends real USDC, so the server only pays origins the operator
+  // allow-lists (MCP_PAID_CALL_ALLOWED_HOSTS, empty by default). This demo
+  // spends against the mock server above, so it names that origin and nothing
+  // else. A real deployment lists its own endpoints and leaves the rest refused.
+  const demoAllowlist = 'localhost:3000';
+
   const transport = new StdioClientTransport({
     command: process.platform === 'win32' ? 'npx.cmd' : 'npx',
     args: ['tsx', path.join(__dirname, 'run.ts')],
+    env: {
+      ...process.env as Record<string, string>,
+      MCP_PAID_CALL_ALLOWED_HOSTS: process.env.MCP_PAID_CALL_ALLOWED_HOSTS || demoAllowlist,
+    },
   });
 
   const client = new Client(
@@ -74,7 +84,39 @@ async function main() {
   const tools = await client.listTools();
   console.log('[agent] Available tools:', tools.tools.map(t => t.name).join(', '));
 
+  // Resources are the other half of the capability: read-only facts about Lens
+  // itself, attached to the agent's context once instead of re-fetched by
+  // calling a tool every turn. Each reports a content-hash version, so a client
+  // can tell whether a copy it cached is still current.
+  const resources = await client.listResources();
+  console.log('[agent] Available resources:', resources.resources.map(r => r.uri).join(', '));
+
+  const statusResource = await client.readResource({ uri: 'lens://status' });
+  console.log('[agent] lens://status:', statusResource.contents[0].text);
+  console.log('[agent] version:', statusResource.contents[0]._meta?.version);
+
   const BAZAAR_URL = 'http://localhost:3000';
+
+  // Step 0 is the one that needs no Bazaar node and no payment: Lens answering
+  // for its own data. It reads the ingestion database, so a machine without one
+  // gets a deterministic refusal instead of a number.
+  console.log('\n[agent] 0. Asking Lens directly for a price...');
+
+  const priceResult = await client.callTool({
+    name: 'lens_get_price',
+    arguments: { assetA: 'native', assetB: 'USDC' },
+  });
+
+  if (priceResult.isError) {
+    console.log('[agent] lens_get_price refused:', JSON.parse(priceResult.content[0].text).reason);
+  } else {
+    const price: any = priceResult.structuredContent ?? JSON.parse(priceResult.content[0].text);
+    console.log(
+      `[agent] ${price.pairKey} on ${price.network}: ${price.price} ${price.quote.code} per ${price.base.code} ` +
+        `(confidence ${price.confidence}, ${price.sources} source(s), last trade ${price.lastTradeAgeSeconds}s ago, ` +
+        `route ${price.bestRoute?.route ?? 'unknown'})`
+    );
+  }
 
   console.log(`\n[agent] 1. Discovering resources at ${BAZAAR_URL}...`);
   console.log(`[agent] Executing tool: bazaar_search`);
@@ -95,8 +137,16 @@ async function main() {
     } else {
       console.log('[agent] Search result:', searchResult.content[0].text);
       const data = JSON.parse(searchResult.content[0].text);
-      if (data.resources && data.resources.length > 0) {
+      if (Array.isArray(data.resources) && data.resources.length > 0) {
         paidEndpoint = data.resources[0].url;
+      } else {
+        // The point of #414: an empty result is a successful search, so the
+        // agent says "none matched" and moves on rather than treating it as a
+        // failure to retry — a retry here is a paid call for a question already
+        // answered. Keyed off the empty collection, not a count field:
+        // /discovery/search reports `totalMatched`, and another bazaar node may
+        // send neither.
+        console.log('[agent] Search completed with no matching resources.');
       }
     }
   } catch (err: any) {

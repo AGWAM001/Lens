@@ -1,11 +1,12 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import websocket from '@fastify/websocket'
 import { priceEmitter, PRICE_UPDATE, PriceUpdateEvent } from '../events'
-import { activeNetwork, type NetworkName } from '../config'
+import { activeNetwork, config, type NetworkName } from '../config'
 import { X402_NETWORK_LABEL, paymentAddressFor, getX402ResourceServer } from '../x402/network'
 import { resolveNetworkName } from '../middleware/network'
 import { fanOutManager } from '../ws/fanout'
 import { v4 as uuid } from 'uuid'
+import { createInternalErrorBody, getCorrelationId } from '../errors'
 
 const FACILITATOR_URL = process.env.X402_FACILITATOR_URL ?? 'https://x402.org/facilitator'
 
@@ -72,7 +73,15 @@ export async function registerWebSocket(app: FastifyInstance) {
           }
         })
         .catch(err => {
-          socket.send(JSON.stringify({ type: 'error', message: err.message }))
+          const correlationId = getCorrelationId(req)
+          const log = req?.log ?? app?.log
+          if (log && typeof log.error === 'function') {
+            log.error({ err, correlationId }, 'WebSocket internal error')
+          }
+          socket.send(JSON.stringify({
+            type: 'error',
+            ...createInternalErrorBody(correlationId),
+          }))
           socket.close()
         })
       return
@@ -89,18 +98,60 @@ export async function registerWebSocket(app: FastifyInstance) {
     const clientId = uuid()
     const unsubscribe = fanOutManager.register('*', {
       id: clientId,
-      send: (data: string) => {
-        if (socket.readyState === 1) { // OPEN
-          socket.send(data)
+      send: (data: string, cb?: (err?: Error | null) => void) => {
+        if (socket.readyState !== 1) { // OPEN
+          // Tell the fan-out rather than silently swallowing it: a socket that
+          // cannot be written to is a client that must be unregistered, not one
+          // whose messages quietly stop being counted.
+          cb?.(new Error(`socket not open (readyState ${socket.readyState})`))
+          return
         }
+        // The callback fires once the frame has actually been written, which is
+        // what FanOutManager counts as "sent" — see src/ws/fanout.ts.
+        socket.send(data, (err?: Error) => cb?.(err))
       },
-      close: () => {
-        socket.close()
+      close: (code?: number, reason?: string) => {
+        socket.close(code, reason)
       },
+      // Bytes queued for this socket and not yet written to the peer. This is
+      // the only backpressure signal available, and every threshold in
+      // FanOutManager is measured against it.
+      bufferedAmount: () => socket.bufferedAmount,
+    })
+
+    // Heartbeat ping/pong handling
+    const pingIntervalMs = config.ws.pingIntervalMs
+    const maxMissedPings = config.ws.maxMissedPings
+    let missedPings = 0
+
+    const heartbeatInterval = setInterval(() => {
+      missedPings++
+      if (missedPings > maxMissedPings) {
+        app.log.warn(`[ws] Client ${clientId} missed ${missedPings - 1} consecutive ping(s) (threshold: ${maxMissedPings}), closing dead connection`)
+        clearInterval(heartbeatInterval)
+        unsubscribe()
+        if (typeof socket.terminate === 'function') {
+          socket.terminate()
+        } else {
+          socket.close()
+        }
+        return
+      }
+
+      if (socket.readyState === 1) { // OPEN
+        if (typeof socket.ping === 'function') {
+          socket.ping()
+        }
+      }
+    }, pingIntervalMs)
+
+    socket.on('pong', () => {
+      missedPings = 0
     })
 
     socket.on('close', () => {
       app.log.info('[ws] Connection closed')
+      clearInterval(heartbeatInterval)
       unsubscribe()
     })
   }

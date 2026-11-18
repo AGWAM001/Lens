@@ -164,7 +164,12 @@ describe('GET /spreads/:asset', () => {
     const res = await app.inject({ method: 'GET', url: '/spreads/XLM' })
 
     expect(res.statusCode).toBe(500)
-    expect(res.json().error).toMatch(/connection refused/)
+    expect(res.json()).toEqual({
+      code: 'internal_error',
+      message: 'An internal server error occurred.',
+      correlationId: expect.any(String),
+    })
+    expect(res.body).not.toMatch(/connection refused/)
   })
   it('exposes spreadPct as spreadBps / 100', async () => {
     // bid 99, ask 101 → spreadBps 200 → spreadPct 2.000000

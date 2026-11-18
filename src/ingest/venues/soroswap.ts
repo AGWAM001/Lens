@@ -6,7 +6,7 @@
  * with source = 'soroswap_amm'. Runs independently of the SDEX and Horizon
  * AMM ingesters — a crash here cannot affect them.
  *
- * Issue: #48, #218
+ * Issue: #48, #218, #329
  */
 
 import {
@@ -19,11 +19,17 @@ import {
   scValToNative,
   Account,
 } from '@stellar/stellar-sdk'
-import { activeNetwork, getNetworkConfig, type NetworkName } from '../../config'
+import { config, activeNetwork, getNetworkConfig, type NetworkName } from '../../config'
+import { price_rejected_total } from '../../metrics'
 import { getRpcServer } from '../../network/clients'
 import { upsertPricePoints } from '../../db'
+import { markIngestSuccess } from '../../metrics'
 import { dispatchPriceUpdate } from '../../webhookDispatcher'
 import { publishPriceUpdate } from '../../events'
+import { createLogger } from '../../logger'
+import { fetchWithTimeout } from '../../fetch'
+import { fetchOk, fetchFailed, type FetchResult } from '../fetchResult'
+import { recordSourceFailure, clearSourceFailure } from '../sourceFailures'
 import type { WatchedPair } from '../../types'
 import type { VenueAdapter, VenuePricePoint } from './types'
 import {
@@ -32,6 +38,8 @@ import {
   setLastPrice,
   startVenueAdapter,
 } from './runner'
+
+const log = createLogger('ingester:soroswap')
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -67,21 +75,31 @@ export interface PoolEntry {
 
 // ── Token-list helpers ────────────────────────────────────────────────────────
 
+/** `price_points.source` for Soroswap, and its key in the source-failure record. */
+export const SOROSWAP_SOURCE = 'soroswap_amm'
+
 /**
- * Fetch Soroswap token list. Returns an empty array on failure so the ingester
- * degrades gracefully without affecting other ingesters.
+ * Fetch the Soroswap token list (#329).
+ *
+ * `{ ok: true, data: [] }` means the list was fetched and is empty.
+ * `{ ok: false }` means it could not be fetched (network error, timeout,
+ * non-2xx, or a body without a `tokens` array) — the caller must not read that
+ * as "Soroswap lists no tokens". It is still a value rather than a throw, so a
+ * Soroswap outage stays isolated from the other ingesters.
  */
 export async function fetchSoroswapTokenList(
-  tokenListUrl: string = getNetworkConfig(activeNetwork).soroswap.tokenListUrl
-): Promise<SoroswapToken[]> {
+  tokenListUrl: string = getNetworkConfig(activeNetwork).soroswap.tokenListUrl,
+  signal?: AbortSignal
+): Promise<FetchResult<SoroswapToken[]>> {
   try {
-    const res = await fetch(tokenListUrl)
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const res = await fetchWithTimeout(tokenListUrl, { signal })
+    if (!res.ok) throw new Error(`Soroswap token list returned HTTP ${res.status}`)
     const data = (await res.json()) as SoroswapTokenList
-    return Array.isArray(data.tokens) ? data.tokens : []
+    if (!Array.isArray(data?.tokens)) throw new Error('Soroswap token list response has no tokens array')
+    return fetchOk(data.tokens)
   } catch (err) {
-    console.error('[soroswap] Failed to fetch token list:', (err as Error).message)
-    return []
+    log.error({ err }, 'failed to fetch token list')
+    return fetchFailed(err)
   }
 }
 
@@ -121,10 +139,7 @@ export async function fetchPoolsFromFactory(
     const sim = await rpc.simulateTransaction(tx)
 
     if (SorobanRpc.Api.isSimulationError(sim)) {
-      console.debug(
-        `[soroswap] get_pools simulation error for ${tokenA}/${tokenB}:`,
-        sim.error
-      )
+      log.debug({ tokenA, tokenB, error: sim.error }, 'get_pools simulation error')
       return []
     }
 
@@ -133,10 +148,7 @@ export async function fetchPoolsFromFactory(
     const pools = scValToNative(sim.result.retval) as string[]
     return Array.isArray(pools) ? pools : []
   } catch (err) {
-    console.debug(
-      '[soroswap] fetchPoolsFromFactory error:',
-      (err as Error).message
-    )
+    log.debug({ err }, 'fetchPoolsFromFactory error')
     return []
   }
 }
@@ -170,10 +182,7 @@ export async function fetchPoolReserves(
     const sim = await rpc.simulateTransaction(tx)
 
     if (SorobanRpc.Api.isSimulationError(sim)) {
-      console.debug(
-        `[soroswap] get_reserves simulation error for pool ${poolAddress}:`,
-        sim.error
-      )
+      log.debug({ pool: poolAddress, error: sim.error }, 'get_reserves simulation error')
       return null
     }
 
@@ -184,9 +193,79 @@ export async function fetchPoolReserves(
 
     return [BigInt(reserves[0]), BigInt(reserves[1])]
   } catch (err) {
-    console.debug(
-      `[soroswap] fetchPoolReserves error for ${poolAddress}:`,
-      (err as Error).message
+    log.debug({ pool: poolAddress, err }, 'fetchPoolReserves error')
+    return null
+  }
+}
+
+// ── Token decimals reading & caching ──────────────────────────────────────────
+
+const tokenDecimalsCache = new Map<string, number>()
+
+export function _resetTokenDecimalsCache(): void {
+  tokenDecimalsCache.clear()
+}
+
+export function getCachedTokenDecimals(tokenAddress: string): number | undefined {
+  return tokenDecimalsCache.get(tokenAddress)
+}
+
+export function setCachedTokenDecimals(tokenAddress: string, decimals: number): void {
+  tokenDecimalsCache.set(tokenAddress, decimals)
+}
+
+/**
+ * Read a token's decimals via Soroban RPC simulation, with caching.
+ * A token's decimals never change on-chain.
+ */
+export async function fetchTokenDecimals(
+  tokenAddress: string,
+  network: NetworkName = activeNetwork
+): Promise<number | null> {
+  const cached = getCachedTokenDecimals(tokenAddress)
+  if (cached !== undefined) return cached
+
+  try {
+    if (typeof getRpcServer !== 'function') return null
+    const rpc = getRpcServer(network)
+    if (!rpc) return null
+    const token = new Contract(tokenAddress)
+    const account = new Account(FEE_PAYER_KEYPAIR.publicKey(), '0')
+    const networkPassphrase =
+      getNetworkConfig(network).network.passphrase ?? Networks.PUBLIC
+
+    const tx = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase,
+    })
+      .addOperation(token.call('decimals'))
+      .setTimeout(30)
+      .build()
+
+    const sim = await rpc.simulateTransaction(tx)
+
+    if (SorobanRpc.Api.isSimulationError(sim)) {
+      log.debug(
+        { token: tokenAddress, error: sim.error },
+        'decimals simulation error'
+      )
+      return null
+    }
+
+    if (!sim.result?.retval) return null
+
+    const decimalsVal = scValToNative(sim.result.retval)
+    const decimals = typeof decimalsVal === 'number' ? decimalsVal : Number(decimalsVal)
+    if (!Number.isInteger(decimals) || decimals < 0 || decimals > 18) {
+      return null
+    }
+
+    setCachedTokenDecimals(tokenAddress, decimals)
+    return decimals
+  } catch (err) {
+    log.debug(
+      { token: tokenAddress, err },
+      'fetchTokenDecimals error'
     )
     return null
   }
@@ -195,16 +274,36 @@ export async function fetchPoolReserves(
 // ── Spot price ────────────────────────────────────────────────────────────────
 
 /**
- * Pure function: calculate spot price from constant-product reserves.
+ * Pure function: calculate spot price from constant-product reserves scaled by token decimals.
  * Returns 0 if either reserve is zero (empty pool guard).
  *
- * price = reserveA / reserveB
+ * price = (reserveA / 10^decimalsA) / (reserveB / 10^decimalsB)
+ *       = (reserveA / reserveB) * 10^(decimalsB - decimalsA)
  * (price of assetB denominated in assetA)
  */
-export function calcSpotPrice(reserveA: bigint, reserveB: bigint): number {
+export function calcSpotPrice(
+  reserveA: bigint,
+  reserveB: bigint,
+  decimalsA: number = 7,
+  decimalsB: number = 7
+): number {
   if (reserveA === 0n || reserveB === 0n) return 0
-  // Use Number division; reserves are i128 scaled to 7 decimal places
-  return Number(reserveA) / Number(reserveB)
+  if (decimalsA === decimalsB) {
+    return Number(reserveA) / Number(reserveB)
+  }
+  const scale = Math.pow(10, decimalsB - decimalsA)
+  return (Number(reserveA) / Number(reserveB)) * scale
+}
+
+/**
+ * Checks whether a derived spot price falls within the configurable sanity range.
+ */
+export function isPricePlausible(
+  price: number,
+  min: number = config.plausibility.minPrice,
+  max: number = config.plausibility.maxPrice
+): boolean {
+  return price >= min && price <= max && Number.isFinite(price) && !Number.isNaN(price)
 }
 
 // ── Per-pool ingestion ────────────────────────────────────────────────────────
@@ -217,23 +316,59 @@ export async function ingestPool(
   poolEntry: PoolEntry,
   pair: WatchedPair,
   _fetchReserves: (poolAddress: string, network?: NetworkName) => Promise<[bigint, bigint] | null> = fetchPoolReserves,
-  network: NetworkName = activeNetwork
+  network: NetworkName = activeNetwork,
+  _fetchDecimals: (tokenAddress: string, network?: NetworkName) => Promise<number | null> = fetchTokenDecimals,
+  signal?: AbortSignal
 ): Promise<void> {
   try {
+    // Cycle-deadline checkpoint (#351): an abandoned cycle does not start
+    // another RPC simulation for a pool whose unit has not begun.
+    if (signal?.aborted) return
+
     const reserves = await _fetchReserves(poolEntry.poolAddress, network)
     if (!reserves) return
 
     const [reserveA, reserveB] = reserves
-    const spotPrice = calcSpotPrice(reserveA, reserveB)
+
+    const decimalsA =
+      (await _fetchDecimals(poolEntry.tokenA.address, network)) ??
+      poolEntry.tokenA.decimals ??
+      7
+    const decimalsB =
+      (await _fetchDecimals(poolEntry.tokenB.address, network)) ??
+      poolEntry.tokenB.decimals ??
+      7
+
+    const spotPrice = calcSpotPrice(reserveA, reserveB, decimalsA, decimalsB)
 
     if (spotPrice === 0) {
-      console.debug(
-        `[soroswap] Skipping empty pool ${poolEntry.poolAddress} for ${pair.pairKey}`
-      )
+      log.debug({ pool: poolEntry.poolAddress, pair: pair.pairKey }, 'skipping empty pool')
       return
     }
 
-    await upsertPricePoints(
+    if (!isPricePlausible(spotPrice)) {
+      log.warn(
+        { pair: pair.pairKey, pool: poolEntry.poolAddress, spotPrice },
+        `Derived price ${spotPrice} for ${pair.pairKey} (${poolEntry.poolAddress}) outside plausible range [${config.plausibility.minPrice}, ${config.plausibility.maxPrice}] — rejecting`
+      )
+      price_rejected_total.inc({
+        pair: pair.pairKey,
+        network,
+        venue: 'soroswap',
+        reason: 'out_of_bounds',
+      })
+      return
+    }
+
+    // Cycle-deadline checkpoint (#351), ahead of the write: nothing has been
+    // written yet, so skipping leaves no partial state — the reserves are
+    // re-read next cycle. The write itself is one upsert, so it commits whole
+    // or not at all, and Soroswap keeps no cursor whose advance could be
+    // separated from it.
+    if (signal?.aborted) return
+
+    const now = new Date()
+    const res = await upsertPricePoints(
       [
         {
           assetA: pair.assetA.code,
@@ -245,41 +380,51 @@ export async function ingestPool(
           baseVolume: 0,
           counterVolume: 0,
           ledger: 0,
-          timestamp: new Date(),
-          eventId: `soroswap-${poolEntry.poolAddress}-${Date.now()}`,
+          observedAt: now,
+          sourceTime: null,
+          timestamp: now,
+          // #237: Soroswap snapshots are read via RPC simulation, so there is
+          // no trade id to key on. The reserves ARE the pool state — identical
+          // reserves yield the identical price, so deriving the id from them
+          // makes a replayed batch (or an overlapping second instance reading
+          // the same state) collide on the unique index instead of inserting
+          // a duplicate. Must never be Date.now()/random.
+          eventId: `soroswap-${poolEntry.poolAddress}-${reserveA}-${reserveB}`,
         },
       ],
       network
     )
+    markIngestSuccess('Soroswap', network)
+    const acceptedPoints: any[] = (res && typeof res === 'object' && 'acceptedPoints' in res)
+      ? (res as any).acceptedPoints
+      : [spotPrice]
 
-    const trackerKey = pair.pairKey
-    const { previousPrice } = setLastPrice('Soroswap', network, trackerKey, spotPrice)
+    if (acceptedPoints.length > 0) {
+      const trackerKey = pair.pairKey
+      const { previousPrice } = setLastPrice('Soroswap', network, trackerKey, spotPrice)
 
-    publishPriceUpdate({
-      pair: pair.pairKey,
-      price: spotPrice,
-      ts: new Date().toISOString(),
-      network,
-    })
+      publishPriceUpdate({
+        pair: pair.pairKey,
+        price: spotPrice,
+        ts: new Date().toISOString(),
+        network,
+      })
 
-    dispatchPriceUpdate({
-      assetA: pair.assetA.code,
-      assetB: pair.assetB.code,
-      previousPrice,
-      currentPrice: spotPrice,
-      network,
-    }).catch((err) =>
-      console.error('[soroswap] webhook dispatch error:', err.message)
-    )
+      dispatchPriceUpdate({
+        assetA: pair.assetA.code,
+        assetB: pair.assetB.code,
+        previousPrice,
+        currentPrice: spotPrice,
+        network,
+      }).catch((err) => log.error({ pool: poolEntry.poolAddress, err }, 'webhook dispatch error'))
+    }
 
-    console.log(
-      `[soroswap] Pool ${poolEntry.poolAddress.slice(0, 8)}: price=${spotPrice.toFixed(8)} for ${pair.pairKey}`
+    log.info(
+      { pair: pair.pairKey, pool: poolEntry.poolAddress, price: spotPrice },
+      'ingested pool price'
     )
   } catch (err) {
-    console.error(
-      `[soroswap] ingestPool error for ${poolEntry.poolAddress}:`,
-      (err as Error).message
-    )
+    log.error({ pool: poolEntry.poolAddress, err }, 'ingestPool error')
   }
 }
 
@@ -299,7 +444,8 @@ export async function ingestPair(
     tokenB: string,
     network?: NetworkName
   ) => Promise<string[]> = fetchPoolsFromFactory,
-  network: NetworkName = activeNetwork
+  network: NetworkName = activeNetwork,
+  signal?: AbortSignal
 ): Promise<void> {
   const tokenA = tokens.find(
     (t) => t.symbol.toUpperCase() === pair.assetA.code.toUpperCase()
@@ -309,9 +455,7 @@ export async function ingestPair(
   )
 
   if (!tokenA || !tokenB) {
-    console.debug(
-      `[soroswap] No Soroswap token found for pair ${pair.pairKey} — skipping`
-    )
+    log.debug({ pair: pair.pairKey }, 'no Soroswap token found; skipping')
     return
   }
 
@@ -323,11 +467,14 @@ export async function ingestPair(
   )
 
   if (!poolAddresses.length) {
-    console.debug(
-      `[soroswap] No pools found for ${pair.pairKey} — skipping`
-    )
+    log.debug({ pair: pair.pairKey }, 'no pools found; skipping')
     return
   }
+
+  // Cycle-deadline checkpoint (#351): discovery above is one bounded RPC call
+  // we cannot interrupt mid-flight; this is where an abandoned cycle stops
+  // instead of scheduling a reserves read per pool after its deadline.
+  if (signal?.aborted) return
 
   await Promise.all(
     poolAddresses.map((addr) =>
@@ -335,7 +482,12 @@ export async function ingestPair(
         { poolAddress: addr, tokenA, tokenB },
         pair,
         fetchPoolReserves,
-        network
+        network,
+        // `_fetchDecimals` sits between `network` and `signal` in the
+        // signature, so pass the real implementation explicitly — omitting it
+        // puts the AbortSignal in its place.
+        fetchTokenDecimals,
+        signal
       )
     )
   )
@@ -343,10 +495,15 @@ export async function ingestPair(
 
 export const soroswapAdapter: VenueAdapter<PoolEntry, [bigint, bigint]> = {
   name: 'Soroswap',
+  kind: 'amm',
   source: 'soroswap_amm',
+  sourceTimeCapability: { status: 'unavailable' },
+  classification: 'primary',
+  type: 'AMM DEX',
+  description: 'Soroswap constant-product automated market maker on Soroban',
 
   isEnabled(network: NetworkName): boolean {
-    return getNetworkConfig(network).soroswap.enabled
+    return getNetworkConfig(network).soroswap?.enabled ?? false
   },
 
   getPollIntervalMs(network: NetworkName): number {
@@ -355,7 +512,9 @@ export const soroswapAdapter: VenueAdapter<PoolEntry, [bigint, bigint]> = {
 
   async discover(pair: WatchedPair, network: NetworkName): Promise<PoolEntry[]> {
     const netConfig = getNetworkConfig(network)
-    const tokens = await fetchSoroswapTokenList(netConfig.soroswap.tokenListUrl)
+    const fetched = await fetchSoroswapTokenList(netConfig.soroswap.tokenListUrl)
+    if (!fetched.ok) throw fetched.error
+    const tokens = fetched.data
     const tokenA = tokens.find((t) => t.symbol.toUpperCase() === pair.assetA.code.toUpperCase())
     const tokenB = tokens.find((t) => t.symbol.toUpperCase() === pair.assetB.code.toUpperCase())
     if (!tokenA || !tokenB) return []
@@ -375,9 +534,29 @@ export const soroswapAdapter: VenueAdapter<PoolEntry, [bigint, bigint]> = {
 
   derive(raw: [bigint, bigint], target: PoolEntry, pair: WatchedPair, _network: NetworkName): VenuePricePoint[] {
     const [reserveA, reserveB] = raw
-    const spotPrice = calcSpotPrice(reserveA, reserveB)
+    const spotPrice = calcSpotPrice(
+      reserveA,
+      reserveB,
+      target.tokenA.decimals ?? 7,
+      target.tokenB.decimals ?? 7
+    )
     if (spotPrice === 0) return []
 
+    if (!isPricePlausible(spotPrice)) {
+      log.warn(
+        { pair: pair.pairKey, pool: target.poolAddress, spotPrice },
+        `Derived price ${spotPrice} for ${pair.pairKey} (${target.poolAddress}) outside plausible range [${config.plausibility.minPrice}, ${config.plausibility.maxPrice}] — rejecting`
+      )
+      price_rejected_total.inc({
+        pair: pair.pairKey,
+        network: _network,
+        venue: 'soroswap',
+        reason: 'out_of_bounds',
+      })
+      return []
+    }
+
+    const now = new Date()
     return [
       {
         assetA: pair.assetA.code,
@@ -389,8 +568,12 @@ export const soroswapAdapter: VenueAdapter<PoolEntry, [bigint, bigint]> = {
         baseVolume: 0,
         counterVolume: 0,
         ledger: 0,
-        timestamp: new Date(),
-        eventId: `soroswap-${target.poolAddress}-${Date.now()}`,
+        observedAt: now,
+        sourceTime: null,
+        timestamp: now,
+        // Same content-derived key as ingestPool above (#237): reserves, not
+        // the clock, so the adapter path and the legacy path agree on identity.
+        eventId: `soroswap-${target.poolAddress}-${reserveA}-${reserveB}`,
       },
     ]
   },
@@ -399,11 +582,22 @@ export const soroswapAdapter: VenueAdapter<PoolEntry, [bigint, bigint]> = {
     await ingestPool(target, pair, fetchPoolReserves, network)
   },
 
-  async ingestPair(pair: WatchedPair, network: NetworkName): Promise<void> {
+  async ingestPair(pair: WatchedPair, network: NetworkName, signal?: AbortSignal): Promise<void> {
+    // An abandoned cycle (#351) never asked Soroswap anything, so it is
+    // neither a failure nor a success and leaves the recorded state alone.
+    if (signal?.aborted) return
     const netConfig = getNetworkConfig(network)
-    const tokens = await fetchSoroswapTokenList(netConfig.soroswap.tokenListUrl)
+    const fetched = await fetchSoroswapTokenList(netConfig.soroswap.tokenListUrl, signal)
+    if (!fetched.ok) {
+      // #329: without the token list no Soroswap pool can be priced, so the
+      // venue has failed for this pair — not answered with nothing.
+      recordSourceFailure(SOROSWAP_SOURCE, network, pair.pairKey, fetched.error)
+      return
+    }
+    clearSourceFailure(SOROSWAP_SOURCE, network, pair.pairKey)
+    const tokens = fetched.data
     if (tokens.length === 0) return
-    await ingestPair(pair, tokens, netConfig.soroswap.factoryAddress, fetchPoolsFromFactory, network)
+    await ingestPair(pair, tokens, netConfig.soroswap.factoryAddress, fetchPoolsFromFactory, network, signal)
   },
 
   _resetLastPrice,

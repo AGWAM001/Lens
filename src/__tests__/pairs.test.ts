@@ -222,8 +222,11 @@ describe('GET /pairs', () => {
       const body = (await app.inject({ method: 'GET', url: '/pairs' })).json()
 
       expect(body.pairs).toHaveLength(2)
-      expect(body.pairs[0]).toMatchObject({ pairKey: 'QUIET/X', latestPrice: 1.5, lastUpdated: old.toISOString() })
-      expect(body.pairs[1]).toMatchObject({ pairKey: 'NEW/Y', latestPrice: null, lastUpdated: null })
+      // Sorted by pairKey ascending, so NEW/Y precedes QUIET/X.
+      expect(body.pairs[0]).toMatchObject({ pairKey: 'NEW/Y', latestPrice: null, lastUpdated: null })
+      expect(body.pairs[1]).toMatchObject({ pairKey: 'QUIET/X', latestPrice: 1.5, lastUpdated: old.toISOString() })
+      expect(body.nextCursor).toBeNull()
+      expect(body.hasMore).toBe(false)
     })
   })
 })

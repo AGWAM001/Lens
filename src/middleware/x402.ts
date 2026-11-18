@@ -3,6 +3,7 @@ import { x402_payments_received_total } from '../metrics'
 import { checkQuota, recordUsage, parseCents, getQuotaConfig } from '../x402/metering'
 import { X402_NETWORK_LABEL, paymentAddressFor, isX402Configured, getX402ResourceServer } from '../x402/network'
 import fp from 'fastify-plugin'
+import { apiError } from '../errors'
 import './network' // declares req.network on the FastifyRequest type
 
 export interface GatedRoute {
@@ -108,7 +109,7 @@ async function x402Plugin(app: FastifyInstance) {
     const network = req.network ?? 'testnet'
     const paymentAddress = paymentAddressFor(network)
     if (!paymentAddress) {
-      reply.status(402).send({ error: `x402 payments are not configured for network "${network}"` })
+      reply.status(402).send(apiError('unsupported', `x402 payments are not configured for network "${network}"`))
       return
     }
 
@@ -127,7 +128,7 @@ async function x402Plugin(app: FastifyInstance) {
       reply.status(402).send({
         x402Version: 1,
         accepts: [requirements],
-        error: 'Payment required',
+        ...apiError('payment_required', 'Payment required'),
         description,
       })
       return
@@ -145,7 +146,7 @@ async function x402Plugin(app: FastifyInstance) {
       const resourceServer = await getX402ResourceServer(network, FACILITATOR_URL)
       const result = await resourceServer.verify(payload, requirements)
       if (!result.isValid) {
-        reply.status(402).send({ error: 'Payment invalid', reason: result.invalidReason })
+        reply.status(402).send({ ...apiError('payment_invalid', 'Payment invalid'), reason: result.invalidReason })
         return
       }
 
@@ -163,14 +164,14 @@ async function x402Plugin(app: FastifyInstance) {
             await recordUsage(apiKeyId, parseCents(price))
           } else if (config.overagePolicy === 'charge_402') {
             reply.status(402).send({
-              error: 'Quota exceeded — additional payment required',
+              ...apiError('quota_exceeded', 'Quota exceeded — additional payment required'),
               policy: 'charge_402',
             })
             return
           } else {
             // default: block
             reply.status(402).send({
-              error: 'Quota exceeded',
+              ...apiError('quota_exceeded', 'Quota exceeded'),
               policy: 'block',
             })
             return
@@ -185,7 +186,7 @@ async function x402Plugin(app: FastifyInstance) {
         app.log.error({ err }, '[oracle] x402 settle error')
       })
     } catch (err) {
-      reply.status(402).send({ error: 'Payment verification failed', reason: (err as Error).message })
+      reply.status(402).send({ ...apiError('payment_verification_failed', 'Payment verification failed'), reason: (err as Error).message })
     }
   })
 }

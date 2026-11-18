@@ -126,8 +126,8 @@ describe('GraphQL priceUpdated subscription', () => {
     // Since #117 every enabled network runs its own ingester loop and all of
     // them publish to this one emitter. Without the network filter a mainnet
     // print and a testnet print for XLM/USDC arrive on the same stream,
-    // indistinguishable — a chart that looks noisy rather than wrong, which is
-    // the harder kind of bug to notice.
+    // indistinguishable — a chart that looks noisy rather than wrong, which
+    // is the harder kind of bug to notice.
     const ws = await connect(url)
     ws.send(JSON.stringify(SUBSCRIBE('XLM/USDC', 'mainnet')))
     await new Promise(r => setTimeout(r, 100))

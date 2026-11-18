@@ -15,5 +15,10 @@ export default defineConfig({
     // a little headroom over the 5s default. Kept deliberately tight: a loose
     // ceiling hides a genuine hang as a slow pass.
     testTimeout: 20_000,
+    // Match testTimeout for hooks. Some suites build the whole app in
+    // `beforeAll` (e.g. tests/rest-route.test.ts), which imports the heavy
+    // @stellar/stellar-sdk; under parallel-fork contention that first build can
+    // exceed the 10s hook default and time out even though it is not hung.
+    hookTimeout: 20_000,
   },
 })

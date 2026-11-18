@@ -52,6 +52,8 @@ vi.mock('../config', () => ({
 
 import { registerRESTRoutes } from '../api/rest'
 import { registerNetworkSelector } from '../middleware/network'
+import { recordCrash, resetIngesterState } from '../ingester/restart'
+import { recordSourceFailure, resetSourceFailures } from '../ingest/sourceFailures'
 
 async function buildApp() {
   const app = Fastify({ logger: false })
@@ -70,6 +72,8 @@ const rowsByNetwork: Record<string, { last_ledger: number; last_processed_at: Da
 describe('GET /status', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    resetIngesterState()
+    resetSourceFailures()
     // Return a row only for the network the query actually filtered on; an
     // unfiltered SELECT would therefore hand a network the other one's row.
     mockQuery.mockImplementation(async (_sql: string, params: unknown[]) => ({
@@ -117,7 +121,7 @@ describe('GET /status', () => {
     expect(body.ingestLagSeconds).toBeLessThan(60)
   })
 
-  it('returns nulls — never another network\'s data — when a network has not ingested', async () => {
+  it('returns nulls — never another network \'s data — when a network has not ingested', async () => {
     mockQuery.mockResolvedValue({ rows: [] })
     const app = await buildApp()
 
@@ -137,5 +141,48 @@ describe('GET /status', () => {
 
     expect(res.statusCode).toBe(400)
     expect(mockQuery).not.toHaveBeenCalled()
+  })
+
+  it('surfaces the last crash per ingester and network', async () => {
+    recordCrash('prices', 'mainnet', new Error('boom'))
+    const app = await buildApp()
+
+    const res = await app.inject({ method: 'GET', url: '/status?network=mainnet' })
+    const body = res.json()
+
+    expect(body.network).toBe('mainnet')
+    expect(body.crashes).toBeDefined()
+    expect(body.crashes.length).toBe(1)
+    expect(body.crashes[0].name).toBe('prices')
+    expect(body.crashes[0].network).toBe('mainnet')
+    expect(body.crashes[0].message).toBe('boom')
+    expect(typeof body.crashes[0].at).toBe('string')
+  })
+
+  it('reports failed sources for the requested network only, without the error text (#329)', async () => {
+    recordSourceFailure('aquarius_amm', 'mainnet', 'XLM:native/USDC:GMAIN', new Error('connect ECONNREFUSED https://upstream.example/secret'))
+    recordSourceFailure('AMM', 'testnet', 'XLM:native/USDC:GTEST', new Error('testnet down'))
+    const app = await buildApp()
+
+    const res = await app.inject({ method: 'GET', url: '/status?network=mainnet' })
+    const body = res.json()
+
+    expect(res.statusCode).toBe(200)
+    expect(body.failedSources).toHaveLength(1)
+    expect(body.failedSources[0]).toEqual({
+      source: 'aquarius_amm',
+      network: 'mainnet',
+      subject: 'XLM:native/USDC:GMAIN',
+      at: expect.any(String),
+    })
+    expect(JSON.stringify(body)).not.toContain('ECONNREFUSED')
+  })
+
+  it('reports no failed sources when every source answered', async () => {
+    const app = await buildApp()
+
+    const res = await app.inject({ method: 'GET', url: '/status?network=mainnet' })
+
+    expect(res.json().failedSources).toEqual([])
   })
 })

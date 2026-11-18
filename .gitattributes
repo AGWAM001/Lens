@@ -7,3 +7,16 @@
 *.yml text eol=lf
 # tests/historical.golden.test.ts byte-compares these against the CSV export.
 *.csv text eol=lf
+# src/__tests__/graphqlSchemaDrift.test.ts byte-compares schema.graphql against
+# `printSchema()` output, which is always LF. Without this a Windows checkout
+# gets CRLF and the drift guard fails on a file that has not drifted at all.
+*.graphql text eol=lf
+# prisma/migrations/*/migration.sql is compared against `prisma migrate diff`
+# output (tests/prisma-migrations.test.ts), which is always LF. The comparison
+# normalises trailing whitespace so CRLF would survive it today — pinned anyway,
+# because the file is a generated artifact and the four guards above all learned
+# this the hard way.
+*.sql text eol=lf
+# README.md holds the generated venue and endpoint tables, which
+# tests/readme.test.ts compares against generate-readme.ts output (always LF).
+README.md text eol=lf

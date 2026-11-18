@@ -5,10 +5,11 @@
  * Aquarius AMM API, calculates spot prices from constant-product invariants,
  * and stores them in price_points with source = 'aquarius_amm'.
  *
- * Issue: #103, #218
+ * Issue: #103, #218, #329
  */
 
 import { config, activeNetwork, getNetworkConfig, type NetworkName } from '../../config'
+import { createLogger } from '../../logger'
 import type { WatchedPair } from '../../types'
 import type { VenueAdapter, VenuePricePoint } from './types'
 import {
@@ -17,6 +18,11 @@ import {
   writeVenuePricePoints,
   startVenueAdapter,
 } from './runner'
+import { fetchWithTimeout } from '../../fetch'
+import { fetchOk, fetchFailed, type FetchResult } from '../fetchResult'
+import { recordSourceFailure, clearSourceFailure } from '../sourceFailures'
+
+const log = createLogger('ingester:aquarius')
 
 export function _resetLastPrice(): void {
   resetLastPrice('Aquarius')
@@ -36,11 +42,25 @@ export interface AquariusListResponse {
   results?: AquariusPool[]
 }
 
+/** `price_points.source` for Aquarius, and its key in the source-failure record. */
+export const AQUARIUS_SOURCE = 'aquarius_amm'
+
+/**
+ * Fetch Aquarius pools for a pair (#329).
+ *
+ * `{ ok: true, data: [] }` means Aquarius answered and has no pools for this
+ * pair. `{ ok: false }` means it did not answer (network error, timeout,
+ * non-2xx, or a cycle abandoned before the request went out) — the caller must
+ * not read that as "no pools".
+ */
 export async function fetchAquariusPools(
   pair: WatchedPair,
-  apiUrl: string = config.aquarius.apiUrl
-): Promise<AquariusPool[]> {
+  apiUrl: string = config.aquarius.apiUrl,
+  signal?: AbortSignal
+): Promise<FetchResult<AquariusPool[]>> {
   try {
+    if (signal?.aborted) return fetchFailed(new Error('cycle aborted before the Aquarius request was sent'))
+
     const assetAStr = pair.assetA.issuer
       ? `${pair.assetA.code}:${pair.assetA.issuer}`
       : 'native'
@@ -52,13 +72,17 @@ export async function fetchAquariusPools(
     params.append('assets[]', assetAStr)
     params.append('assets[]', assetBStr)
 
-    const res = await fetch(`${apiUrl}?${params.toString()}`)
-    if (!res.ok) return []
+    const res = await fetchWithTimeout(`${apiUrl}?${params.toString()}`, { signal })
+    if (!res.ok) {
+      const err = new Error(`Aquarius API returned HTTP ${res.status}`)
+      log.error({ pair: pair.pairKey, status: res.status }, 'failed to fetch pools')
+      return fetchFailed(err)
+    }
     const data = (await res.json()) as AquariusListResponse
-    return data.results ?? []
+    return fetchOk(data.results ?? [])
   } catch (err) {
-    console.error(`[aquarius] Failed to fetch pools for ${pair.pairKey}:`, (err as Error).message)
-    return []
+    log.error({ pair: pair.pairKey, err }, 'failed to fetch pools')
+    return fetchFailed(err)
   }
 }
 
@@ -74,6 +98,7 @@ export function deriveAquariusPricePoints(
     const r1 = parseFloat(r1Str)
     if (r0 <= 0 || r1 <= 0) return []
 
+    const now = new Date()
     return [
       {
         assetA: pair.assetA.code,
@@ -85,7 +110,9 @@ export function deriveAquariusPricePoints(
         baseVolume: 0,
         counterVolume: 0,
         ledger: 0,
-        timestamp: new Date(),
+        observedAt: now,
+        sourceTime: null,
+        timestamp: now,
       },
     ]
   })
@@ -93,23 +120,54 @@ export function deriveAquariusPricePoints(
 
 export async function ingestAquariusPair(
   pair: WatchedPair,
-  network: NetworkName = activeNetwork
+  network: NetworkName = activeNetwork,
+  signal?: AbortSignal
 ): Promise<void> {
-  const pools = await fetchAquariusPools(pair, getNetworkConfig(network).aquarius.apiUrl)
+  // An abandoned cycle (#351) never asked Aquarius anything, so it is neither
+  // a failure nor a success and leaves the recorded state alone.
+  if (signal?.aborted) return
+
+  const fetched = await fetchAquariusPools(
+    pair,
+    getNetworkConfig(network).aquarius.apiUrl,
+    signal
+  )
+  if (!fetched.ok) {
+    // #329: record it so the aggregate excludes Aquarius for this pair and
+    // /status reports it, instead of the pair silently reading as "no pools".
+    recordSourceFailure(AQUARIUS_SOURCE, network, pair.pairKey, fetched.error)
+    return
+  }
+  clearSourceFailure(AQUARIUS_SOURCE, network, pair.pairKey)
+
+  const pools = fetched.data
   if (pools.length === 0) return
 
   const points = deriveAquariusPricePoints(pools, pair)
   if (points.length === 0) return
+
+  // Cycle-deadline checkpoint (#351): if the signal aborted while we were
+  // fetching, skip the write instead of committing points from an abandoned
+  // cycle. Nothing has been written yet, so skipping leaves no partial state
+  // — the same pools are re-read next cycle.
+  if (signal?.aborted) return
 
   await writeVenuePricePoints('Aquarius', points, pair, network)
 }
 
 export const aquariusAdapter: VenueAdapter<AquariusPool[], AquariusPool[]> = {
   name: 'Aquarius',
-  source: 'aquarius_amm',
+  kind: 'amm',
+  // AQUARIUS_SOURCE is the same literal; the constant keeps the adapter and
+  // the failure-tracking calls below from drifting apart.
+  source: AQUARIUS_SOURCE,
+  sourceTimeCapability: { status: 'unavailable' },
+  classification: 'aggregator',
+  type: 'Liquidity Pool',
+  description: 'Aquarius AMM liquidity pools',
 
   isEnabled(network: NetworkName): boolean {
-    return getNetworkConfig(network).aquarius.enabled
+    return getNetworkConfig(network).aquarius?.enabled ?? false
   },
 
   getPollIntervalMs(_network: NetworkName): number {
@@ -117,8 +175,9 @@ export const aquariusAdapter: VenueAdapter<AquariusPool[], AquariusPool[]> = {
   },
 
   async discover(pair: WatchedPair, network: NetworkName): Promise<AquariusPool[][]> {
-    const pools = await fetchAquariusPools(pair, getNetworkConfig(network).aquarius.apiUrl)
-    return pools.length > 0 ? [pools] : []
+    const fetched = await fetchAquariusPools(pair, getNetworkConfig(network).aquarius.apiUrl)
+    if (!fetched.ok) throw fetched.error
+    return fetched.data.length > 0 ? [fetched.data] : []
   },
 
   async read(target: AquariusPool[], _pair: WatchedPair, _network: NetworkName): Promise<AquariusPool[] | null> {
@@ -133,8 +192,8 @@ export const aquariusAdapter: VenueAdapter<AquariusPool[], AquariusPool[]> = {
     await writeVenuePricePoints('Aquarius', points, pair, network)
   },
 
-  async ingestPair(pair: WatchedPair, network: NetworkName): Promise<void> {
-    await ingestAquariusPair(pair, network)
+  async ingestPair(pair: WatchedPair, network: NetworkName, signal?: AbortSignal): Promise<void> {
+    await ingestAquariusPair(pair, network, signal)
   },
 
   _resetLastPrice,

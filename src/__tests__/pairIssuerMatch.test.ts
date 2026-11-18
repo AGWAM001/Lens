@@ -19,7 +19,7 @@ beforeAll(async () => {
   process.env.WATCHED_PAIRS_TESTNET = `USDC:${TESTNET_USDC}/XLM`
   vi.resetModules()
   ;({ getNetworkConfig } = await import('../config'))
-})
+}, 30000)
 
 // Mirrors findPair in src/api/rest.ts, which is module-private.
 function findPair(assetA: string, assetB: string, network: 'testnet' | 'mainnet') {

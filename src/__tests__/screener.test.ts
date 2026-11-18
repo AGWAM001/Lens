@@ -41,16 +41,18 @@ describe('GET /screener', () => {
     mockQuery.mockResolvedValue({ rows: [] })
   })
 
-  it('returns rows without a market_cap field', async () => {
+  it('returns rows without a market_cap field, with liquidity_unit and network', async () => {
     mockQuery.mockResolvedValue({ rows: [makeRow()] })
     const app = await buildApp()
     const res = await app.inject({ method: 'GET', url: '/screener' })
 
     expect(res.statusCode).toBe(200)
     const body = res.json()
+    expect(body.network).toBe('testnet')
     expect(body.data).toHaveLength(1)
     expect(body.data[0]).not.toHaveProperty('market_cap')
     expect(body.data[0].liquidity).toBe(50000)
+    expect(body.data[0].liquidity_unit).toBe('USDC')
     expect(lastCall().sql).not.toMatch(/market_cap/)
     await app.close()
   })
@@ -60,7 +62,9 @@ describe('GET /screener', () => {
     const res = await app.inject({ method: 'GET', url: '/screener?market_cap=1000000' })
 
     expect(res.statusCode).toBe(400)
-    expect(res.json().error).toMatch(/market_cap is not supported/)
+    const body = res.json()
+    expect(body.error).toMatch(/Invalid market_cap: market_cap is not supported/)
+    expect(body.code).toBe('UNSUPPORTED_PARAMETER')
     expect(mockQuery).not.toHaveBeenCalled()
     await app.close()
   })
@@ -70,7 +74,9 @@ describe('GET /screener', () => {
     const res = await app.inject({ method: 'GET', url: '/screener?sortBy=market_cap' })
 
     expect(res.statusCode).toBe(400)
-    expect(res.json().error).toMatch(/market_cap is not supported/)
+    const body = res.json()
+    expect(body.error).toMatch(/Invalid sortBy: market_cap is not supported/)
+    expect(body.code).toBe('VALIDATION_ERROR')
     expect(mockQuery).not.toHaveBeenCalled()
     await app.close()
   })
@@ -127,7 +133,44 @@ describe('GET /screener', () => {
     const res = await app.inject({ method: 'GET', url: '/screener?volume=lots' })
 
     expect(res.statusCode).toBe(400)
-    expect(res.json().error).toMatch(/volume must be a valid number/)
+    const body = res.json()
+    expect(body.error).toMatch(/Invalid volume: volume must be a valid number/)
+    expect(body.code).toBe('VALIDATION_ERROR')
+    await app.close()
+  })
+
+  it('clamps limit to 100 instead of rejecting it', async () => {
+    const app = await buildApp()
+    const res = await app.inject({ method: 'GET', url: '/screener?limit=500' })
+
+    expect(res.statusCode).toBe(200)
+    // limit=500 is clamped to 100; the query fetches limit+1 rows to detect hasMore
+    expect(lastCall().params.at(-1)).toBe(101)
+    await app.close()
+  })
+
+  it('clamps limit below 1 up to 1', async () => {
+    const app = await buildApp()
+    const zero = await app.inject({ method: 'GET', url: '/screener?limit=0' })
+    expect(zero.statusCode).toBe(200)
+    expect(lastCall().params.at(-1)).toBe(2)
+
+    const negative = await app.inject({ method: 'GET', url: '/screener?limit=-5' })
+    expect(negative.statusCode).toBe(200)
+    expect(lastCall().params.at(-1)).toBe(2)
+    await app.close()
+  })
+
+  it('rejects a non-numeric or fractional limit', async () => {
+    const app = await buildApp()
+    const bad = await app.inject({ method: 'GET', url: '/screener?limit=abc' })
+    expect(bad.statusCode).toBe(400)
+    expect(bad.json().code).toBe('VALIDATION_ERROR')
+
+    const fractional = await app.inject({ method: 'GET', url: '/screener?limit=2.5' })
+    expect(fractional.statusCode).toBe(400)
+    expect(fractional.json().code).toBe('VALIDATION_ERROR')
+    expect(mockQuery).not.toHaveBeenCalled()
     await app.close()
   })
 
@@ -189,11 +232,53 @@ describe('GET /screener', () => {
       await app.close()
     })
 
+    it('echoes the requested network in the response', async () => {
+      mockQuery.mockResolvedValue({ rows: [makeRow()] })
+      const app = await buildApp()
+      const res = await app.inject({ method: 'GET', url: '/screener?network=mainnet' })
+      expect(res.statusCode).toBe(200)
+      expect(res.json().network).toBe('mainnet')
+      await app.close()
+    })
+
     it('rejects an unknown network before querying', async () => {
       const app = await buildApp()
       const res = await app.inject({ method: 'GET', url: '/screener?network=devnet' })
       expect(res.statusCode).toBe(400)
       expect(mockQuery).not.toHaveBeenCalled()
+      await app.close()
+    })
+  })
+
+  describe('liquidity definition', () => {
+    it('defines liquidity in the SQL query as reserve_a * spot_price + reserve_b summed over active AMM pool snapshots', async () => {
+      const app = await buildApp()
+      await app.inject({ method: 'GET', url: '/screener' })
+
+      const { sql } = lastCall()
+      // Verifies SQL computes pool_liq exactly as reserve_a * spot_price + reserve_b
+      expect(sql).toMatch(/\(ps\.reserve_a\s*\*\s*ps\.spot_price\s*\+\s*ps\.reserve_b\)\s+AS\s+pool_liq/)
+      // Verifies sources are AMM pools
+      expect(sql).toMatch(/FROM price_points\s+WHERE network = \$1 AND source = 'AMM' AND pool_id IS NOT NULL/)
+      // Verifies summed across pools per pair
+      expect(sql).toMatch(/SELECT pp\.pair_key,\s*SUM\(ls\.pool_liq\)\s+AS\s+liquidity/)
+      await app.close()
+    })
+
+    it('names the unit as the quote asset in pair_key', async () => {
+      mockQuery.mockResolvedValue({
+        rows: [
+          makeRow({ pair_key: 'XLM/USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN' }),
+          makeRow({ pair_key: 'BTC/EURC' }),
+        ],
+      })
+      const app = await buildApp()
+      const res = await app.inject({ method: 'GET', url: '/screener' })
+
+      expect(res.statusCode).toBe(200)
+      const body = res.json()
+      expect(body.data[0].liquidity_unit).toBe('USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN')
+      expect(body.data[1].liquidity_unit).toBe('EURC')
       await app.close()
     })
   })

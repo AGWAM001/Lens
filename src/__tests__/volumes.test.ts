@@ -25,8 +25,17 @@ describe('GET /volumes/:asset', () => {
   it('returns the cross-venue sum and a per-venue breakdown', async () => {
     mockQuery.mockResolvedValue({
       rows: [
-        { source: 'SDEX', volume: '100.5', trade_count: 3 },
-        { source: 'AMM', volume: '49.5', trade_count: 2 },
+        {
+          total_volume: '150',
+          by_venue: { SDEX: 100.5, AMM: 49.5 },
+          venues: ['AMM', 'SDEX'],
+          trade_count: 5,
+          observed_sample_count: 5,
+          median_trade_size: '25',
+          top_trade_volume_share: '0.5',
+          volume_concentration: '0.3',
+          latest_trade_at: new Date('2026-01-01T00:00:00.000Z'),
+        },
       ],
     })
 
@@ -36,11 +45,168 @@ describe('GET /volumes/:asset', () => {
     expect(res.statusCode).toBe(200)
     const body = res.json()
     expect(body.asset).toBe('XLM')
+    expect(body.network).toBe(activeNetwork)
     expect(body.window).toBe('24h')
     expect(body.byVenue).toEqual({ SDEX: 100.5, AMM: 49.5 })
     expect(body.totalVolume).toBeCloseTo(150)
     expect(body.venues.sort()).toEqual(['AMM', 'SDEX'])
     expect(body.tradeCount).toBe(5)
+    expect(body.medianTradeSize).toBe(25)
+    expect(body.topTradeVolumeShare).toBe(0.5)
+    expect(body.volumeConcentration).toBe(0.3)
+    expect(body.concentrationMeasure).toBe('hhi')
+    expect(body.status).toBe('ok')
+    expect(body.provenance).toMatchObject({
+      venues: ['AMM', 'SDEX'],
+      sampleCount: 5,
+      observedSampleCount: 5,
+      latestTradeAt: '2026-01-01T00:00:00.000Z',
+    })
+    expect(body.provenance.dataAgeSeconds).toBeGreaterThan(0)
+    await app.close()
+  })
+
+  it('distinguishes one large trade from many small trades at equal volume', async () => {
+    const makeAggregate = (sizes: number[]) => {
+      const total = sizes.reduce((sum, size) => sum + size, 0)
+      const ordered = [...sizes].sort((a, b) => a - b)
+      const middle = Math.floor(ordered.length / 2)
+      const median = ordered.length % 2 === 0
+        ? (ordered[middle - 1] + ordered[middle]) / 2
+        : ordered[middle]
+      return {
+        total_volume: String(total),
+        by_venue: { SDEX: total },
+        venues: ['SDEX'],
+        trade_count: sizes.length,
+        observed_sample_count: sizes.length,
+        median_trade_size: String(median),
+        top_trade_volume_share: String(Math.max(...sizes) / total),
+        volume_concentration: String(sizes.reduce((sum, size) => sum + (size / total) ** 2, 0)),
+        latest_trade_at: new Date('2026-01-01T00:00:00.000Z'),
+      }
+    }
+
+    const app = await buildApp()
+    mockQuery.mockResolvedValueOnce({ rows: [makeAggregate([1000])] })
+    const oneTrade = (await app.inject({ method: 'GET', url: '/volumes/XLM?network=testnet' })).json()
+    mockQuery.mockResolvedValueOnce({ rows: [makeAggregate(Array(1000).fill(1))] })
+    const manyTrades = (await app.inject({ method: 'GET', url: '/volumes/XLM?network=testnet' })).json()
+
+    expect(oneTrade.totalVolume).toBe(manyTrades.totalVolume)
+    expect(oneTrade.tradeCount).toBe(1)
+    expect(oneTrade.medianTradeSize).toBe(1000)
+    expect(oneTrade.topTradeVolumeShare).toBe(1)
+    expect(oneTrade.volumeConcentration).toBe(1)
+    expect(manyTrades.tradeCount).toBe(1000)
+    expect(manyTrades.medianTradeSize).toBe(1)
+    expect(manyTrades.topTradeVolumeShare).toBe(0.001)
+    expect(manyTrades.volumeConcentration).toBeCloseTo(0.001)
+    const aggregateSql = mockQuery.mock.calls[0][0] as string
+    expect(aggregateSql).toMatch(/percentile_cont\(0\.5\).*WITHIN GROUP/s)
+    expect(aggregateSql).toContain('MAX(volume) FILTER (WHERE volume > 0)')
+    expect(aggregateSql).toContain('SUM(volume * volume) FILTER (WHERE volume > 0)')
+    await app.close()
+  })
+
+  it('separates net (primary markets) and gross (including aggregators) totals when traded on primary and aggregator venues', async () => {
+    mockQuery.mockResolvedValue({
+      rows: [
+        {
+          total_volume: '150.0',
+          by_venue: { SDEX: 100.0, aquarius_amm: 50.0 },
+          trade_count_by_venue: { SDEX: 2, aquarius_amm: 1 },
+          venues: ['SDEX', 'aquarius_amm'],
+          trade_count: 3,
+          observed_sample_count: 3,
+        },
+      ],
+    })
+
+    const app = await buildApp()
+    const res = await app.inject({ method: 'GET', url: '/volumes/XLM?window=24h' })
+
+    expect(res.statusCode).toBe(200)
+    const body = res.json()
+    expect(body.asset).toBe('XLM')
+    expect(body.byVenue).toEqual({ SDEX: 100.0, aquarius_amm: 50.0 })
+    expect(body.totals).toEqual({
+      net: 100.0,
+      gross: 150.0,
+    })
+    expect(body.netVolume).toBe(100.0)
+    expect(body.grossVolume).toBe(150.0)
+    // totalVolume defaults to net volume to avoid overstating real activity
+    expect(body.totalVolume).toBe(100.0)
+    expect(body.tradeCount).toBe(2)
+    expect(body.netTradeCount).toBe(2)
+    expect(body.grossTradeCount).toBe(3)
+    await app.close()
+  })
+
+  it('aggregates across multiple primaries (SDEX, AMM, Soroswap) alongside an aggregator (Aquarius)', async () => {
+    mockQuery.mockResolvedValue({
+      rows: [
+        {
+          total_volume: '430.0',
+          by_venue: { SDEX: 100.0, AMM: 200.0, soroswap_amm: 50.0, aquarius_amm: 80.0 },
+          trade_count_by_venue: { SDEX: 5, AMM: 8, soroswap_amm: 2, aquarius_amm: 3 },
+          venues: ['AMM', 'SDEX', 'aquarius_amm', 'soroswap_amm'],
+          trade_count: 18,
+          observed_sample_count: 18,
+        },
+      ],
+    })
+
+    const app = await buildApp()
+    const res = await app.inject({ method: 'GET', url: '/volumes/USDC?window=24h' })
+
+    expect(res.statusCode).toBe(200)
+    const body = res.json()
+    expect(body.asset).toBe('USDC')
+    expect(body.totals.net).toBe(350.0)
+    expect(body.totals.gross).toBe(430.0)
+    expect(body.netVolume).toBe(350.0)
+    expect(body.grossVolume).toBe(430.0)
+    expect(body.totalVolume).toBe(350.0)
+    expect(body.tradeCount).toBe(15)
+    expect(body.netTradeCount).toBe(15)
+    expect(body.grossTradeCount).toBe(18)
+    expect(body.byVenue).toEqual({
+      SDEX: 100.0,
+      AMM: 200.0,
+      soroswap_amm: 50.0,
+      aquarius_amm: 80.0,
+    })
+    await app.close()
+  })
+
+  it('returns zero net volume if only aggregator trades exist', async () => {
+    mockQuery.mockResolvedValue({
+      rows: [
+        {
+          total_volume: '75.0',
+          by_venue: { aquarius_amm: 75.0 },
+          trade_count_by_venue: { aquarius_amm: 4 },
+          venues: ['aquarius_amm'],
+          trade_count: 4,
+          observed_sample_count: 4,
+        },
+      ],
+    })
+
+    const app = await buildApp()
+    const res = await app.inject({ method: 'GET', url: '/volumes/XLM?window=24h' })
+
+    expect(res.statusCode).toBe(200)
+    const body = res.json()
+    expect(body.totals).toEqual({ net: 0, gross: 75.0 })
+    expect(body.netVolume).toBe(0)
+    expect(body.grossVolume).toBe(75.0)
+    expect(body.totalVolume).toBe(0)
+    expect(body.tradeCount).toBe(0)
+    expect(body.netTradeCount).toBe(0)
+    expect(body.grossTradeCount).toBe(4)
     await app.close()
   })
 
@@ -94,6 +260,33 @@ describe('GET /volumes/:asset', () => {
     expect(body.totalVolume).toBe(0)
     expect(body.byVenue).toEqual({})
     expect(body.tradeCount).toBe(0)
+    expect(body.medianTradeSize).toBeNull()
+    expect(body.topTradeVolumeShare).toBeNull()
+    expect(body.volumeConcentration).toBeNull()
+    expect(body.status).toBe('no_trades')
+    await app.close()
+  })
+
+  it('reports samples without positive volume as unavailable metrics', async () => {
+    mockQuery.mockResolvedValue({
+      rows: [{
+        total_volume: '0',
+        by_venue: {},
+        venues: [],
+        trade_count: 0,
+        observed_sample_count: 3,
+        median_trade_size: null,
+        top_trade_volume_share: null,
+        volume_concentration: null,
+        latest_trade_at: null,
+      }],
+    })
+    const app = await buildApp()
+    const body = (await app.inject({ method: 'GET', url: '/volumes/XLM?window=24h' })).json()
+    expect(body.status).toBe('no_positive_volume')
+    expect(body.medianTradeSize).toBeNull()
+    expect(body.volumeConcentration).toBeNull()
+    expect(body.provenance).toMatchObject({ sampleCount: 0, observedSampleCount: 3 })
     await app.close()
   })
 
@@ -102,7 +295,12 @@ describe('GET /volumes/:asset', () => {
     const app = await buildApp()
     const res = await app.inject({ method: 'GET', url: '/volumes/XLM?window=24h' })
     expect(res.statusCode).toBe(500)
-    expect(res.json().error).toMatch(/Volume aggregation failed/)
+    expect(res.json()).toEqual({
+      code: 'internal_error',
+      message: 'An internal server error occurred.',
+      correlationId: expect.any(String),
+    })
+    expect(res.body).not.toMatch(/db down/)
     await app.close()
   })
 
@@ -110,17 +308,24 @@ describe('GET /volumes/:asset', () => {
     // Simulates a price_points table holding both networks: the mocked query
     // honours the network predicate the route passes ($2), as Postgres would.
     const table = [
-      { network: 'testnet', source: 'SDEX', volume: 100, trades: 2 },
-      { network: 'mainnet', source: 'SDEX', volume: 900, trades: 7 },
+      { network: 'testnet', volume: 100, trades: 2 },
+      { network: 'mainnet', volume: 900, trades: 7 },
     ]
     beforeEach(() => {
       mockQuery.mockImplementation(async (sql: string, params: unknown[]) => {
         expect(sql).toMatch(/AND network = \$2/)
-        return {
-          rows: table
-            .filter((r) => r.network === params[1])
-            .map((r) => ({ source: r.source, volume: String(r.volume), trade_count: r.trades })),
-        }
+        const row = table.find((r) => r.network === params[1])!
+        return { rows: [{
+          total_volume: String(row.volume),
+          by_venue: { SDEX: row.volume },
+          venues: ['SDEX'],
+          trade_count: row.trades,
+          observed_sample_count: row.trades,
+          median_trade_size: String(row.volume / row.trades),
+          top_trade_volume_share: '0.5',
+          volume_concentration: '0.5',
+          latest_trade_at: new Date('2026-01-01T00:00:00.000Z'),
+        }] }
       })
     })
 
@@ -145,6 +350,15 @@ describe('GET /volumes/:asset', () => {
     it('defaults to the active network and reports it', async () => {
       const app = await buildApp()
       const res = await app.inject({ method: 'GET', url: '/volumes/XLM' })
+      expect(res.json().network).toBe(activeNetwork)
+      expect(mockQuery.mock.calls[0][1][1]).toBe(activeNetwork)
+      await app.close()
+    })
+
+    it('treats an empty network parameter as the active network', async () => {
+      const app = await buildApp()
+      const res = await app.inject({ method: 'GET', url: '/volumes/XLM?network=' })
+      expect(res.statusCode).toBe(200)
       expect(res.json().network).toBe(activeNetwork)
       expect(mockQuery.mock.calls[0][1][1]).toBe(activeNetwork)
       await app.close()

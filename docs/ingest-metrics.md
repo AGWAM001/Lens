@@ -14,6 +14,7 @@ nonsense on any deployment with more than one.**
 | `trades_ingested_total` | Counter | `pair`, `network` |
 | `amm_snapshots_total` | Counter | `pool`, `network` |
 | `price_snapshots_total` | Counter | `network` |
+| `ingester_abandoned_cycles_total` | Counter | `venue`, `network` |
 | `last_trade_timestamp` | Gauge | `pair`, `network` |
 
 | Label | Values | Notes |
@@ -21,10 +22,11 @@ nonsense on any deployment with more than one.**
 | `network` | `testnet`, `mainnet` | The `NetworkName` of the ingester loop that produced the sample, not the process-wide `STELLAR_NETWORK`. |
 | `pair` | `XLM/USDC`, … | The `pairKey` already used everywhere else in Lens. |
 | `pool` | Horizon liquidity-pool id | Pre-existing label, only on `amm_snapshots_total`. |
+| `venue` | `SDEX`, `AMM`, `Soroswap`, `Aquarius`, `Snapshot` | The ingester loop that abandoned a cycle past its deadline (#351). Bounded by the adapter registry, not by runtime data. |
 
-All four are also emitted with the registry-wide `app="lens"` default label.
+All five are also emitted with the registry-wide `app="lens"` default label.
 
-## Why `network` is on all four
+## Why `network` is on all five
 
 Before this change, the ingest metrics were network-blind. On a dual-network
 deployment the two loops wrote to the same series.
@@ -35,7 +37,7 @@ queryable at all.
 
 `last_trade_timestamp` was worse. It is a `Gauge.set()`, not an increment, so
 whichever loop ticked last won. The testnet loop at
-[`src/ingesters/sdex.ts`](../src/ingesters/sdex.ts) overwrote mainnet's value
+[`src/ingest/venues/sdex.ts`](../src/ingest/venues/sdex.ts) overwrote mainnet's value
 for the same pair every poll interval, and the series reported a timestamp
 belonging to exactly one network while looking network-agnostic. That is the
 only staleness signal Lens exports, and on a dual-network deployment it was
@@ -63,6 +65,10 @@ Series count is `pairs x networks`:
 - `amm_snapshots_total` — `pools x networks`. Pools are discovered from Horizon
   for the configured pairs only, so this stays bounded by the same watch list.
 - `price_snapshots_total` — `networks`. One series per network, full stop.
+- `ingester_abandoned_cycles_total` — `venues x networks`. `venue` is the five
+  ingester loops hard-coded in the adapter registry (plus the snapshot
+  appender), so this is a single-digit factor like `network`, not an ID
+  space: never label it with a pool id, a pair or a contract id.
 
 **Do not add `issuer` to any of these.** It would multiply the series count by
 every distinct token in the config for no gain: `pair` is the `pairKey` and
@@ -96,6 +102,9 @@ time() - last_trade_timestamp{pair="XLM/USDC", network="mainnet"}
 
 # Pairs that have gone quiet in the last 15 minutes
 time() - last_trade_timestamp > 900
+
+# Which ingester loop is overrunning its cycle deadline, on which network
+sum(rate(ingester_abandoned_cycles_total[15m])) by (venue, network)
 ```
 
 ## Suggested alerts

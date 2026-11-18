@@ -37,7 +37,7 @@ export interface OracleRelayConfig {
 export interface OraclePriceSnapshot {
   assetA: string
   assetB: string
-  price: number
+  price: number | string
   timestamp: string
 }
 
@@ -66,15 +66,28 @@ function readConfig(): OracleRelayConfig {
   }
 }
 
-export async function fetchLensPrice(apiUrl: string, assetA: string, assetB: string): Promise<OraclePriceSnapshot> {
-  const response = await fetch(`${apiUrl.replace(/\/$/, '')}/price/${assetA}/${assetB}`)
+export async function fetchLensPrice(
+  apiUrl: string,
+  assetA: string,
+  assetB: string,
+  options?: { stringDecimals?: boolean }
+): Promise<OraclePriceSnapshot> {
+  const headers: Record<string, string> = {}
+  if (options?.stringDecimals) {
+    // Negotiate full 18-decimal precision string serialization
+    headers['X-Decimal-Format'] = 'string'
+  }
+
+  const response = await fetch(`${apiUrl.replace(/\/$/, '')}/price/${assetA}/${assetB}`, {
+    headers,
+  })
   if (!response.ok) {
     throw new Error(`Lens price request failed with HTTP ${response.status}`)
   }
 
-  const data = await response.json() as { assetA: string; assetB: string; price: number; lastUpdated?: string }
-  if (typeof data.price !== 'number') {
-    throw new Error('Lens price payload did not include a numeric price')
+  const data = await response.json() as { assetA: string; assetB: string; price: number | string; lastUpdated?: string }
+  if (typeof data.price !== 'number' && typeof data.price !== 'string') {
+    throw new Error('Lens price payload did not include a valid price')
   }
 
   return {
@@ -85,7 +98,10 @@ export async function fetchLensPrice(apiUrl: string, assetA: string, assetB: str
   }
 }
 
-export function formatOraclePrice(price: number): string {
+export function formatOraclePrice(price: number | string): string {
+  if (typeof price === 'string') {
+    return price
+  }
   return price.toFixed(7)
 }
 

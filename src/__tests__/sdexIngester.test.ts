@@ -38,7 +38,7 @@ vi.mock('@stellar/stellar-sdk', async (importOriginal) => {
 })
 
 // ── Imports ──────────────────────────────────────────────────────────────────
-import { ingestPair } from '../ingesters/sdex'
+import { ingestPair } from '../ingest/venues/sdex'
 
 describe('SDEX Ingester', () => {
   const mockPair = {

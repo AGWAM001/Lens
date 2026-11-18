@@ -14,7 +14,7 @@ vi.mock('../pairsRegistry', () => ({
   getActivePairs: mockGetActivePairs,
 }))
 
-import { appendSnapshots, floorToMinute } from '../ingesters/snapshot'
+import { appendSnapshots, floorToMinute } from '../ingest/snapshot'
 
 describe('floorToMinute', () => {
   it('zeros seconds and milliseconds', () => {

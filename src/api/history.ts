@@ -1,8 +1,18 @@
 import type { FastifyInstance } from 'fastify'
 import { pgPool } from '../db'
 import { activeNetwork, type NetworkName } from '../config'
+import {
+  HISTORY_DEFAULT_LIMIT,
+  decodeCursor,
+  encodeCursor,
+  parseLimit,
+  slicePage,
+} from '../pagination'
 import '../middleware/network' // declares req.network on the FastifyRequest type
+import { findOverlappingGaps } from '../backfill/gaps'
+import { formatPrice, formatVolume } from '../pricing/precision'
 
+import { apiError } from '../errors'
 /** Supported aggregation intervals → bucket width in seconds. */
 export const HISTORY_INTERVAL_SECONDS: Record<string, number> = {
   '1m': 60,
@@ -71,40 +81,59 @@ export function historyToCsv(points: HistoryPoint[]): string {
  * bucket) and the summed volume. Buckets are aligned to the Unix epoch so that
  * e.g. a 1h bucket always starts on the hour, independent of the query window.
  * With intervalSecs=60 this returns the raw snapshots unchanged.
+ *
+ * `opts.afterTs` applies a keyset predicate — only buckets strictly after that
+ * timestamp are returned (used by the cursor). `opts.limit` caps the number of
+ * buckets after grouping and ordering; callers doing limit+1 probing pass
+ * `limit + 1` and trim the extra row themselves.
  */
 export async function queryHistory(
   pair: string,
   from: Date,
   to: Date,
   intervalSecs: number,
-  network: NetworkName
+  network: NetworkName,
+  opts?: { afterTs?: Date; limit?: number }
 ): Promise<HistoryPoint[]> {
+  const params: unknown[] = [intervalSecs, pair, from, to, network]
+  let cursorCondition = ''
+  if (opts?.afterTs) {
+    params.push(opts.afterTs)
+    cursorCondition = ` AND ts > $${params.length}`
+  }
+  let limitClause = ''
+  if (opts?.limit !== undefined) {
+    params.push(opts.limit)
+    limitClause = ` LIMIT $${params.length}`
+  }
+
   const result = await pgPool.query(
     `SELECT
        to_timestamp(floor(EXTRACT(EPOCH FROM ts) / $1) * $1) AS bucket,
-       (array_agg(price::float ORDER BY ts DESC))[1] AS price,
-       SUM(volume::float) AS volume
+       (array_agg(price ORDER BY ts DESC))[1] AS price,
+       SUM(volume) AS volume
      FROM price_snapshots
      WHERE pair = $2 AND network = $5
        AND ts >= $3
-       AND ts <= $4
+       AND ts < $4${cursorCondition}
      GROUP BY floor(EXTRACT(EPOCH FROM ts) / $1)
-     ORDER BY bucket ASC`,
-    [intervalSecs, pair, from, to, network]
+     ORDER BY bucket ASC${limitClause}`,
+    params
   )
 
   return result.rows.map(r => ({
     ts: new Date(r.bucket).toISOString(),
-    price: Number(r.price),
-    volume: Number(r.volume),
+    price: formatPrice(r.price) ?? 0,
+    volume: formatVolume(r.volume),
   }))
 }
 
 /**
  * GET /prices/history?pair=XLM/USDC&from=…&to=…&interval=1m|5m|1h
  *
- * Returns historical price snapshots for a pair over [from, to], optionally
- * aggregated into 5m or 1h buckets. Defaults to the last 24h at 1m resolution.
+ * Returns historical price snapshots for a pair over the half-open window
+ * [from, to) — `from` inclusive, `to` exclusive — optionally aggregated into 5m
+ * or 1h buckets. Defaults to the last 24h at 1m resolution.
  *
  * The network is resolved by the network selector (`?network=` / `x-network`,
  * defaulting to this deployment's active network) and echoed in the response.
@@ -117,56 +146,103 @@ export async function queryHistory(
  * side effect.
  */
 export async function registerHistoryRoutes(app: FastifyInstance) {
+  // GET /prices/history?pair=…&from=…&to=…&interval=1m|5m|1h&cursor=&limit=
+  //
+  // Paginated keyset-style on the bucket start time ASC (default limit 1000,
+  // max MAX_HISTORY_POINTS). The cursor carries the last page's bucket ts as
+  // an ISO string (the tiebreaker id is the pair, kept so every route emits
+  // the same cursor shape), and the keyset predicate is applied in the WHERE
+  // clause before grouping, so a snapshot inserted mid-paging cannot shift a
+  // page boundary the way an offset would.
   app.get<{
-    Querystring: { pair?: string; from?: string; to?: string; interval?: string; format?: string }
-  }>('/prices/history', async (req, reply) => {
+    Querystring: { pair?: string; from?: string; to?: string; interval?: string; format?: string; cursor?: string; limit?: string }
+  }>('/prices/history', { config: { scope: 'read:history' } }, async (req, reply) => {
     const { pair } = req.query
     if (!pair) {
-      return reply.status(400).send({ error: 'pair query parameter is required' })
+      return reply.status(400).send(apiError('missing_parameter', 'pair query parameter is required'))
     }
 
     // Validated before the DB round-trip so an unknown format never queries.
     const format = req.query.format ?? 'json'
     if (format !== 'json' && format !== 'csv') {
-      return reply.status(400).send({ error: 'format must be one of: json, csv' })
+      return reply.status(400).send(apiError('invalid_parameter', 'format must be one of: json, csv'))
     }
 
     const interval = req.query.interval ?? '1m'
     const intervalSecs = HISTORY_INTERVAL_SECONDS[interval]
     if (!intervalSecs) {
       return reply.status(400).send({
-        error: `interval must be one of: ${Object.keys(HISTORY_INTERVAL_SECONDS).join(', ')}`,
+        ...apiError('bad_interval', `interval must be one of: ${Object.keys(HISTORY_INTERVAL_SECONDS).join(', ')}`),
       })
+    }
+
+    const parsedLimit = parseLimit(req.query.limit, HISTORY_DEFAULT_LIMIT, MAX_HISTORY_POINTS)
+    if ('error' in parsedLimit) {
+      return reply.status(400).send(apiError('invalid_parameter', parsedLimit.error))
+    }
+    const { limit } = parsedLimit
+
+    let afterTs: Date | undefined
+    if (req.query.cursor) {
+      const decoded = decodeCursor(req.query.cursor)
+      if (decoded === null) {
+        return reply.status(400).send(apiError('invalid_parameter', 'Invalid cursor format'))
+      }
+      if (decoded !== 'skip') {
+        afterTs = new Date(String(decoded.value))
+        if (isNaN(afterTs.getTime())) {
+          return reply.status(400).send(apiError('invalid_parameter', 'Invalid cursor format'))
+        }
+      }
     }
 
     const from = req.query.from ? new Date(req.query.from) : new Date(Date.now() - 24 * 60 * 60 * 1000)
     const to = req.query.to ? new Date(req.query.to) : new Date()
 
     if (isNaN(from.getTime())) {
-      return reply.status(400).send({ error: 'from must be a valid ISO 8601 date' })
+      return reply.status(400).send(apiError('invalid_parameter', 'from must be a valid ISO 8601 date'))
     }
     if (isNaN(to.getTime())) {
-      return reply.status(400).send({ error: 'to must be a valid ISO 8601 date' })
+      return reply.status(400).send(apiError('invalid_parameter', 'to must be a valid ISO 8601 date'))
     }
     if (from.getTime() > to.getTime()) {
-      return reply.status(400).send({ error: 'from must be before to' })
+      return reply.status(400).send(apiError('invalid_parameter', 'from must be before to'))
     }
 
     // Guard against unbounded scans: cap the number of buckets the window can produce.
     const spanSecs = (to.getTime() - from.getTime()) / 1000
     if (spanSecs / intervalSecs > MAX_HISTORY_POINTS) {
       return reply.status(400).send({
-        error: `requested window is too large for interval=${interval} (max ${MAX_HISTORY_POINTS} points); narrow the range or use a coarser interval`,
+        ...apiError('invalid_parameter', `requested window is too large for interval=${interval} (max ${MAX_HISTORY_POINTS} points); narrow the range or use a coarser interval`),
       })
     }
 
     const network = req.network ?? activeNetwork
-    const points = await queryHistory(pair, from, to, intervalSecs, network)
+    const points = await queryHistory(pair, from, to, intervalSecs, network, {
+      afterTs,
+      limit: limit + 1, // Fetch one extra bucket to determine hasMore
+    })
+    const { data, hasMore } = slicePage(points, limit)
+    const last = hasMore && data.length > 0 ? data[data.length - 1] : null
+    const nextCursor = last ? encodeCursor(last.ts, pair) : null
+
+    const overlappingGaps = await findOverlappingGaps({
+      network,
+      pair,
+      start: from,
+      end: to,
+    })
+
+    const gapDeclaration = overlappingGaps.length > 0 ? { incomplete: true, gaps: overlappingGaps } : {}
 
     if (format === 'csv') {
       // Deliberately no response schema here: Fastify's JSON serializer must
       // not touch this body. charset=utf8 keeps the bytes the golden test pins.
-      return reply.type('text/csv; charset=utf-8').send(historyToCsv(points))
+      // The pagination envelope travels in headers so the CSV body stays the
+      // pure `ts,price,volume` contract downstream parsers key on.
+      reply.header('X-Has-More', String(hasMore))
+      if (nextCursor) reply.header('X-Next-Cursor', nextCursor)
+      return reply.type('text/csv; charset=utf-8').send(historyToCsv(data))
     }
 
     return {
@@ -175,8 +251,11 @@ export async function registerHistoryRoutes(app: FastifyInstance) {
       interval,
       from: from.toISOString(),
       to: to.toISOString(),
-      count: points.length,
-      points,
+      count: data.length,
+      points: data,
+      nextCursor,
+      hasMore,
+      ...gapDeclaration,
     }
   })
 }

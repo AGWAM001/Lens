@@ -43,9 +43,9 @@ vi.mock('../network/clients', () => ({
   }),
 }))
 
-import { ingestPair as ingestSdexPair, _getLastPrice as getSdexLastPrice, _resetLastPrice as resetSdexLastPrice } from '../ingesters/sdex'
-import { snapshotPool, ingestPoolTrades, _getLastPrice as getAmmLastPrice, _resetLastPrice as resetAmmLastPrice } from '../ingesters/amm'
-import { ingestPool as ingestSoroswapPool, _getLastPrice as getSoroswapLastPrice, _resetLastPrice as resetSoroswapLastPrice } from '../ingesters/soroswap'
+import { ingestPair as ingestSdexPair, _getLastPrice as getSdexLastPrice, _resetLastPrice as resetSdexLastPrice } from '../ingest/venues/sdex'
+import { snapshotPool, ingestPoolTrades, _getLastPrice as getAmmLastPrice, _resetLastPrice as resetAmmLastPrice } from '../ingest/venues/amm'
+import { ingestPool as ingestSoroswapPool, _getLastPrice as getSoroswapLastPrice, _resetLastPrice as resetSoroswapLastPrice } from '../ingest/venues/soroswap'
 import { ingestAquariusPair, _getLastPrice as getAquariusLastPrice, _resetLastPrice as resetAquariusLastPrice } from '../ingest/venues/aquarius'
 import { dispatchPriceUpdate } from '../webhookDispatcher'
 import type { WatchedPair } from '../types'
@@ -207,6 +207,9 @@ describe('Dual-network alerts and price tracking (#188)', () => {
       global.fetch = vi.fn().mockImplementation(async (url: string) => {
         if (url.includes('/trades')) {
           return {
+            ok: true,
+            status: 200,
+            headers: { get: () => null },
             json: async () => ({
               _embedded: {
                 records: [

@@ -2,6 +2,9 @@ import { Queue, Worker } from 'bullmq'
 import { pgPool } from '../db'
 import { activeNetwork, type NetworkName } from '../config'
 import { getEnabledNetworks } from '../network/enabledNetworks'
+import { createLogger } from '../logger'
+
+const log = createLogger('job:snapshot-retention')
 
 const QUEUE_NAME = `${activeNetwork}:snapshot-retention`
 
@@ -70,7 +73,10 @@ export async function pruneOldSnapshots(
 
     totalPruned += pruned
     batchNumber += 1
-    console.log(`[snapshot-retention] ${network}: pruned batch ${batchNumber} (${pruned} rows; ${totalPruned} total)`)
+    log.info(
+      { network, batch: batchNumber, rows: pruned, total: totalPruned },
+      'pruned retention batch'
+    )
     onProgress?.({ network, batch: batchNumber, batchRows: pruned, totalPruned })
 
     // Give other jobs and requests a chance to run between database batches.
@@ -110,17 +116,22 @@ export function startSnapshotRetentionWorker() {
       try {
         const counts = await pruneAllNetworks()
         for (const [network, pruned] of Object.entries(counts)) {
-          if (pruned > 0) console.log(`[snapshot-retention] pruned ${pruned} ${network} snapshot(s) older than ${SNAPSHOT_RETENTION_DAYS}d`)
+          if (pruned > 0) {
+            log.info(
+              { network, pruned, retentionDays: SNAPSHOT_RETENTION_DAYS },
+              'pruned snapshots older than retention window'
+            )
+          }
         }
       } catch (err) {
-        console.error('[snapshot-retention] prune failed:', (err as Error).message)
+        log.error({ err }, 'snapshot prune failed')
       }
     },
     { connection: redisConnection(), concurrency: 1 }
   )
 
   worker.on('failed', (_job, err) => {
-    console.error('[snapshot-retention] Job failed:', err.message)
+    log.error({ err }, 'snapshot retention job failed')
   })
 
   return worker

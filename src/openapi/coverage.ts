@@ -34,14 +34,16 @@ export const INTERNAL_ROUTES: readonly string[] = [
   // protocol; the equivalent GraphQL subscription is documented instead.
   '/ws',
 
-  // Operator-only API-key issuance and revocation. Authenticated with a shared
+  // Operator-only API-key issuance, rotation, and revocation. Authenticated with a shared
   // ADMIN_TOKEN rather than a client API key (see src/api/admin.ts).
   '/admin/keys',
   '/admin/keys/{id}',
+  '/admin/keys/{id}/rotate',
 
   // Operator-only usage/quota reporting for minted keys.
   '/admin/usage',
   '/admin/usage/{keyId}',
+  '/admin/webhook-delivery-failures',
 ] as const
 
 /**
@@ -58,7 +60,48 @@ export const INTERNAL_ROUTE_PREFIXES: readonly string[] = [
   '/graphiql/',
 ] as const
 
+/**
+ * Individual operations that cannot be expressed in this spec, as
+ * `METHOD /path` pairs.
+ *
+ * Kept separate from {@link INTERNAL_ROUTES} because the path here *is* public
+ * and *is* documented — it is one method on it that OpenAPI cannot describe.
+ * Excluding the whole path instead would stop the coverage test noticing if
+ * `GET /graphql` were ever dropped from the spec.
+ */
+export const UNDOCUMENTABLE_OPERATIONS: readonly string[] = [
+  // Mercurius registers the HTTP QUERY method on /graphql, from the
+  // GraphQL-over-HTTP spec. `query` only became a valid OpenAPI operation key
+  // in 3.2 and this document declares 3.0.0, so there is nowhere to put it.
+  // `GET /graphql` and `POST /graphql` are documented and carry the same
+  // semantics; QUERY differs in being a safe, cacheable method with a body.
+  // Remove this entry if the spec is ever raised to 3.2.
+  'QUERY /graphql',
+] as const
+
+const UNDOCUMENTABLE_OPERATION_SET = new Set<string>(UNDOCUMENTABLE_OPERATIONS)
+
+/**
+ * Whether a single operation is one OpenAPI 3.0 cannot express.
+ *
+ * `method` is matched case-insensitively, since Fastify reports it uppercase
+ * and OpenAPI keys it lowercase.
+ */
+export function isUndocumentableOperation(method: string, openApiPath: string): boolean {
+  return UNDOCUMENTABLE_OPERATION_SET.has(`${method.toUpperCase()} ${openApiPath}`)
+}
+
 const INTERNAL_ROUTE_SET = new Set<string>(INTERNAL_ROUTES)
+
+/**
+ * The version segment every public route is served under.
+ *
+ * Fastify registers each route once at its bare path (see `src/api/versioning.ts`
+ * for the `rewriteUrl` that makes `/v1` resolve to it), so callers can use
+ * either form. `openapi.yaml` documents the versioned form only — it is the
+ * canonical one — and the bare form is a deprecated alias.
+ */
+export const API_VERSION_PREFIX = '/v1'
 
 /**
  * Rewrites a Fastify route template into its OpenAPI path equivalent:
@@ -69,6 +112,35 @@ const INTERNAL_ROUTE_SET = new Set<string>(INTERNAL_ROUTES)
  */
 export function toOpenApiPath(fastifyUrl: string): string {
   return fastifyUrl.replace(/:([A-Za-z0-9_]+)/g, '{$1}')
+}
+
+/** Whether a path (bare or fully-formed URL path) already carries the version prefix. */
+export function isVersionedPath(path: string): boolean {
+  return path === API_VERSION_PREFIX || path.startsWith(`${API_VERSION_PREFIX}/`)
+}
+
+/**
+ * Prefixes a bare route path with the API version segment:
+ * `/price/{assetA}/{assetB}` → `/v1/price/{assetA}/{assetB}`.
+ *
+ * This is the path as it appears in `openapi.yaml`, and the successor a caller
+ * is pointed at by the deprecation headers on the unversioned alias.
+ */
+export function toVersionedPath(barePath: string): string {
+  if (barePath === '/') return API_VERSION_PREFIX
+  return `${API_VERSION_PREFIX}${barePath}`
+}
+
+/**
+ * Strips the version prefix from a path, yielding the canonical bare route:
+ * `/v1/price/{assetA}/{assetB}` → `/price/{assetA}/{assetB}`.
+ *
+ * A path without the prefix is returned unchanged, so this is safe to call on
+ * a mix of versioned and bare paths.
+ */
+export function toBarePath(path: string): string {
+  if (path === API_VERSION_PREFIX) return '/'
+  return isVersionedPath(path) ? path.slice(API_VERSION_PREFIX.length) : path
 }
 
 /** Whether a route (in OpenAPI path form) is on the internal allow-list. */

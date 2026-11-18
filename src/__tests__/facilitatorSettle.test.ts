@@ -8,12 +8,14 @@ import {
   Operation,
   TransactionBuilder,
 } from '@stellar/stellar-sdk'
+import * as catalogModule from '../bazaar/catalog'
 
-const { mockCreate, mockFindUnique, mockUpdate, mockGetFacilitator, mockSettle, mockGetTransaction } = vi.hoisted(
+const { mockCreate, mockFindUnique, mockUpdate, mockCount, mockGetFacilitator, mockSettle, mockGetTransaction } = vi.hoisted(
   () => ({
     mockCreate: vi.fn(),
     mockFindUnique: vi.fn(),
     mockUpdate: vi.fn(),
+    mockCount: vi.fn(),
     mockGetFacilitator: vi.fn(),
     mockSettle: vi.fn(),
     mockGetTransaction: vi.fn(),
@@ -26,6 +28,7 @@ vi.mock('../db', () => ({
       create: mockCreate,
       findUnique: mockFindUnique,
       update: mockUpdate,
+      count: mockCount,
     },
   },
 }))
@@ -33,6 +36,25 @@ vi.mock('../db', () => ({
 vi.mock('../x402/facilitator', async importOriginal => {
   const actual = (await importOriginal()) as Record<string, unknown>
   return { ...actual, getFacilitator: mockGetFacilitator }
+})
+
+vi.mock('../api/auth', async importOriginal => {
+  const actual = (await importOriginal()) as Record<string, unknown>
+  return {
+    ...actual,
+    lookupApiKey: vi.fn(async (key: string) => {
+      if (key === 'valid-secret-key') {
+        return {
+          id: 'trusted-key-id',
+          label: 'trusted',
+          ratePerMin: 100,
+          ratePerDay: 1000,
+          scopes: [],
+        }
+      }
+      return null
+    }),
+  }
 })
 
 vi.mock('@stellar/stellar-sdk', async importOriginal => {
@@ -68,6 +90,7 @@ function settleBody(
     transaction?: string
     network?: string
     payer?: string
+    extensions?: Record<string, unknown>
   } = {},
 ) {
   return {
@@ -77,6 +100,7 @@ function settleBody(
       scheme: 'exact',
       network: overrides.network ?? 'stellar:testnet',
       ...(overrides.payer ? { payer: overrides.payer } : {}),
+      ...(overrides.extensions ? { extensions: overrides.extensions } : {}),
       payload: { transaction: overrides.transaction ?? TESTNET_ENVELOPE },
     },
     paymentRequirements: {
@@ -113,6 +137,7 @@ beforeEach(() => {
   })
   mockGetFacilitator.mockReset().mockReturnValue({ settle: mockSettle })
   mockGetTransaction.mockReset()
+  mockCount.mockReset().mockResolvedValue(0)
 })
 
 describe('POST /settle', () => {
@@ -361,6 +386,49 @@ describe('POST /settle — failure semantics', () => {
 
     expect(body.errorReason).toBe('settle_exact_stellar_transaction_submission_failed')
   })
+
+  it('catalogs the resource automatically on successful settle and sets EXTENSION-RESPONSES header (#130)', async () => {
+    const submitSpy = vi.spyOn(catalogModule, 'submitCatalogListing').mockResolvedValue({
+      accepted: true,
+      drops: [],
+    })
+    mockSettle.mockResolvedValue({ success: true, transaction: 'onchain-hash', network: 'stellar:testnet' })
+    const app = await buildApp()
+
+    const payload = settleBody({
+      extensions: {
+        bazaar: {
+          resource: { url: 'https://api.seller.com/price', serviceName: 'Seller Price API' },
+          bazaar: { schema: { type: 'object' }, info: { input: {} } },
+        },
+      },
+    })
+
+    const res = await app.inject({ method: 'POST', url: '/settle', payload })
+    expect(res.statusCode).toBe(200)
+    expect(submitSpy).toHaveBeenCalled()
+    expect(res.headers['extension-responses']).toBeDefined()
+    const extHeader = JSON.parse(res.headers['extension-responses'] as string)
+    expect(extHeader.bazaar.catalog.accepted).toBe(true)
+  })
+
+  it('does not delay or fail settlement if cataloging throws (#130)', async () => {
+    vi.spyOn(catalogModule, 'submitCatalogListing').mockRejectedValue(new Error('Catalog storage down'))
+    mockSettle.mockResolvedValue({ success: true, transaction: 'onchain-hash', network: 'stellar:testnet' })
+    const app = await buildApp()
+
+    const payload = settleBody({
+      extensions: {
+        bazaar: {
+          resource: { url: 'https://api.seller.com/price' },
+        },
+      },
+    })
+
+    const res = await app.inject({ method: 'POST', url: '/settle', payload })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().success).toBe(true)
+  })
 })
 
 describe('deriveIdempotencyKey', () => {
@@ -380,5 +448,176 @@ describe('deriveIdempotencyKey', () => {
 
   it('returns null for something that is not an envelope', () => {
     expect(deriveIdempotencyKey('not-xdr', 'testnet')).toBeNull()
+  })
+})
+
+describe('Hardened x402 Facilitator Controls (#147)', () => {
+  afterEach(() => {
+    delete process.env.FACILITATOR_SPEND_CEILING
+    delete process.env.FACILITATOR_DAILY_CEILING_TESTNET
+    delete process.env.FACILITATOR_DAILY_CEILING_MAINNET
+    delete process.env.FACILITATOR_CALLER_ALLOWLIST
+    delete process.env.FACILITATOR_ALLOWED_CALLERS
+    delete process.env.FACILITATOR_ALLOWED_ORIGINS
+  })
+
+  it('rejects settlements exceeding per-settlement spend ceiling based on authoritative amount', async () => {
+    process.env.FACILITATOR_SPEND_CEILING = '0.5' // TESTNET_ENVELOPE has authoritative amount = 1 XLM > 0.5
+    const app = await buildApp()
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/settle',
+      payload: settleBody(),
+    })
+
+    expect(res.statusCode).toBe(400)
+    const body = res.json()
+    expect(body.success).toBe(false)
+    expect(body.errorReason).toBe('spend_ceiling_exceeded')
+    expect(mockSettle).not.toHaveBeenCalled()
+  })
+
+  it('fails closed when ceiling is configured and authoritative amount cannot be decoded (#147)', async () => {
+    process.env.FACILITATOR_SPEND_CEILING = '50'
+    const app = await buildApp()
+
+    const keypair = Keypair.random()
+    const account = new Account(keypair.publicKey(), '1')
+    const tx = new TransactionBuilder(account, { fee: '100', networkPassphrase: Networks.TESTNET })
+      .addOperation(Operation.manageData({ name: 'test', value: 'data' }))
+      .setTimeout(60)
+      .build()
+    tx.sign(keypair)
+    const nonPaymentEnvelope = tx.toXDR()
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/settle',
+      payload: settleBody({ transaction: nonPaymentEnvelope }),
+    })
+
+    expect(res.statusCode).toBe(400)
+    const body = res.json()
+    expect(body.success).toBe(false)
+    expect(body.errorReason).toBe('unverifiable_settlement_amount')
+    expect(mockSettle).not.toHaveBeenCalled()
+  })
+
+  it('enforces rolling daily settlement ceiling per network', async () => {
+    process.env.FACILITATOR_DAILY_CEILING_TESTNET = '5'
+    mockCount.mockResolvedValueOnce(5) // Daily ceiling already reached
+    const app = await buildApp()
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/settle',
+      payload: settleBody(),
+    })
+
+    expect(res.statusCode).toBe(429)
+    const body = res.json()
+    expect(body.success).toBe(false)
+    expect(body.errorReason).toBe('daily_spend_ceiling_exceeded')
+    expect(mockSettle).not.toHaveBeenCalled()
+  })
+
+  it('allows settlement when within daily ceiling', async () => {
+    process.env.FACILITATOR_DAILY_CEILING_TESTNET = '10'
+    mockCount.mockResolvedValueOnce(3)
+    const app = await buildApp()
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/settle',
+      payload: settleBody(),
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(mockSettle).toHaveBeenCalledTimes(1)
+  })
+
+  it('refuses callers not on the allowlist when allowlist is configured, rejecting forged origin and caller headers', async () => {
+    process.env.FACILITATOR_CALLER_ALLOWLIST = 'trusted-key-id'
+    const app = await buildApp()
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/settle',
+      headers: {
+        'x-caller-id': 'trusted-key-id', // Caller-supplied headers must NOT bypass allowlist
+        origin: 'https://trusted-key-id.com',
+      },
+      payload: settleBody(),
+    })
+
+    expect(res.statusCode).toBe(403)
+    const body = res.json()
+    expect(body.success).toBe(false)
+    expect(body.errorReason).toBe('caller_not_allowed')
+    expect(mockSettle).not.toHaveBeenCalled()
+  })
+
+  it('permits callers on the allowlist when authenticated via API key', async () => {
+    process.env.FACILITATOR_CALLER_ALLOWLIST = 'trusted-key-id'
+    const app = await buildApp()
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/settle',
+      headers: {
+        authorization: 'Bearer valid-secret-key',
+      },
+      payload: settleBody(),
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(mockSettle).toHaveBeenCalledTimes(1)
+  })
+
+  it('persists authoritative decoded amount into settlementAttempt rather than user-supplied amount', async () => {
+    const app = await buildApp()
+
+    // Settle with TESTNET_ENVELOPE (which contains 1 XLM), while paymentRequirements.amount is '1000000'
+    const res = await app.inject({
+      method: 'POST',
+      url: '/settle',
+      payload: settleBody(),
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(mockCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          amount: '1', // Decoded from XDR, not '1000000'
+        }),
+      }),
+    )
+  })
+
+  it('replaying an identical settle returns the stored answer and submits exactly once', async () => {
+    // Unique violation triggers the idempotency duplicate detection
+    mockCreate.mockRejectedValueOnce(uniqueViolation())
+    mockFindUnique.mockResolvedValueOnce({
+      state: 'settled',
+      response: {
+        success: true,
+        transaction: 'already-settled-hash',
+        network: 'stellar:testnet',
+      },
+    })
+    const app = await buildApp()
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/settle',
+      payload: settleBody(),
+    })
+
+    expect(res.statusCode).toBe(200)
+    const body = res.json()
+    expect(body.success).toBe(true)
+    expect(body.transaction).toBe('already-settled-hash')
+    expect(mockSettle).toHaveBeenCalledTimes(0) // Exactly zero re-submissions!
   })
 })

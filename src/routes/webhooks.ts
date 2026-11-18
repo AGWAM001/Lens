@@ -4,6 +4,7 @@ import { prisma } from '../db'
 import { activeNetwork, type NetworkName } from '../config'
 import { resolveNetworkName } from '../middleware/network'
 
+import { apiError } from '../errors'
 function isValidHttpsUrl(raw: string): boolean {
   try {
     const u = new URL(raw)
@@ -17,30 +18,30 @@ export async function registerWebhookRoutes(app: FastifyInstance) {
   // POST /webhooks — subscribe to a price threshold event
   app.post<{
     Body: { url: string; assetA: string; assetB: string; threshold: number; direction: string; network?: string }
-  }>('/webhooks', async (req, reply) => {
+  }>('/webhooks', { config: { scope: 'subscribe' } }, async (req, reply) => {
     const { url, assetA, assetB, threshold, direction, network: bodyNetwork } = req.body ?? {}
 
     if (!url || !isValidHttpsUrl(url)) {
-      return reply.status(400).send({ error: 'url must be a valid HTTPS URL' })
+      return reply.status(400).send(apiError('invalid_parameter', 'url must be a valid HTTPS URL'))
     }
     if (!assetA || typeof assetA !== 'string') {
-      return reply.status(400).send({ error: 'assetA is required' })
+      return reply.status(400).send(apiError('missing_parameter', 'assetA is required'))
     }
     if (!assetB || typeof assetB !== 'string') {
-      return reply.status(400).send({ error: 'assetB is required' })
+      return reply.status(400).send(apiError('missing_parameter', 'assetB is required'))
     }
     if (typeof threshold !== 'number' || isNaN(threshold)) {
-      return reply.status(400).send({ error: 'threshold must be a number' })
+      return reply.status(400).send(apiError('invalid_parameter', 'threshold must be a number'))
     }
     if (direction !== 'above' && direction !== 'below') {
-      return reply.status(400).send({ error: 'direction must be "above" or "below"' })
+      return reply.status(400).send(apiError('invalid_parameter', 'direction must be "above" or "below"'))
     }
 
     let targetNetwork: NetworkName = req.network ?? activeNetwork
     if (bodyNetwork !== undefined) {
       const resolved = resolveNetworkName(bodyNetwork)
       if (!resolved.ok) {
-        return reply.status(400).send({ error: resolved.error })
+        return reply.status(400).send(apiError('bad_network', resolved.error))
       }
       targetNetwork = resolved.network
     }
@@ -63,7 +64,7 @@ export async function registerWebhookRoutes(app: FastifyInstance) {
   })
 
   // DELETE /webhooks/:id — unsubscribe
-  app.delete<{ Params: { id: string } }>('/webhooks/:id', async (req, reply) => {
+  app.delete<{ Params: { id: string } }>('/webhooks/:id', { config: { scope: 'subscribe' } }, async (req, reply) => {
     const { id } = req.params
 
     try {
