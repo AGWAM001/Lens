@@ -78,7 +78,7 @@ export async function registerSpreadsRoutes(app: FastifyInstance) {
     }
 
     try {
-      return await computeSpreads(asset, req.query.window, req.query.network)
+      return await computeSpreads(asset, req.query.window, req.query.network, req.network)
     } catch (err) {
       if (err instanceof SpreadsInputError) {
         return reply.status(400).send(apiError('invalid_parameter', err.message))
@@ -109,13 +109,18 @@ export interface SpreadsResult {
 /**
  * The spread computation behind `GET /spreads/:asset`, shared with the GraphQL
  * `spreads` query so the two cannot drift. See {@link registerSpreadsRoutes}
- * for what the numbers mean. Throws {@link SpreadsInputError} for a bad
- * `window` or `network`; any other error is an internal failure.
+ * for what the numbers mean.
+ *
+ * `requestNetwork` is the network the request-level selector already resolved
+ * (`req.network` on REST, from `?network=` or `x-network`); when given it wins
+ * over `networkParam`. Throws {@link SpreadsInputError} for a bad `window` or
+ * `network`; any other error is an internal failure.
  */
 export async function computeSpreads(
   asset: string,
   windowParam: string | undefined,
   networkParam: string | undefined,
+  requestNetwork?: NetworkName,
 ): Promise<SpreadsResult> {
   const window = windowParam ?? '5m'
 
@@ -130,7 +135,7 @@ export async function computeSpreads(
   if (requested !== undefined && requested !== 'testnet' && requested !== 'mainnet') {
     throw new SpreadsInputError('network', 'network must be one of: testnet, mainnet')
   }
-  const network: NetworkName = (requested as NetworkName) ?? activeNetwork
+  const network: NetworkName = requestNetwork ?? (requested as NetworkName) ?? activeNetwork
 
   const minutes = WINDOW_MINUTES[window as SpreadWindow]
   const endTime = new Date()

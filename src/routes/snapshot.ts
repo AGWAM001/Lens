@@ -234,7 +234,7 @@ export async function registerSnapshotRoutes(app: FastifyInstance) {
       if (requested !== undefined && requested !== 'testnet' && requested !== 'mainnet') {
         return reply.status(400).send(apiError('bad_network', 'network must be one of: testnet, mainnet'))
       }
-      const network: NetworkName = (requested as NetworkName) ?? activeNetwork
+      const network: NetworkName = req.network ?? (requested as NetworkName) ?? activeNetwork
       const ttl = config.cache.snapshotTtl
 
       // ── Cache ────────────────────────────────────────────────────────────
@@ -254,6 +254,7 @@ export async function registerSnapshotRoutes(app: FastifyInstance) {
           }
           reply.header('X-Cache', 'HIT')
           reply.header('Cache-Control', `public, max-age=${ttl}`)
+          reply.header('Vary', 'x-network')
           return parsed
         } catch {
           // Corrupt cache entry — fall through and recompute.
@@ -695,6 +696,7 @@ export async function registerSnapshotRoutes(app: FastifyInstance) {
       await setCachedSnapshot(network, result, ttl)
       reply.header('X-Cache', 'MISS')
       reply.header('Cache-Control', `public, max-age=${ttl}`)
+      reply.header('Vary', 'x-network')
       return result
     },
   )
