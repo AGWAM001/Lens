@@ -9,7 +9,7 @@ import { config, getNetworkConfig, type NetworkName } from './config'
 import { getEnabledNetworks } from './network/enabledNetworks'
 import { createLogger } from './logger'
 import { redis } from './redis'
-import { pgPool } from './db'
+import { checkDatabaseReachable, pgPool } from './db'
 import { assertSchemaValid } from './db/schemaVerify'
 import { applyMigrations } from './db/migrate'
 import { buildApp } from './app'
@@ -74,7 +74,12 @@ async function main() {
     log.warn({ err }, 'redis unavailable, continuing without cache')
   }
 
-  await pgPool.connect()
+  try {
+    await checkDatabaseReachable()
+  } catch (err) {
+    log.error({ err }, 'postgresql unreachable')
+    throw err
+  }
   log.info('postgresql connected')
 
   // Verify database schema matches expected tables and columns (#352)
