@@ -156,6 +156,20 @@ export const api_key_cache_lookups_total = new Counter({
   registers: [register]
 })
 
+export const cache_requests_total = new Counter({
+  name: 'cache_requests_total',
+  help: 'Redis cache reads by cache and outcome',
+  labelNames: ['cache', 'result'],
+  registers: [register]
+})
+
+export const cache_write_errors_total = new Counter({
+  name: 'cache_write_errors_total',
+  help: 'Failed writes to Redis caches',
+  labelNames: ['cache'],
+  registers: [register]
+})
+
 export const rate_limit_rejections_total = new Counter({
   name: 'rate_limit_rejections_total',
   help: 'Total number of requests rejected by the per-key or fallback IP rate limiter',
