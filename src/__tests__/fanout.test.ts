@@ -62,6 +62,7 @@ vi.mock('prom-client', () => {
   }
   return {
     register: { metrics: vi.fn().mockResolvedValue('') },
+    collectDefaultMetrics: vi.fn(),
     // src/metrics.ts builds its own Registry; src/ws/fanout.ts registers the
     // websocket metrics on it so /metrics actually exports them.
     Registry: class {
