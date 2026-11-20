@@ -1,10 +1,20 @@
 import { pgPool } from '../db'
 import { config, type NetworkName } from '../config'
 import type { DecimalFormat } from '../utils/decimals'
+import { getOnChainSources } from '../ingest/venues'
+import { getFailedSources } from '../ingest/sourceFailures'
 
 export const STALENESS_THRESHOLD_SECONDS = 300
 export const HIGH_CONFIDENCE_MAX_AGE_SECONDS = 30
 export const MEDIUM_CONFIDENCE_MAX_AGE_SECONDS = 300
+
+export interface VwapDetailedResult {
+  num: number
+  raw: string
+  stale?: boolean
+  status?: 'ok' | 'stale' | 'unknown'
+  excludedSources?: Array<{ source: string; reason: string }>
+}
 
 /**
  * Every query in this module filters on `network`.
@@ -18,16 +28,89 @@ export const MEDIUM_CONFIDENCE_MAX_AGE_SECONDS = 300
  * That is why `network` is a required argument rather than an optional
  * refinement: there is no default that is correct by accident, and a caller
  * that doesn't know which chain it is quoting should refuse rather than guess.
+ *
+ * Sources filtering and health semantics (#652):
+ * - VWAP strictly reads on-chain execution venues via `getOnChainSources()`.
+ *   Centralized exchange (CEX) rows are excluded and cannot move on-chain price.
+ * - Venues currently recorded as failed for this (network, pairKey) via
+ *   `getFailedSources()` are excluded from the volume-weighted aggregate.
+ * - When every on-chain venue has failed or is excluded, the price does not
+ *   silently fall to zero: it returns the last known good on-chain price marked
+ *   stale (`stale: true, status: 'stale'`). If no price point exists, returns 0
+ *   with `status: 'unknown'`.
  */
 export async function calculateVWAPDetailed(
   pairKey: string,
   windowMinutes: number,
   network: NetworkName,
-  source?: 'SDEX' | 'AMM'
-): Promise<{ num: number; raw: string }> {
-  const sourceFilter = source ? `AND source = $4` : ''
-  const params: (string | number)[] = [pairKey, network, windowMinutes]
-  if (source) params.push(source)
+  source?: 'SDEX' | 'AMM' | string
+): Promise<VwapDetailedResult> {
+  const onChainSources = getOnChainSources()
+  const failedSources = getFailedSources(network, pairKey)
+  const failedSet = new Set(failedSources)
+
+  const excludedSources: Array<{ source: string; reason: string }> = []
+  for (const s of failedSources) {
+    if (onChainSources.includes(s)) {
+      excludedSources.push({ source: s, reason: 'source failed to fetch' })
+    }
+  }
+
+  let allowedSources: string[]
+  let sourceClause: string
+  const params: (string | number | string[])[] = [pairKey, network, windowMinutes]
+
+  if (source) {
+    if (!onChainSources.includes(source)) {
+      allowedSources = []
+      excludedSources.push({ source, reason: 'off-chain or unrecognized source' })
+    } else if (failedSet.has(source)) {
+      allowedSources = []
+    } else {
+      allowedSources = [source]
+      sourceClause = 'AND source = $4'
+      params.push(source)
+    }
+  } else {
+    allowedSources = onChainSources.filter(s => !failedSet.has(s))
+    sourceClause = 'AND source = ANY($4)'
+    params.push(allowedSources)
+  }
+
+  // When every on-chain venue has failed, do not silently become zero (#652).
+  // Return the last good value marked stale, or unknown if no history exists.
+  if (allowedSources.length === 0) {
+    const candidateSources = source && onChainSources.includes(source) ? [source] : onChainSources
+    const lastResult = await pgPool.query(
+      `SELECT price::numeric AS last_price
+       FROM price_points
+       WHERE pair_key = $1
+         AND network = $2
+         AND source = ANY($3)
+       ORDER BY COALESCE(observed_at, timestamp) DESC
+       LIMIT 1`,
+      [pairKey, network, candidateSources]
+    )
+
+    if (lastResult.rows.length > 0 && lastResult.rows[0]?.last_price != null) {
+      const raw = String(lastResult.rows[0].last_price)
+      return {
+        num: parseFloat(raw),
+        raw,
+        stale: true,
+        status: 'stale',
+        excludedSources,
+      }
+    }
+
+    return {
+      num: 0,
+      raw: '0',
+      stale: true,
+      status: 'unknown',
+      excludedSources,
+    }
+  }
 
   const result = await pgPool.query(
     `SELECT
@@ -39,18 +122,25 @@ export async function calculateVWAPDetailed(
      WHERE pair_key = $1
        AND network = $2
        AND COALESCE(observed_at, timestamp) > NOW() - ($3 || ' minutes')::interval
-       ${sourceFilter}`,
+       ${sourceClause!}`,
     params
   )
   const raw = String(result.rows[0]?.vwap ?? '0')
-  return { num: parseFloat(raw), raw }
+  const num = parseFloat(raw)
+  return {
+    num,
+    raw,
+    stale: false,
+    status: num > 0 ? 'ok' : 'unknown',
+    excludedSources,
+  }
 }
 
 export async function calculateVWAP(
   pairKey: string,
   windowMinutes: number,
   network: NetworkName,
-  source?: 'SDEX' | 'AMM'
+  source?: 'SDEX' | 'AMM' | string
 ): Promise<number> {
   const detailed = await calculateVWAPDetailed(pairKey, windowMinutes, network, source)
   return detailed.num
@@ -64,25 +154,43 @@ export async function calculateOHLCV(
   open: number; high: number; low: number; close: number
   volume: number; tradeCount: number
 }> {
+  const onChainSources = getOnChainSources()
+  const failedSources = new Set(getFailedSources(network, pairKey))
+  const allowedSources = onChainSources.filter(s => !failedSources.has(s))
+
+  if (allowedSources.length === 0) {
+    return {
+      open: 0,
+      high: 0,
+      low: 0,
+      close: 0,
+      volume: 0,
+      tradeCount: 0,
+    }
+  }
+
   const result = await pgPool.query(
     `SELECT
        (SELECT price::numeric FROM price_points
         WHERE pair_key = $1 AND network = $2
           AND COALESCE(observed_at, timestamp) > NOW() - ($3 || ' minutes')::interval
+          AND source = ANY($4)
         ORDER BY COALESCE(observed_at, timestamp) ASC LIMIT 1) AS open,
        MAX(price::numeric) AS high,
        MIN(price::numeric) AS low,
        (SELECT price::numeric FROM price_points
         WHERE pair_key = $1 AND network = $2
           AND COALESCE(observed_at, timestamp) > NOW() - ($3 || ' minutes')::interval
+          AND source = ANY($4)
         ORDER BY COALESCE(observed_at, timestamp) DESC LIMIT 1) AS close,
        SUM(base_volume::numeric) AS volume,
        COUNT(*) AS trade_count
      FROM price_points
      WHERE pair_key = $1
        AND network = $2
-       AND COALESCE(observed_at, timestamp) > NOW() - ($3 || ' minutes')::interval`,
-    [pairKey, network, windowMinutes]
+       AND COALESCE(observed_at, timestamp) > NOW() - ($3 || ' minutes')::interval
+       AND source = ANY($4)`,
+    [pairKey, network, windowMinutes, allowedSources]
   )
   const row = result.rows[0]
   return {

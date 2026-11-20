@@ -8,6 +8,7 @@ vi.mock('../db', () => ({
 
 import {
   calculateVWAP,
+  calculateVWAPDetailed,
   calculateOHLCV,
   getPriceChange24h,
   getAggregatedPrice,
@@ -15,6 +16,12 @@ import {
   MEDIUM_CONFIDENCE_MAX_AGE_SECONDS,
 } from '../aggregator/vwap'
 import type { NetworkName } from '../config'
+import { getOnChainSources } from '../ingest/venues'
+import {
+  recordSourceFailure,
+  clearSourceFailure,
+  resetSourceFailures,
+} from '../ingest/sourceFailures'
 
 const PAIR = 'XLM/USDC'
 const NETWORK: NetworkName = 'testnet'
@@ -22,6 +29,7 @@ const NETWORK: NetworkName = 'testnet'
 describe('aggregator/vwap.ts', () => {
   beforeEach(() => {
     mockQuery.mockReset()
+    resetSourceFailures()
   })
 
   describe('exported constants', () => {
@@ -35,7 +43,7 @@ describe('aggregator/vwap.ts', () => {
   })
 
   describe('calculateVWAP', () => {
-    it('calculates VWAP without source filter', async () => {
+    it('calculates VWAP with dynamic on-chain sources filter (#652)', async () => {
       mockQuery.mockResolvedValueOnce({
         rows: [{ vwap: '0.125000' }],
       })
@@ -48,8 +56,70 @@ describe('aggregator/vwap.ts', () => {
       expect(sql).toContain('WHERE pair_key = $1')
       expect(sql).toContain('AND network = $2')
       expect(sql).toContain("AND COALESCE(observed_at, timestamp) > NOW() - ($3 || ' minutes')::interval")
-      expect(sql).not.toContain('AND source = $4')
-      expect(params).toEqual([PAIR, NETWORK, 60])
+      expect(sql).toContain('AND source = ANY($4)')
+      expect(params).toEqual([PAIR, NETWORK, 60, getOnChainSources()])
+    })
+
+    it('excludes a venue recorded as failed and re-includes it after recovery (#652)', async () => {
+      recordSourceFailure('AMM', NETWORK, PAIR, new Error('amm timeout'))
+
+      mockQuery.mockResolvedValueOnce({
+        rows: [{ vwap: '0.122000' }],
+      })
+
+      await calculateVWAP(PAIR, 60, NETWORK)
+      const [, params1] = mockQuery.mock.calls[0]
+      const sourcesFiltered = params1[3] as string[]
+      expect(sourcesFiltered).not.toContain('AMM')
+      expect(sourcesFiltered).toContain('SDEX')
+
+      // Now venue recovers
+      clearSourceFailure('AMM', NETWORK, PAIR)
+      mockQuery.mockResolvedValueOnce({
+        rows: [{ vwap: '0.125000' }],
+      })
+
+      await calculateVWAP(PAIR, 60, NETWORK)
+      const [, params2] = mockQuery.mock.calls[1]
+      const sourcesRecovered = params2[3] as string[]
+      expect(sourcesRecovered).toContain('AMM')
+    })
+
+    it('centralized exchange sources are never in the on-chain VWAP query (#652)', async () => {
+      mockQuery.mockResolvedValueOnce({
+        rows: [{ vwap: '0.125000' }],
+      })
+
+      await calculateVWAP(PAIR, 60, NETWORK)
+      const [, params] = mockQuery.mock.calls[0]
+      const sources = params[3] as string[]
+      expect(sources).not.toContain('KuCoin')
+      expect(sources).not.toContain('Gate.io')
+      expect(sources).not.toContain('coinbase_cex')
+      expect(sources).not.toContain('binance')
+    })
+
+    it('with every on-chain venue failed, returns last good value marked stale (#652)', async () => {
+      const allOnChain = getOnChainSources()
+      for (const s of allOnChain) {
+        recordSourceFailure(s, NETWORK, PAIR, new Error(`${s} failed`))
+      }
+
+      // Fallback query returns last good price
+      mockQuery.mockResolvedValueOnce({
+        rows: [{ last_price: '0.119000' }],
+      })
+
+      const detailed = await calculateVWAPDetailed(PAIR, 60, NETWORK)
+      expect(detailed.num).toBe(0.119)
+      expect(detailed.raw).toBe('0.119000')
+      expect(detailed.stale).toBe(true)
+      expect(detailed.status).toBe('stale')
+      expect(detailed.excludedSources?.length).toBe(allOnChain.length)
+
+      const [sql] = mockQuery.mock.calls[0]
+      expect(sql).toContain('ORDER BY COALESCE(observed_at, timestamp) DESC')
+      expect(sql).toContain('LIMIT 1')
     })
 
     it('calculates VWAP with source filter (SDEX)', async () => {
@@ -123,7 +193,8 @@ describe('aggregator/vwap.ts', () => {
       expect(sql).toContain('AS close')
       expect(sql).toContain('SUM(base_volume::numeric) AS volume')
       expect(sql).toContain('COUNT(*) AS trade_count')
-      expect(params).toEqual([PAIR, NETWORK, 60])
+      expect(sql).toContain('AND source = ANY($4)')
+      expect(params).toEqual([PAIR, NETWORK, 60, getOnChainSources()])
     })
 
     it('defaults fields to 0 when query returns no row or null values', async () => {
