@@ -22,6 +22,13 @@ import { createSnapshotRetentionQueue, startSnapshotRetentionWorker, scheduleSna
 import { createVenueReconciliationQueue, startVenueReconciliationWorker, scheduleVenueReconciliation, startInProcessVenueReconciliation } from './jobs/venueReconciliation'
 import { createRateRetentionQueue, startRateRetentionWorker, scheduleRateRetention, pruneAllRateNetworks, RATE_RETENTION_DAYS } from './jobs/lendingRateRetention'
 import {
+  createPoolSnapshotRetentionQueue,
+  startPoolSnapshotRetentionWorker,
+  schedulePoolSnapshotRetention,
+  pruneAllPoolSnapshotNetworks,
+  POOL_SNAPSHOT_RETENTION_DAYS,
+} from './jobs/poolSnapshotRetention'
+import {
   createPricePointsPartitionQueue,
   startPricePointsPartitionWorker,
   schedulePricePointsPartitionMaintenance,
@@ -245,6 +252,40 @@ async function main() {
       log.warn({ err }, 'lending rate retention worker unavailable; falling back to hourly in-process prune')
       await Promise.allSettled([rateRetentionQueue?.close(), rateRetentionWorker?.close()])
       setInterval(() => { void safeRatePrune() }, 60 * 60 * 1000).unref()
+    }
+  }
+
+  // ── Pool snapshot retention ───────────────────────────────────────────────
+  const safePoolSnapshotPrune = async () => {
+    try {
+      const counts = await pruneAllPoolSnapshotNetworks()
+      for (const [network, pruned] of Object.entries(counts)) {
+        if (pruned > 0) {
+          log.info(
+            { network, pruned, retentionDays: POOL_SNAPSHOT_RETENTION_DAYS },
+            'pruned old pool snapshots'
+          )
+        }
+      }
+    } catch (err) {
+      log.error({ err }, 'pool snapshot prune failed')
+    }
+  }
+
+  await safePoolSnapshotPrune()
+
+  {
+    let poolSnapshotQueue: ReturnType<typeof createPoolSnapshotRetentionQueue> | undefined
+    let poolSnapshotWorker: ReturnType<typeof startPoolSnapshotRetentionWorker> | undefined
+    try {
+      poolSnapshotQueue = createPoolSnapshotRetentionQueue()
+      poolSnapshotWorker = startPoolSnapshotRetentionWorker()
+      await schedulePoolSnapshotRetention(poolSnapshotQueue)
+      log.info('pool snapshot retention worker started')
+    } catch (err) {
+      log.warn({ err }, 'pool snapshot retention worker unavailable; falling back to hourly in-process prune')
+      await Promise.allSettled([poolSnapshotQueue?.close(), poolSnapshotWorker?.close()])
+      setInterval(() => { void safePoolSnapshotPrune() }, 60 * 60 * 1000).unref()
     }
   }
 
