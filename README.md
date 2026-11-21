@@ -1,6 +1,6 @@
 # Lens — Unified Stellar Price API
 
-[![CI](https://github.com/Miracle656/Lens/actions/workflows/ci.yml/badge.svg)](https://github.com/Miracle656/Lens/actions/workflows/ci.yml)
+[![CI](https://github.com/Divinity-Labs/Lens/actions/workflows/ci.yml/badge.svg)](https://github.com/Divinity-Labs/Lens/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Stellar](https://img.shields.io/badge/Stellar-SDEX%20%2B%20AMM-black)](https://stellar.org)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
@@ -875,11 +875,12 @@ The API will be available at `http://localhost:3002`. Database migrations run au
 ## Quick Start (Manual)
 
 ```bash
-# 1. Start PostgreSQL + Redis
-docker-compose up -d
+# 1. Start PostgreSQL + Redis only — the compose file also defines the
+#    Lens container, which would take port 3002 before step 6 starts it
+docker-compose up -d postgres redis
 
 # 2. Install dependencies
-npm install
+npm ci
 
 # 3. Copy env
 cp .env.example .env
@@ -1122,7 +1123,7 @@ Callers should parse the `Retry-After` header or `retryAfter` field and apply ex
 *\*Required if enabling x402 payment gating.*
 
 ## Stack
-- **Runtime:** Node.js 20 + TypeScript
+- **Runtime:** Node.js 22 + TypeScript
 - **API:** Fastify + Mercurius (GraphQL)
 - **Database:** PostgreSQL + TimescaleDB
 - **Cache:** Redis
