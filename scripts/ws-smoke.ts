@@ -6,7 +6,9 @@ async function run() {
   process.env.ORACLE_PAYMENT_ADDRESS = ''
 
   const { registerWebSocket } = await import('../src/api/websocket')
-  const { priceEmitter, PRICE_UPDATE } = await import('../src/events')
+  const { priceEmitter, PRICE_PUBLISHED, publishPriceUpdate } = await import('../src/events')
+  const { fanOutManager } = await import('../src/ws/fanout')
+  const { activeNetwork } = await import('../src/config')
 
   const app = Fastify({ logger: { level: 'info' } })
   await registerWebSocket(app)
@@ -17,7 +19,8 @@ async function run() {
 
   console.log(`[ws-smoke] Server listening on port ${port}`)
 
-  const before = priceEmitter.listenerCount(PRICE_UPDATE)
+  const before = priceEmitter.listenerCount(PRICE_PUBLISHED)
+  await fanOutManager.initialize()
 
   const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`)
 
@@ -37,16 +40,15 @@ async function run() {
   const first = JSON.parse(firstMsg)
   if (first.type !== 'status' && first.type !== 'error') throw new Error('expected status or error message')
 
-  if (priceEmitter.listenerCount(PRICE_UPDATE) !== before + 1) {
+  if (priceEmitter.listenerCount(PRICE_PUBLISHED) !== before + 1) {
     throw new Error('server did not register price listener')
   }
 
   const event = {
-    assetA: 'XLM',
-    assetB: 'USDC',
-    previousPrice: 1.0,
-    currentPrice: 1.2345,
-    timestamp: new Date()
+    pair: 'USDC/XLM',
+    price: 1.2345,
+    ts: new Date().toISOString(),
+    network: activeNetwork,
   }
 
   const nextMsg = new Promise<string>((resolve, reject) => {
@@ -54,18 +56,20 @@ async function run() {
     ws.once('message', (data) => { clearTimeout(t); resolve(data.toString()) })
   })
 
-  priceEmitter.emit(PRICE_UPDATE, event)
+  publishPriceUpdate(event)
   const nextRaw = await nextMsg
   console.log('[ws-smoke] price message:', nextRaw)
   const next = JSON.parse(nextRaw)
   if (next.type !== 'price_update') throw new Error('expected price_update')
-  if (next.currentPrice !== event.currentPrice) throw new Error('price mismatch')
+  if (next.price !== event.price) throw new Error('price mismatch')
+  if (next.network !== event.network) throw new Error('network mismatch')
 
   ws.close()
   await new Promise<void>((resolve) => ws.on('close', () => resolve()))
 
-  if (priceEmitter.listenerCount(PRICE_UPDATE) !== before) {
-    throw new Error('listener was not cleaned up after close')
+  await fanOutManager.destroy()
+  if (priceEmitter.listenerCount(PRICE_PUBLISHED) !== before) {
+    throw new Error('listener was not cleaned up after shutdown')
   }
 
   await app.close()

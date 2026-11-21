@@ -43,8 +43,7 @@ vi.mock('../events', () => ({
     off: vi.fn(),
     listenerCount: vi.fn().mockReturnValue(0),
   },
-  PRICE_UPDATE: 'price:update',
-  PriceUpdateEvent: class {},
+  PRICE_PUBLISHED: 'price:published',
 }))
 
 vi.mock('prom-client', () => {
