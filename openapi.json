@@ -799,6 +799,7 @@
         "x-category": "Core Pricing & Trade Execution",
         "operationId": "getFiatPrice",
         "summary": "Convert asset price to fiat currency with NGN support (#290)",
+        "description": "Converts the asset USD price to a supported fiat currency using a dated static reference rate table (overridable via FIAT_RATES_JSON). Exposes rateTimestamp, rateAgeSeconds, stale, supportedCurrencies, and fiatRatesAsOf so callers can inspect rate freshness.",
         "security": [],
         "parameters": [
           {
@@ -829,7 +830,88 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object"
+                  "type": "object",
+                  "required": [
+                    "asset",
+                    "currency",
+                    "priceInFiat",
+                    "baseUsdPrice",
+                    "fiatPerUsd",
+                    "crossLegs",
+                    "supportedCurrencies",
+                    "fiatRatesAsOf",
+                    "rateSource",
+                    "rateTimestamp",
+                    "rateAgeSeconds",
+                    "stale"
+                  ],
+                  "properties": {
+                    "asset": {
+                      "type": "string"
+                    },
+                    "currency": {
+                      "type": "string"
+                    },
+                    "priceInFiat": {
+                      "type": "number"
+                    },
+                    "baseUsdPrice": {
+                      "type": "number"
+                    },
+                    "fiatPerUsd": {
+                      "type": "number"
+                    },
+                    "crossLegs": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "from": {
+                            "type": "string"
+                          },
+                          "to": {
+                            "type": "string"
+                          },
+                          "rate": {
+                            "type": "number"
+                          },
+                          "source": {
+                            "type": "string"
+                          },
+                          "asOf": {
+                            "type": "string",
+                            "format": "date-time"
+                          }
+                        }
+                      }
+                    },
+                    "supportedCurrencies": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "fiatRatesAsOf": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "rateSource": {
+                      "type": "string",
+                      "enum": [
+                        "static_reference"
+                      ]
+                    },
+                    "rateTimestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "rateAgeSeconds": {
+                      "type": "integer"
+                    },
+                    "stale": {
+                      "type": "boolean"
+                    }
+                  }
                 }
               }
             }
