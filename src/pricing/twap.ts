@@ -374,10 +374,12 @@ export async function computeVWAP(
 
 export const MIN_OUTLIER_SAMPLES = 4
 export const IQR_MULTIPLIER = 1.5
+/** Minimum half-band around the median (fraction of |median|) when IQR collapses near zero. */
+export const IQR_MIN_BAND_RATIO = 0.05
 export const MODIFIED_Z_SCORE_THRESHOLD = 3.5
 export const MODIFIED_Z_SCORE_FACTOR = 0.6745
 
-function rejectOutliersWithIndices(prices: number[]): { rejectedIndices: Set<number> } {
+export function rejectOutliersWithIndices(prices: number[]): { rejectedIndices: Set<number> } {
   if (prices.length < MIN_OUTLIER_SAMPLES) return { rejectedIndices: new Set() }
 
   const sorted = [...prices].sort((a, b) => a - b)
@@ -389,9 +391,13 @@ function rejectOutliersWithIndices(prices: number[]): { rejectedIndices: Set<num
   const q1 = median(lowerHalf)
   const q3 = median(upperHalf)
   const iqr = q3 - q1
+  const med = median(sorted)
 
-  const lowerBound = q1 - IQR_MULTIPLIER * iqr
-  const upperBound = q3 + IQR_MULTIPLIER * iqr
+  // Guard against zero/near-zero IQR on flat pairs: preserve tiny real moves within
+  // IQR_MIN_BAND_RATIO (±5%) of the median while still rejecting wild manipulation spikes.
+  const margin = Math.max(IQR_MULTIPLIER * iqr, Math.abs(med) * IQR_MIN_BAND_RATIO)
+  const lowerBound = q1 - margin
+  const upperBound = q3 + margin
 
   const rejectedIndices = new Set<number>()
   prices.forEach((p, i) => {

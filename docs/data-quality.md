@@ -52,11 +52,11 @@ High confidence requires price observations from at least [`2`](../src/aggregato
 
 ### Statistical Outlier Rejection Thresholds
 TWAP and VWAP computations apply statistical filtering to reject manipulation spikes:
-- **Minimum Sample Count**: Outlier filtering requires at least [`4`](../src/pricing/twap.ts#L288) sample points.
-- **Interquartile Range (IQR)**: Rejects samples beyond Q1 - [`1.5`](../src/pricing/twap.ts#L289) * IQR or Q3 + [`1.5`](../src/pricing/twap.ts#L289) * IQR.
-- **Modified Z-Score**: Rejects samples with absolute score exceeding [`3.5`](../src/pricing/twap.ts#L290), using a consistency factor of [`0.6745`](../src/pricing/twap.ts#L291).
-- **Enforcing Code**: [`src/pricing/twap.ts`](../src/pricing/twap.ts#L288)
-- **Violation Behavior**: If fewer than [`4`](../src/pricing/twap.ts#L288) samples exist, filtering is bypassed (`outlierRejected` is zero). If [`0`](../src/pricing/twap.ts#L78) samples exist in the window, endpoints return zero TWAP and sample count.
+- **Minimum Sample Count**: Outlier filtering requires at least [`4`](../src/pricing/twap.ts#L375) sample points.
+- **Interquartile Range (IQR)**: Rejects samples beyond Q1 - `margin` or Q3 + `margin`, where `margin = max(`[`1.5`](../src/pricing/twap.ts#L376)` * IQR, |median| * `[`0.05`](../src/pricing/twap.ts#L378)`)`. When ≥75% of samples share the same value (`IQR === 0`), the [`5%`](../src/pricing/twap.ts#L378) minimum band (`IQR_MIN_BAND_RATIO`) preserves small legitimate price movements while still rejecting extreme spikes; identical-price series reject nothing.
+- **Modified Z-Score**: Rejects samples with absolute score exceeding [`3.5`](../src/pricing/twap.ts#L379), using a consistency factor of [`0.6745`](../src/pricing/twap.ts#L380).
+- **Enforcing Code**: [`src/pricing/twap.ts`](../src/pricing/twap.ts#L375)
+- **Violation Behavior**: If fewer than [`4`](../src/pricing/twap.ts#L375) samples exist, filtering is bypassed (`outlierRejected` is zero). If [`0`](../src/pricing/twap.ts#L78) samples exist in the window, endpoints return zero TWAP and sample count.
 
 ### Request Window & Parameter Bounds
 - **TWAP Windows**: Window ranges from [`1`](../src/routes/price.ts#L8) to [`1440`](../src/routes/price.ts#L9) minutes (default [`60`](../src/routes/price.ts#L10) minutes). Sample intervals range from [`1`](../src/routes/price.ts#L11) to [`3600`](../src/routes/price.ts#L12) seconds (default [`60`](../src/routes/price.ts#L13) seconds).
