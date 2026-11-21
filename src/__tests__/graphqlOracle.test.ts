@@ -14,7 +14,28 @@ vi.mock('../redis', () => ({ getCachedPrice: vi.fn() }))
 vi.mock('../db', () => ({ pgPool: { query: mockQuery } }))
 vi.mock('../aggregator/vwap', () => ({ getAggregatedPrice: vi.fn() }))
 vi.mock('../aggregator/bestRoute', () => ({ getBestRoute: vi.fn() }))
-vi.mock('../config', () => ({ config: { pairs: [] }, activeNetwork: 'testnet' }))
+const CIRCLE_USDC = 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN'
+
+vi.mock('../config', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../config')>()
+  return {
+    ...actual,
+    config: { pairs: [] },
+    activeNetwork: 'testnet',
+    getNetworkConfig: () => ({
+      pairs: [
+        {
+          pairKey: `USDC:${CIRCLE_USDC}/XLM`,
+          assetA: { code: 'USDC', issuer: CIRCLE_USDC },
+          assetB: { code: 'XLM', issuer: null },
+        },
+      ],
+      pegged: [
+        { asset: { code: 'USDC', issuer: CIRCLE_USDC }, target: 'USD', targetPrice: 1.0, windowHours: 24 },
+      ],
+    }),
+  }
+})
 vi.mock('../ingest/oracles/reflector', () => ({ reflectorOracleAdapter: mockAdapter }))
 
 import { registerGraphQL } from '../api/graphql'
