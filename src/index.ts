@@ -356,10 +356,13 @@ async function main() {
     }
   }
 
-  log.info(
-    { count: getActivePairs().length, pairs: getActivePairs().map(p => p.pairKey) },
-    'watching pairs'
-  )
+  for (const network of enabledNetworks) {
+    const pairs = getActivePairs(network)
+    log.info(
+      { network, count: pairs.length, pairs: pairs.map(p => p.pairKey) },
+      'watching pairs'
+    )
+  }
 
   // ── Ready ──────────────────────────────────────────────────────────────────
   // Last, and only once every ingester above is running. `app.listen()` happens

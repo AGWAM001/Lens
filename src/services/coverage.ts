@@ -230,8 +230,10 @@ export function computeTradeCoverageRatio(
  */
 export function parseAssetString(
   raw: string,
-  pairs: readonly WatchedPair[] = getActivePairs()
+  pairs?: readonly WatchedPair[],
+  network: NetworkName = activeNetwork
 ): ParsedAsset {
+  const activePairs = pairs ?? getActivePairs(network)
   const trimmed = raw.trim()
   if (!trimmed || trimmed.includes('/')) {
     throw new Error(`Invalid asset identifier "${raw}"`)
@@ -257,7 +259,7 @@ export function parseAssetString(
   }
 
   // Code given without issuer: check if it matches a watched pair
-  const matches = pairs.filter(
+  const matches = activePairs.filter(
     p => (p.assetA.code === code && p.assetA.issuer) || (p.assetB.code === code && p.assetB.issuer)
   )
   if (matches.length > 0) {
@@ -518,8 +520,8 @@ export async function getAssetCoverage(
   const startTime = new Date(endTime.getTime() - hours * 60 * 60 * 1000)
   const resolutionMs = hours <= 24 ? 3600000 : 86400000
 
-  const asset = parseAssetString(assetRaw)
-  const pairs = getActivePairs()
+  const asset = parseAssetString(assetRaw, undefined, network)
+  const pairs = getActivePairs(network)
 
   const indexed = await fetchIndexedAssetActivity(asset, network, startTime, endTime)
   const horizon = await fetchHorizonAssetActivity(
@@ -606,7 +608,7 @@ export async function getOverallCoverage(
   const startTime = new Date(endTime.getTime() - hours * 60 * 60 * 1000)
   const resolutionMs = hours <= 24 ? 3600000 : 86400000
 
-  const pairs = getActivePairs()
+  const pairs = getActivePairs(network)
   const assetMap = new Map<string, ParsedAsset>()
 
   // Add assets from watched pairs
