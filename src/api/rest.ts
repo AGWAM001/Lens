@@ -24,6 +24,7 @@ import {
 import { findOverlappingGaps } from '../backfill/gaps'
 import { getDepth, getImpact } from '../pricing/depth'
 import { getRetentionPath } from '../jobs/retentionStatus'
+import { parsePositiveAmount } from '../utils/amounts'
 
 import { apiError } from '../errors'
 function makePairKey(a: string, b: string): string {
@@ -278,10 +279,13 @@ export async function registerRESTRoutes(app: FastifyInstance) {
     { config: { scope: 'read:prices' }, schema: { response: { 200: routeResponseSchema } } },
     async (req, reply) => {
       const { assetA, assetB } = req.params
-      const amount = parseFloat(req.query.amount ?? '1000')
       // Validate amount before the pair check: a malformed request parameter
       // is a 400 regardless of whether the pair is watched.
-      if (isNaN(amount) || amount <= 0) return reply.status(400).send(apiError('invalid_parameter', 'amount must be a positive number'))
+      const parsedAmount = parsePositiveAmount(req.query.amount)
+      if ('error' in parsedAmount) {
+        return reply.status(400).send(apiError('invalid_parameter', parsedAmount.error))
+      }
+      const amount = parsedAmount.value
       const network = req.network ?? activeNetwork
       const pair = findPair(assetA, assetB, network)
       if (!pair) return reply.status(404).send(apiError('unwatched_pair', `Pair ${assetA}/${assetB} not watched on ${network}`))
@@ -391,15 +395,18 @@ export async function registerRESTRoutes(app: FastifyInstance) {
     },
     async (req, reply) => {
       const { assetA, assetB } = req.params
-      // Number(), not parseFloat(): parseFloat('100abc') is 100, so a typo in a
-      // query string would silently price a different trade than the caller
-      // asked for. Trailing junk is a 400.
-      const amount = Number(req.query.amount ?? '1000')
+      // Validate amount before the pair check so malformed query parameters
+      // (trailing junk like `100abc`, Infinity, 0, negatives) return 400 on
+      // any pair, watched or not.
+      const parsedAmount = parsePositiveAmount(req.query.amount)
+      if ('error' in parsedAmount) {
+        return reply.status(400).send(apiError('invalid_parameter', parsedAmount.error))
+      }
+      const amount = parsedAmount.value
       const network = req.network ?? activeNetwork
       const pair = findPair(assetA, assetB, network)
 
       if (!pair) return reply.status(404).send(apiError('unwatched_pair', `Pair ${assetA}/${assetB} not watched on ${network}`))
-      if (isNaN(amount) || amount <= 0) return reply.status(400).send(apiError('invalid_parameter', 'amount must be a positive number'))
 
       // Depth reads are network-scoped on both legs (pool_snapshots and the
       // price_points subquery that names this pair's pools), so a mainnet pair
@@ -434,23 +441,29 @@ export async function registerRESTRoutes(app: FastifyInstance) {
     { schema: { response: { 200: impactResponseSchema } } },
     async (req, reply) => {
       const { assetA, assetB } = req.params
+      let thresholds: number[] = [1, 5, 10]
+      if (req.query.thresholds !== undefined) {
+        const parts = req.query.thresholds.split(',')
+        const parsedThresholds: number[] = []
+        for (const part of parts) {
+          const parsed = parsePositiveAmount(part, '', 'thresholds')
+          if ('error' in parsed) {
+            return reply.status(400).send(apiError('invalid_parameter', 'thresholds must be positive numbers and liquidityFraction must be between 0 and 1'))
+          }
+          parsedThresholds.push(parsed.value)
+        }
+        thresholds = parsedThresholds
+      }
+
+      const parsedFraction = parsePositiveAmount(req.query.liquidityFraction, '0.5', 'liquidityFraction')
+      if ('error' in parsedFraction || parsedFraction.value > 1) {
+        return reply.status(400).send(apiError('invalid_parameter', 'thresholds must be positive numbers and liquidityFraction must be between 0 and 1'))
+      }
+      const liquidityFraction = parsedFraction.value
+
       const network = req.network ?? activeNetwork
       const pair = findPair(assetA, assetB, network)
       if (!pair) return reply.status(404).send(apiError('unwatched_pair', `Pair ${assetA}/${assetB} not watched on ${network}`))
-
-      const thresholds = req.query.thresholds
-        ? req.query.thresholds.split(',').map(Number)
-        : [1, 5, 10]
-      const liquidityFraction = req.query.liquidityFraction === undefined
-        ? 0.5
-        : Number(req.query.liquidityFraction)
-      if (
-        thresholds.length === 0 ||
-        thresholds.some(value => !Number.isFinite(value) || value <= 0) ||
-        !Number.isFinite(liquidityFraction) || liquidityFraction <= 0 || liquidityFraction > 1
-      ) {
-        return reply.status(400).send(apiError('invalid_parameter', 'thresholds must be positive numbers and liquidityFraction must be between 0 and 1'))
-      }
 
       const impact = await getImpact(pair.pairKey, { thresholds, liquidityFraction }, network)
       if (!impact) return reply.status(404).send(apiError('unknown_pair', `No AMM liquidity available for ${assetA}/${assetB}`))
