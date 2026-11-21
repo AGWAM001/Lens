@@ -894,6 +894,7 @@
             "schema": {
               "type": "integer",
               "default": 100,
+              "minimum": 1,
               "maximum": 1000
             }
           },
@@ -951,7 +952,10 @@
             }
           },
           "400": {
-            "description": "Invalid parameters"
+            "description": "Invalid window or limit parameter"
+          },
+          "404": {
+            "description": "Asset pair is not watched on this network"
           },
           "429": {
             "$ref": "#/components/responses/TooManyRequests"
