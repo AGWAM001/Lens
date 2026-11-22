@@ -28,6 +28,7 @@ const log = createLogger('ingester:kucoin')
 
 export const KUCOIN_VENUE_NAME = 'KuCoin'
 export const KUCOIN_SOURCE_NAME = 'KuCoin'
+export const KUCOIN_SYMBOL = 'KuCoin'
 export const KUCOIN_DEFAULT_API_URL = 'https://api.kucoin.com'
 
 export function _resetLastPrice(): void {
@@ -262,6 +263,7 @@ export interface KuCoinAdapter extends VenueAdapter<WatchedPair, CexTicker>, Omi
 
 export const kucoinAdapter: KuCoinAdapter = {
   name: KUCOIN_VENUE_NAME,
+  symbol: KUCOIN_SYMBOL,
   kind: 'orderbook',
   source: KUCOIN_SOURCE_NAME,
   sourceTimeCapability: { status: 'provided', semantic: 'exchange_timestamp' },

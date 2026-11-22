@@ -28,6 +28,7 @@ const log = createLogger('ingester:gateio')
 
 export const GATEIO_VENUE_NAME = 'Gate.io'
 export const GATEIO_SOURCE_NAME = 'Gate.io'
+export const GATEIO_SYMBOL = 'Gate_io'
 export const GATEIO_DEFAULT_API_URL = 'https://api.gateio.ws'
 
 export function _resetLastPrice(): void {
@@ -260,6 +261,7 @@ export interface GateioAdapter extends VenueAdapter<WatchedPair, CexTicker>, Omi
 
 export const gateioAdapter: GateioAdapter = {
   name: GATEIO_VENUE_NAME,
+  symbol: GATEIO_SYMBOL,
   kind: 'orderbook',
   source: GATEIO_SOURCE_NAME,
   sourceTimeCapability: { status: 'provided', semantic: 'exchange_timestamp' },

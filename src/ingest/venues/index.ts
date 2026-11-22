@@ -11,6 +11,7 @@ import type { VenueAdapter } from './types'
 export * from './types'
 export * from './runner'
 export * from './registry'
+export * from './symbols'
 export { sdexAdapter, startSDEXIngester } from './sdex'
 export { ammAdapter, startAMMIngester } from './amm'
 export { soroswapAdapter, startSoroswapIngester } from './soroswap'
@@ -20,6 +21,20 @@ export { defindexAdapter, startDeFindexIngester } from './defindex'
 export { phoenixAdapter, startPhoenixIngester } from './phoenix'
 export { kucoinAdapter, startKuCoinIngester } from './kucoin'
 export { gateioAdapter, startGateioIngester } from './gateio'
+
+/**
+ * All known venue adapters across on-chain protocols and centralized exchanges.
+ */
+export const allVenueAdapters: VenueAdapter[] = [
+  sdexAdapter,
+  ammAdapter,
+  soroswapAdapter,
+  aquariusAdapter,
+  defindexAdapter,
+  phoenixAdapter,
+  kucoinAdapter,
+  gateioAdapter,
+]
 
 /**
  * Registry of default baseline venue adapters.

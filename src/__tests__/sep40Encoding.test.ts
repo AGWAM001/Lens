@@ -219,4 +219,16 @@ describe('venuesToSpecArg', () => {
   it('dedupes and sorts so the same sources encode identically', () => {
     expect(venuesToSpecArg(['soroswap_amm', 'SDEX', 'SDEX'])).toEqual(['SDEX', 'soroswap_amm'])
   })
+
+  it('maps Gate.io to legal Soroban symbol Gate_io (#755)', () => {
+    expect(venuesToSpecArg(['Gate.io', 'SDEX'])).toEqual(['Gate_io', 'SDEX'])
+  })
+
+  it('handles unknown source with invalid characters by skipping it so feed is not blocked (#755)', () => {
+    expect(venuesToSpecArg(['SDEX', 'Rogue.Dot.Venue'])).toEqual(['SDEX'])
+  })
+
+  it('allows unknown source if it is already a legal Soroban symbol (#755)', () => {
+    expect(venuesToSpecArg(['SDEX', 'CustomDex_v2'])).toEqual(['CustomDex_v2', 'SDEX'])
+  })
 })
