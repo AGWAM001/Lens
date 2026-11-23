@@ -135,6 +135,27 @@ describe('Multi-Currency Fiat Pricing (#290, #674)', () => {
     expect(pgPool.query).toHaveBeenCalledWith(expect.any(String), ['XLM', 'mainnet'])
   })
 
+  it('converts XLM to Nigerian Naira (NGN) via base USD cross-rate', async () => {
+    // Pin the clock just after the static table's as-of date so the rate is not stale (#674).
+    vi.useFakeTimers()
+    vi.setSystemTime(Date.parse(STATIC_FIAT_RATES_AS_OF) + 3_600 * 1000)
+    const app: FastifyInstance = await buildApp()
+    const res = await app.inject({ method: 'GET', url: '/price/XLM/fiat?currency=NGN' })
+    expect(res.statusCode).toBe(200)
+    const body = JSON.parse(res.payload)
+    expect(body.asset).toBe('XLM')
+    expect(body.currency).toBe('NGN')
+    expect(body.priceInFiat).toBeGreaterThan(0)
+    expect(body.baseUsdPrice).toBeGreaterThan(0)
+    expect(body.fiatPerUsd).toBeGreaterThan(1000)
+    expect(Array.isArray(body.crossLegs)).toBe(true)
+    expect(body.crossLegs.length).toBe(2)
+    expect(body.crossLegs[0].to).toBe('USD')
+    expect(body.crossLegs[1].from).toBe('USD')
+    expect(body.crossLegs[1].to).toBe('NGN')
+    expect(body.stale).toBe(false)
+  })
+
   it('rejects unsupported currency with 400 listing supported currencies', async () => {
     const app = await buildApp()
     const res = await app.inject({ method: 'GET', url: '/price/XLM/fiat?currency=XYZ_UNSUPPORTED' })
