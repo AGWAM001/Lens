@@ -2177,6 +2177,10 @@ paths:
       description: >-
         Returns the top gainers, losers, and volume movers for the specified lookback window,
         annotated with venue provenance, sample counts, and single-venue move labelling.
+        Each list is cut to `limit` entries. A pair with no volume in the earlier
+        window reports `volumeChangePct: null` and `hasPreviousVolume: false`
+        (never a fabricated 100), and sorts after pairs with a computable
+        volume change, by current volume descending.
       security: []
       parameters:
         - name: window
@@ -2186,6 +2190,16 @@ paths:
             type: string
             enum: [1h, 24h, 7d]
             default: 24h
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of entries in each list. Clamped to a maximum of 100. A non-numeric value is a 400.
+          schema:
+            type: integer
+            default: 20
+            minimum: 1
+            maximum: 100
+        - $ref: '#/components/parameters/DecimalFormatHeader'
         - $ref: '#/components/parameters/NetworkQuery'
       responses:
         '200':
@@ -2195,7 +2209,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/MoversResponse'
         '400':
-          description: Invalid window or network
+          description: Invalid window, network or limit
         '429':
           $ref: '#/components/responses/TooManyRequests'
         '500':
@@ -4818,7 +4832,7 @@ components:
 
     MoverItem:
       type: object
-      required: [pairKey, assetA, assetB, priceChangePct, startPrice, endPrice, currentVolume, previousVolume, volumeChangePct, venues, isSingleVenue, sampleCount, lastUpdated]
+      required: [pairKey, assetA, assetB, priceChangePct, startPrice, endPrice, currentVolume, previousVolume, volumeChangePct, hasPreviousVolume, venues, isSingleVenue, sampleCount, lastUpdated]
       additionalProperties: false
       properties:
         pairKey:
@@ -4831,18 +4845,30 @@ components:
           type: number
           nullable: true
         startPrice:
-          type: number
+          oneOf:
+            - type: number
+            - type: string
           nullable: true
         endPrice:
-          type: number
+          oneOf:
+            - type: number
+            - type: string
           nullable: true
         currentVolume:
-          type: number
+          oneOf:
+            - type: number
+            - type: string
         previousVolume:
-          type: number
+          oneOf:
+            - type: number
+            - type: string
         volumeChangePct:
           type: number
           nullable: true
+          description: Null when the earlier window had no volume (see hasPreviousVolume); there is no honest percentage for growing from nothing.
+        hasPreviousVolume:
+          type: boolean
+          description: Whether the earlier window had any volume for this pair. False means volumeChangePct is null rather than a fabricated figure.
         venues:
           type: array
           items:

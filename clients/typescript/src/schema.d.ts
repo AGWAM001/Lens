@@ -631,7 +631,7 @@ export interface paths {
         };
         /**
          * Get biggest gainers, biggest losers, and volume movers
-         * @description Returns the top gainers, losers, and volume movers for the specified lookback window, annotated with venue provenance, sample counts, and single-venue move labelling.
+         * @description Returns the top gainers, losers, and volume movers for the specified lookback window, annotated with venue provenance, sample counts, and single-venue move labelling. Each list is cut to `limit` entries. A pair with no volume in the earlier window reports `volumeChangePct: null` and `hasPreviousVolume: false` (never a fabricated 100), and sorts after pairs with a computable volume change, by current volume descending.
          */
         get: operations["getMovers"];
         put?: never;
@@ -1788,11 +1788,14 @@ export interface components {
             assetA: string;
             assetB: string;
             priceChangePct: number | null;
-            startPrice: number | null;
-            endPrice: number | null;
-            currentVolume: number;
-            previousVolume: number;
+            startPrice: (number | string) | null;
+            endPrice: (number | string) | null;
+            currentVolume: number | string;
+            previousVolume: number | string;
+            /** @description Null when the earlier window had no volume (see hasPreviousVolume); there is no honest percentage for growing from nothing. */
             volumeChangePct: number | null;
+            /** @description Whether the earlier window had any volume for this pair. False means volumeChangePct is null rather than a fabricated figure. */
+            hasPreviousVolume: boolean;
             venues: string[];
             isSingleVenue: boolean;
             sampleCount: number;
@@ -3739,10 +3742,15 @@ export interface operations {
         parameters: {
             query?: {
                 window?: "1h" | "24h" | "7d";
+                /** @description Maximum number of entries in each list. Clamped to a maximum of 100. A non-numeric value is a 400. */
+                limit?: number;
                 /** @description Stellar network to answer for — `testnet` or `mainnet`. Defaults to this instance's configured `STELLAR_NETWORK`. An unrecognised value is rejected with 400. DB-backed reads are currently served from whichever network this instance indexes, even when another is requested. */
                 network?: components["parameters"]["NetworkQuery"];
             };
-            header?: never;
+            header?: {
+                /** @description Formatting for decimal quantities (prices, volumes, reserves). Set to `string` to serialize high-precision `Decimal(36,18)` quantities as exact strings, preventing IEEE-754 floating-point precision loss. Defaults to `number`. Can also be negotiated via `Accept: application/json; decimals=strings` or query parameter `?decimals=strings`. */
+                "X-Decimal-Format"?: components["parameters"]["DecimalFormatHeader"];
+            };
             path?: never;
             cookie?: never;
         };
@@ -3757,7 +3765,7 @@ export interface operations {
                     "application/json": components["schemas"]["MoversResponse"];
                 };
             };
-            /** @description Invalid window or network */
+            /** @description Invalid window, network or limit */
             400: {
                 headers: {
                     [name: string]: unknown;
