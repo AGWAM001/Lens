@@ -36,12 +36,13 @@ describe('Blend Ingester & Fault Isolation', () => {
   const samplePoolData: BlendPoolData = {
     poolId: mockPoolId,
     network: 'mainnet',
+    version: 2,
     backstopRate: 1_000_000n, // 10%
     reserves: [
       {
         assetId: mockAssetId,
         assetSymbol: 'USDC',
-        rateDecimals: 12,
+        version: 2,
         config: {
           index: 0,
           decimals: 7,
