@@ -283,8 +283,13 @@ type Query {
   The time range is inclusive at both ends: a bucket is included if bucket >= from and bucket <= to.
   Because both endpoints are inclusive, querying adjacent windows (e.g. [t0, t1] and [t1, t2]) will
   return the boundary bucket at t1 in both results.
+  
+  window must be one of 1m, 5m, 1h, 24h. limit must be at least 1 and is capped at 1000.
+  The network argument (testnet or mainnet) defaults to the active network; only that
+  network's buckets are returned. An unknown pair fails with PAIR_NOT_FOUND, and a bad
+  window, limit or network fails with INVALID_INPUT.
   """
-  getPriceHistory(assetA: String!, assetB: String!, window: String!, limit: Int, from: String, to: String): [PriceBucket]
+  getPriceHistory(assetA: String!, assetB: String!, window: String!, limit: Int, from: String, to: String, network: String): [PriceBucket]
   listPairs: [String]! @deprecated(reason: "Use 'pairs' instead")
   pairs: [Pair!]!
 

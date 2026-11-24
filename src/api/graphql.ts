@@ -15,7 +15,7 @@ import { getCachedPrice } from '../redis'
 import { getAggregatedPrice } from '../aggregator/vwap'
 import { getBestRoute } from '../aggregator/bestRoute'
 import { pgPool } from '../db'
-import { config, activeNetwork, type NetworkName } from '../config'
+import { config, activeNetwork, getNetworkConfig, type NetworkName } from '../config'
 import { parseAssetStr, getActivePairs } from '../pairsRegistry'
 import { reflectorOracleAdapter } from '../ingest/oracles/reflector'
 import type { OracleAdapter } from '../ingest/oracles/adapter'
@@ -37,6 +37,7 @@ import { priceEmitter, PRICE_PUBLISHED, type PricePublishedEvent } from '../even
 import { HISTORY_INTERVAL_SECONDS, MAX_HISTORY_POINTS } from './history'
 import { getMaxGraphQLQueryDepth, queryDepthValidationRules } from './queryDepth'
 import { formatPrice, formatVolume } from '../pricing/precision'
+import type { WatchedPair } from '../types'
 
 const WINDOW_SECONDS: Record<string, number> = {
   ...HISTORY_INTERVAL_SECONDS,
@@ -383,6 +384,11 @@ export const schema = `
     The time range is inclusive at both ends: a bucket is included if bucket >= from and bucket <= to.
     Because both endpoints are inclusive, querying adjacent windows (e.g. [t0, t1] and [t1, t2]) will
     return the boundary bucket at t1 in both results.
+
+    window must be one of 1m, 5m, 1h, 24h. limit must be at least 1 and is capped at 1000.
+    The network argument (testnet or mainnet) defaults to the active network; only that
+    network's buckets are returned. An unknown pair fails with PAIR_NOT_FOUND, and a bad
+    window, limit or network fails with INVALID_INPUT.
     """
     getPriceHistory(
       assetA: String!
@@ -391,6 +397,7 @@ export const schema = `
       limit: Int
       from: String
       to: String
+      network: String
     ): [PriceBucket]
     listPairs: [String]! @deprecated(reason: "Use 'pairs' instead")
     pairs: [Pair!]!
@@ -458,15 +465,11 @@ function priceTopic(pair: string, network: string): string {
   return `${PRICE_TOPIC}/${pair}/${network}`
 }
 
-function makePairKey(a: string, b: string): string {
-  return [a, b].sort().join('/')
-}
-
-function findPair(assetA: string, assetB: string) {
+function findPair(assetA: string, assetB: string, pairs: readonly WatchedPair[] = config.pairs) {
   const normalize = (a: string) => a.toLowerCase() === 'native' ? 'XLM' : a.split(':')[0].toUpperCase()
   const cA = normalize(assetA)
   const cB = normalize(assetB)
-  return config.pairs.find(p => {
+  return pairs.find(p => {
     const pA = p.assetA.code.toUpperCase()
     const pB = p.assetB.code.toUpperCase()
     return (cA === pA && cB === pB) || (cA === pB && cB === pA)
@@ -628,15 +631,38 @@ export const resolvers = {
         limit = 100,
         from,
         to,
+        network,
       }: {
         assetA: string
         assetB: string
         window: string
-        limit?: number
+        limit?: number | null
         from?: string
         to?: string
+        network?: string | null
       }
     ) {
+      if (network != null && network !== 'testnet' && network !== 'mainnet') {
+        throw new ErrorWithProps('network must be one of: testnet, mainnet', {
+          code: 'INVALID_INPUT',
+          field: 'network',
+        })
+      }
+      const net = (network ?? activeNetwork) as NetworkName
+
+      const intervalSecs = WINDOW_SECONDS[window]
+      if (intervalSecs === undefined) {
+        throw new ErrorWithProps(
+          `window must be one of ${Object.keys(WINDOW_SECONDS).join(', ')}`,
+          { code: 'INVALID_INPUT', field: 'window' }
+        )
+      }
+
+      if (limit == null) limit = 100
+      if (limit < 1) {
+        throw new ErrorWithProps('limit must be at least 1', { code: 'INVALID_INPUT', field: 'limit' })
+      }
+
       let fromDate: Date | undefined
       let toDate: Date | undefined
 
@@ -658,8 +684,6 @@ export const resolvers = {
         throw new ErrorWithProps('from must be before to', { code: 'INVALID_INPUT' })
       }
 
-      const intervalSecs = WINDOW_SECONDS[window] ?? HISTORY_INTERVAL_SECONDS[window] ?? 60
-
       if (fromDate || toDate) {
         const effectiveTo = toDate ?? new Date()
         const effectiveFrom = fromDate ?? new Date(effectiveTo.getTime() - 24 * 60 * 60 * 1000)
@@ -672,9 +696,15 @@ export const resolvers = {
         }
       }
 
-      const pairKey = makePairKey(assetA, assetB)
-      const conditions: string[] = ['pair_key = $1', 'window = $2']
-      const params: any[] = [pairKey, window]
+      const pair = findPair(assetA, assetB, getNetworkConfig(net).pairs)
+      if (!pair) {
+        throw new ErrorWithProps(
+          `Pair ${assetA}/${assetB} is not tracked on ${net}`,
+          { code: 'PAIR_NOT_FOUND' },
+        )
+      }
+      const conditions: string[] = ['pair_key = $1', 'window = $2', 'network = $3']
+      const params: any[] = [pair.pairKey, window, net]
 
       if (fromDate) {
         params.push(fromDate)
