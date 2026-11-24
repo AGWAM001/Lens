@@ -829,7 +829,57 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object"
+                  "type": "object",
+                  "properties": {
+                    "asset": {
+                      "type": "string"
+                    },
+                    "currency": {
+                      "type": "string"
+                    },
+                    "priceInFiat": {
+                      "type": "number"
+                    },
+                    "baseUsdPrice": {
+                      "type": "number",
+                      "description": "Price of one unit of the asset in USD, taken from the named dollar pair (`pair`) in the correct direction, or 1.0 for a dollar stablecoin at its peg. Never a hard-coded fallback."
+                    },
+                    "fiatPerUsd": {
+                      "type": "number"
+                    },
+                    "pair": {
+                      "type": "string",
+                      "nullable": true,
+                      "description": "The dollar-stablecoin pair the USD leg was priced from (e.g. XLM/USDC), or null when the asset is itself a dollar stablecoin."
+                    },
+                    "priceTimestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "nullable": true,
+                      "description": "Timestamp of the newest price point used for the USD leg."
+                    },
+                    "priceAgeSeconds": {
+                      "type": "integer",
+                      "nullable": true,
+                      "description": "Age in seconds of the price used for the USD leg."
+                    },
+                    "crossLegs": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    },
+                    "rateTimestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "rateAgeSeconds": {
+                      "type": "integer"
+                    },
+                    "stale": {
+                      "type": "boolean"
+                    }
+                  }
                 }
               }
             }
@@ -837,8 +887,14 @@
           "400": {
             "description": "Invalid parameters"
           },
+          "404": {
+            "description": "No dollar price exists for the asset (code `unknown_pair`): Lens has no watched pair for it against a dollar stablecoin. No price is returned."
+          },
           "429": {
             "$ref": "#/components/responses/TooManyRequests"
+          },
+          "503": {
+            "description": "The price database failed (code `upstream_unavailable`). No price is returned."
           }
         }
       }

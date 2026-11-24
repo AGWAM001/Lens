@@ -2618,7 +2618,28 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": {
+                        asset?: string;
+                        currency?: string;
+                        priceInFiat?: number;
+                        /** @description Price of one unit of the asset in USD, taken from the named dollar pair (`pair`) in the correct direction, or 1.0 for a dollar stablecoin at its peg. Never a hard-coded fallback. */
+                        baseUsdPrice?: number;
+                        fiatPerUsd?: number;
+                        /** @description The dollar-stablecoin pair the USD leg was priced from (e.g. XLM/USDC), or null when the asset is itself a dollar stablecoin. */
+                        pair?: string | null;
+                        /**
+                         * Format: date-time
+                         * @description Timestamp of the newest price point used for the USD leg.
+                         */
+                        priceTimestamp?: string | null;
+                        /** @description Age in seconds of the price used for the USD leg. */
+                        priceAgeSeconds?: number | null;
+                        crossLegs?: Record<string, never>[];
+                        /** Format: date-time */
+                        rateTimestamp?: string;
+                        rateAgeSeconds?: number;
+                        stale?: boolean;
+                    };
                 };
             };
             /** @description Invalid parameters */
@@ -2628,7 +2649,21 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description No dollar price exists for the asset (code `unknown_pair`): Lens has no watched pair for it against a dollar stablecoin. No price is returned. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             429: components["responses"]["TooManyRequests"];
+            /** @description The price database failed (code `upstream_unavailable`). No price is returned. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     getPriceHistory: {
