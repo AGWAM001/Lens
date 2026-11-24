@@ -10,7 +10,17 @@ vi.mock('../redis', () => ({ getCachedPrice: vi.fn() }))
 vi.mock('../db', () => ({ pgPool: { query: vi.fn() } }))
 vi.mock('../aggregator/vwap', () => ({ getAggregatedPrice: vi.fn() }))
 vi.mock('../aggregator/bestRoute', () => ({ getBestRoute: vi.fn() }))
-vi.mock('../config', () => ({ config: { pairs: [] } }))
+vi.mock('../config', () => {
+  const pairs = [
+    { assetA: { code: 'XLM', issuer: null }, assetB: { code: 'USDC', issuer: null }, pairKey: 'XLM/USDC' },
+    { assetA: { code: 'BTC', issuer: null }, assetB: { code: 'USDC', issuer: null }, pairKey: 'BTC/USDC' },
+  ]
+  return {
+    config: { pairs },
+    activeNetwork: 'testnet',
+    getNetworkConfig: () => ({ pairs }),
+  }
+})
 
 import { registerGraphQL } from '../api/graphql'
 import { publishPriceUpdate, priceEmitter } from '../events'
@@ -178,6 +188,58 @@ describe('GraphQL priceUpdated subscription', () => {
     await new Promise(r => setTimeout(r, 200))
 
     expect(received).toBe(false)
+    ws.close()
+  })
+
+  it('ends the subscription with PAIR_NOT_FOUND for a pair that is not watched', async () => {
+    const ws = await connect(url)
+    ws.send(JSON.stringify(SUBSCRIBE('FOO/BAR')))
+
+    const error = await waitFor(ws, 'error')
+    expect(error.id).toBe('1')
+    const errors = Array.isArray(error.payload) ? error.payload : [error.payload]
+    expect(errors[0].extensions.code).toBe('PAIR_NOT_FOUND')
+
+    ws.close()
+  })
+
+  it('ends the subscription with INVALID_INPUT for an unknown network', async () => {
+    const ws = await connect(url)
+    ws.send(JSON.stringify(SUBSCRIBE('XLM/USDC', 'mainet')))
+
+    const error = await waitFor(ws, 'error')
+    expect(error.id).toBe('1')
+    const errors = Array.isArray(error.payload) ? error.payload : [error.payload]
+    expect(errors[0].extensions.code).toBe('INVALID_INPUT')
+
+    ws.close()
+  })
+
+  it('accepts a watched pair in the reverse asset order and streams its updates', async () => {
+    const ws = await connect(url)
+    ws.send(JSON.stringify(SUBSCRIBE('USDC/XLM')))
+    await new Promise(r => setTimeout(r, 100))
+
+    publishPriceUpdate({ pair: 'XLM/USDC', price: 0.77, ts: '2026-06-02T00:00:00.000Z', network: 'testnet' })
+
+    const next = await waitFor(ws, 'next')
+    expect(next.payload.data.priceUpdated.pair).toBe('XLM/USDC')
+    expect(next.payload.data.priceUpdated.price).toBe(0.77)
+
+    ws.close()
+  })
+
+  it('accepts a watched pair in a different case and streams its updates', async () => {
+    const ws = await connect(url)
+    ws.send(JSON.stringify(SUBSCRIBE('xlm/usdc')))
+    await new Promise(r => setTimeout(r, 100))
+
+    publishPriceUpdate({ pair: 'XLM/USDC', price: 0.88, ts: '2026-06-02T00:00:00.000Z', network: 'mainnet' })
+
+    const next = await waitFor(ws, 'next')
+    expect(next.payload.data.priceUpdated.pair).toBe('XLM/USDC')
+    expect(next.payload.data.priceUpdated.price).toBe(0.88)
+
     ws.close()
   })
 })
