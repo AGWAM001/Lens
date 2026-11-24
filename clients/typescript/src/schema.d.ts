@@ -2011,6 +2011,9 @@ export interface components {
             currentPrice: number | null;
             currentDeviationBps: number | null;
             worstDeviationBps: number | null;
+            /** @enum {string} */
+            status: "on_peg" | "off_peg" | "no_reference" | "no_data" | "error";
+            reason: string | null;
             window: string;
             provenance: {
                 venues: string[];

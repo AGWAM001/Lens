@@ -5293,6 +5293,8 @@ components:
         - currentPrice
         - currentDeviationBps
         - worstDeviationBps
+        - status
+        - reason
         - window
         - provenance
       additionalProperties: false
@@ -5319,6 +5321,12 @@ components:
           nullable: true
         worstDeviationBps:
           type: number
+          nullable: true
+        status:
+          type: string
+          enum: [on_peg, off_peg, no_reference, no_data, error]
+        reason:
+          type: string
           nullable: true
         window:
           type: string
