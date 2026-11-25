@@ -821,17 +821,32 @@ npm run client:gen
 
 # Type-check the generated client
 npm run client:typecheck
+
+# Build the installable client package to clients/typescript/dist/
+npm run client:build
 ```
 
 CI runs `npm run client:gen` and fails if the committed client differs from the
-regenerated output, so the client can never drift from `openapi.yaml`.
+regenerated output, so the client can never drift from `openapi.yaml`. It also
+packs and installs the built package into a fresh project to verify the package
+exports.
+
+Pack and install `@divinity-labs/lens-client` from the repo (see
+[`clients/typescript/README.md`](clients/typescript/README.md)):
+
+```bash
+npm run client:build
+npm --prefix clients/typescript pack
+# In your application project:
+npm install /path/to/divinity-labs-lens-client-0.2.0.tgz
+```
 
 ```typescript
-import { createLensClient } from "./clients/typescript/src/index.js";
+import { createLensClient } from "@divinity-labs/lens-client";
 
 const client = createLensClient({ baseUrl: "http://localhost:3002" });
 
-const { data, error } = await client.GET("/price/{assetA}/{assetB}", {
+const { data, error } = await client.GET("/v1/price/{assetA}/{assetB}", {
   params: { path: { assetA: "XLM", assetB: "USDC" } },
 });
 if (error) throw new Error(`request failed: ${error}`);
