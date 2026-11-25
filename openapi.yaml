@@ -4285,12 +4285,9 @@ components:
           format: date-time
         overall:
           type: object
-          required: [tradeCoverageRatio, totalIndexedTrades, totalNetworkTrades, assetsTracked, assetsWithActivity, status, venues]
+          required: [tradeCoverageRatio, totalIndexedTrades, totalNetworkTrades, assetsTracked, assetsWithActivity, excludedAssetCount, excludedAssets, status, reason, venues]
           properties:
             tradeCoverageRatio:
-              type: number
-              nullable: true
-            volumeCoverageRatio:
               type: number
               nullable: true
             totalIndexedTrades:
@@ -4301,6 +4298,20 @@ components:
               type: integer
             assetsWithActivity:
               type: integer
+            excludedAssetCount:
+              type: integer
+              description: Number of assets omitted from overall totals because Horizon data was incomplete.
+            excludedAssets:
+              type: array
+              description: Assets omitted from overall totals, with the Horizon failure reason.
+              items:
+                type: object
+                required: [asset, reason]
+                properties:
+                  asset:
+                    type: string
+                  reason:
+                    type: string
             status:
               type: string
               enum: [computed, unanswerable]

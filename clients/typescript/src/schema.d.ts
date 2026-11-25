@@ -1521,14 +1521,20 @@ export interface components {
             endTime: string;
             overall: {
                 tradeCoverageRatio: number | null;
-                volumeCoverageRatio?: number | null;
                 totalIndexedTrades: number;
                 totalNetworkTrades: number;
                 assetsTracked: number;
                 assetsWithActivity: number;
+                /** @description Number of assets omitted from overall totals because Horizon data was incomplete. */
+                excludedAssetCount: number;
+                /** @description Assets omitted from overall totals, with the Horizon failure reason. */
+                excludedAssets: {
+                    asset: string;
+                    reason: string;
+                }[];
                 /** @enum {string} */
                 status: "computed" | "unanswerable";
-                reason?: string | null;
+                reason: string | null;
                 venues: string[];
             };
             assets: {
