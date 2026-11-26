@@ -10,7 +10,7 @@ vi.mock('../redis', () => ({ getCachedPrice: vi.fn() }))
 vi.mock('../db', () => ({ pgPool: { query: vi.fn() } }))
 vi.mock('../aggregator/vwap', () => ({ getAggregatedPrice: vi.fn() }))
 vi.mock('../aggregator/bestRoute', () => ({ getBestRoute: vi.fn() }))
-vi.mock('../config', () => ({ config: { pairs: [] } }))
+vi.mock('../config', () => ({ config: { pairs: [] }, activeNetwork: 'testnet' }))
 
 import { registerGraphQL, resolveGraphQLUiOptions } from '../api/graphql'
 import { publishPriceUpdate, priceEmitter } from '../events'
