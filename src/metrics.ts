@@ -1,4 +1,4 @@
-import { Registry, Counter, Gauge, Histogram } from 'prom-client'
+import { Registry, Counter, Gauge, Histogram, collectDefaultMetrics } from 'prom-client'
 
 export const register = new Registry()
 
@@ -6,6 +6,7 @@ export const register = new Registry()
 register.setDefaultLabels({
   app: 'lens'
 })
+collectDefaultMetrics({ register })
 
 // Ingest metrics are network-scoped. One ingester set runs per enabled network
 // against one shared Registry, so without `network` the testnet loop and the
