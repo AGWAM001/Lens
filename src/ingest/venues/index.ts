@@ -4,6 +4,7 @@ import { soroswapAdapter } from './soroswap'
 import { aquariusAdapter } from './aquarius'
 import { defindexAdapter } from './defindex'
 import { phoenixAdapter } from './phoenix'
+import { blendAdapter } from './blend'
 import { kucoinAdapter, startKuCoinIngester } from './kucoin'
 import { gateioAdapter, startGateioIngester } from './gateio'
 import type { VenueAdapter } from './types'
@@ -30,6 +31,7 @@ export const allVenueAdapters: VenueAdapter[] = [
   ammAdapter,
   soroswapAdapter,
   aquariusAdapter,
+  blendAdapter,
   defindexAdapter,
   phoenixAdapter,
   kucoinAdapter,

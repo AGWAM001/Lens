@@ -193,10 +193,11 @@ describe('venue classification has one source of truth (#244)', () => {
   })
 
   it('ensures every adapter in allVenueAdapters maps to a unique, legal Soroban symbol (#755)', () => {
+    expect(allVenueAdapters.length).toBeGreaterThanOrEqual(9)
     const seenSymbols = new Set<string>()
     for (const adapter of allVenueAdapters) {
       const sym = resolveVenueSymbol(adapter.source)
-      expect(sym).toBeDefined()
+      expect(sym).not.toBeNull()
       expect(sym!.length).toBeGreaterThan(0)
       expect(sym!.length).toBeLessThanOrEqual(32)
       expect(/^[A-Za-z0-9_]+$/.test(sym!)).toBe(true)

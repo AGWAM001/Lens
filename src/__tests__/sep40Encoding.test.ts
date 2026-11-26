@@ -231,4 +231,10 @@ describe('venuesToSpecArg', () => {
   it('allows unknown source if it is already a legal Soroban symbol (#755)', () => {
     expect(venuesToSpecArg(['SDEX', 'CustomDex_v2'])).toEqual(['CustomDex_v2', 'SDEX'])
   })
+
+  it('rejects a venue whose symbol exceeds 32 characters (#755)', () => {
+    const tooLongVenue = 'A'.repeat(33)
+    expect(() => venuesToSpecArg([tooLongVenue])).toThrow(Sep40EncodingError)
+    expect(() => venuesToSpecArg([tooLongVenue])).toThrow(/over the 32-character Soroban symbol limit/)
+  })
 })

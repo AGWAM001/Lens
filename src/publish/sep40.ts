@@ -20,6 +20,14 @@ import { Asset as StellarAsset, Address, StrKey, xdr } from '@stellar/stellar-sd
 import { getNetworkConfig, type NetworkName } from '../config'
 import type { AssetId } from '../types'
 import { resolveVenueSymbol } from '../ingest/venues/symbols'
+import { createLogger } from '../logger'
+
+const log = createLogger('sep40-encoding')
+const warnedSources = new Set<string>()
+
+export function _resetWarnedSources(): void {
+  warnedSources.clear()
+}
 
 /**
  * Soroban's `ScSymbol` is capped at 32 bytes on the wire, and a symbol over the
@@ -281,6 +289,11 @@ export function venuesToSpecArg(venues: string[]): string[] {
     const resolved = resolveVenueSymbol(venue)
     if (resolved) {
       resolvedVenues.push(assertSymbol(resolved, `venue ${resolved}`))
+    } else {
+      if (!warnedSources.has(venue)) {
+        warnedSources.add(venue)
+        log.warn(`Skipping unresolvable venue '${venue}' from published provenance list`)
+      }
     }
   }
 

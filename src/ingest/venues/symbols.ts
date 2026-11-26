@@ -13,8 +13,9 @@ export const VENUE_SOURCE_TO_SYMBOL: Record<string, string> = {
   AMM: 'AMM',
   soroswap_amm: 'soroswap_amm',
   aquarius_amm: 'aquarius_amm',
+  blend: 'blend',
   defindex_vault: 'defindex_vault',
-  phoenix: 'phoenix',
+  phoenix_amm: 'phoenix_amm',
   KuCoin: 'KuCoin',
   'Gate.io': 'Gate_io',
 }
