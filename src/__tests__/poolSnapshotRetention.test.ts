@@ -1,15 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
+// Unit tests for the batching loop and its guards. The SQL itself (newest row
+// per pool survives, network scoping, age cutoff) runs against a real Postgres
+// in poolSnapshotRetention.pg.test.ts.
+
 const { mockQuery } = vi.hoisted(() => ({ mockQuery: vi.fn() }))
 
 vi.mock('../db', () => ({
   prisma: {},
   pgPool: { query: mockQuery },
-}))
-
-vi.mock('bullmq', () => ({
-  Queue: class {},
-  Worker: class {},
 }))
 
 const { retentionLogger } = vi.hoisted(() => ({
@@ -34,144 +33,153 @@ vi.mock('../logger', () => ({
 import {
   pruneOldPoolSnapshots,
   pruneAllPoolSnapshotNetworks,
+  poolSnapshotHistoryLimitHours,
+  poolSnapshotRetentionJob,
+  PRUNE_BATCH_SQL,
   POOL_SNAPSHOT_PRUNE_BATCH_SIZE,
+  POOL_SNAPSHOT_PRUNE_MAX_BATCHES,
+  POOL_SNAPSHOT_PRUNE_PAUSE_MS,
   POOL_SNAPSHOT_RETENTION_DAYS,
+  POOL_SNAPSHOT_RETENTION_ENABLED,
 } from '../jobs/poolSnapshotRetention'
 import { activeNetwork } from '../config'
+
+/** A batch result as the prune statement returns it. */
+const batch = (pruned: number, lastPoolId: string | null = pruned > 0 ? `pool-${pruned}` : null) => ({
+  rows: [{ pruned, last_pool_id: lastPoolId }],
+})
+
+const noSleep = () => Promise.resolve()
+
+describe('pool snapshot retention defaults', () => {
+  it('is off by default, keeps 30 days, and drains in paused, capped batches', () => {
+    expect(POOL_SNAPSHOT_RETENTION_ENABLED).toBe(false)
+    expect(POOL_SNAPSHOT_RETENTION_DAYS).toBe(30)
+    expect(POOL_SNAPSHOT_PRUNE_BATCH_SIZE).toBe(1_000)
+    expect(POOL_SNAPSHOT_PRUNE_PAUSE_MS).toBe(100)
+    expect(POOL_SNAPSHOT_PRUNE_MAX_BATCHES).toBe(100)
+  })
+
+  it('schedules hourly with a delayed first run', () => {
+    expect(poolSnapshotRetentionJob.name).toBe('pool-snapshot-retention')
+    expect(poolSnapshotRetentionJob.queueName).toBe(`${activeNetwork}:pool-snapshot-retention`)
+    expect(poolSnapshotRetentionJob.everyMs).toBe(60 * 60 * 1000)
+    expect(poolSnapshotRetentionJob.firstRunDelayMs).toBeGreaterThan(0)
+  })
+})
 
 describe('pruneOldPoolSnapshots', () => {
   beforeEach(() => {
     mockQuery.mockReset()
+    retentionLogger.info.mockClear()
   })
 
-  it('defaults to a 30-day retention window and preserves each pool latest snapshot in batched SQL', async () => {
-    mockQuery.mockResolvedValueOnce({ rowCount: 4 }).mockResolvedValueOnce({ rowCount: 0 })
+  it('uses a per-row EXISTS check on the (network, pool_id, timestamp) index instead of a per-batch DISTINCT ON scan', () => {
+    expect(PRUNE_BATCH_SQL).not.toMatch(/DISTINCT ON/)
+    expect(PRUNE_BATCH_SQL).toMatch(/AND EXISTS \(\s*SELECT 1\s+FROM pool_snapshots newer\s+WHERE newer\.network = ps\.network\s+AND newer\.pool_id = ps\.pool_id\s+AND newer\.timestamp > ps\.timestamp/s)
+    expect(PRUNE_BATCH_SQL).toMatch(/ORDER BY ps\.pool_id, ps\.timestamp DESC\s+LIMIT \$3\s+FOR UPDATE SKIP LOCKED/s)
+  })
 
-    const pruned = await pruneOldPoolSnapshots()
+  it('passes network, retention days, batch size and an empty starting cursor', async () => {
+    mockQuery.mockResolvedValueOnce(batch(4))
 
-    expect(POOL_SNAPSHOT_RETENTION_DAYS).toBe(30)
+    const pruned = await pruneOldPoolSnapshots(undefined, undefined, { sleep: noSleep })
+
     expect(pruned).toBe(4)
-    expect(mockQuery.mock.calls[0][1]).toEqual([activeNetwork, 30, POOL_SNAPSHOT_PRUNE_BATCH_SIZE])
-
-    const sql = mockQuery.mock.calls[0][0] as string
-    expect(sql).toMatch(/SELECT DISTINCT ON \(pool_id\) id\s+FROM pool_snapshots\s+WHERE network = \$1/s)
-    expect(sql).toMatch(/AND NOT EXISTS/)
-    expect(sql).toMatch(/DELETE FROM pool_snapshots AS snapshots/)
-    expect(sql).toMatch(/LIMIT \$3\s+FOR UPDATE SKIP LOCKED/)
-    expect(sql).toMatch(/ps\.timestamp < NOW\(\) - \(\$2 \|\| ' days'\)::interval/)
-    expect(mockQuery).toHaveBeenCalledTimes(2)
+    expect(mockQuery).toHaveBeenCalledTimes(1)
+    expect(mockQuery.mock.calls[0][1]).toEqual([activeNetwork, 30, POOL_SNAPSHOT_PRUNE_BATCH_SIZE, ''])
   })
 
-  it('honors a custom retention window and returns 0 when rowCount is null', async () => {
-    mockQuery.mockResolvedValueOnce({ rowCount: null })
+  it('honors a custom retention window and returns 0 when nothing is eligible', async () => {
+    mockQuery.mockResolvedValueOnce(batch(0))
 
-    const pruned = await pruneOldPoolSnapshots(14, 'mainnet')
-
-    expect(pruned).toBe(0)
-    expect(mockQuery.mock.calls[0][1]).toEqual(['mainnet', 14, POOL_SNAPSHOT_PRUNE_BATCH_SIZE])
+    expect(await pruneOldPoolSnapshots(14, 'mainnet')).toBe(0)
+    expect(mockQuery.mock.calls[0][1]).toEqual(['mainnet', 14, POOL_SNAPSHOT_PRUNE_BATCH_SIZE, ''])
   })
 
-  it('rejects non-positive or non-integer retentionDays or batchSize before querying', async () => {
+  it('treats an empty result set as nothing pruned', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [] })
+    expect(await pruneOldPoolSnapshots(30, 'testnet')).toBe(0)
+  })
+
+  it('rejects invalid retention days, batch size, batch cap or pause before querying', async () => {
     await expect(pruneOldPoolSnapshots(0)).rejects.toThrow(/positive integer/)
     await expect(pruneOldPoolSnapshots(-5)).rejects.toThrow(/positive integer/)
-    await expect(pruneOldPoolSnapshots(30, activeNetwork, 0)).rejects.toThrow(/positive integer/)
+    await expect(pruneOldPoolSnapshots(Number.NaN)).rejects.toThrow(/positive integer/)
+    await expect(pruneOldPoolSnapshots(30, activeNetwork, { batchSize: 0 })).rejects.toThrow(/batch size/)
+    await expect(pruneOldPoolSnapshots(30, activeNetwork, { maxBatches: 0 })).rejects.toThrow(/max batches/)
+    await expect(pruneOldPoolSnapshots(30, activeNetwork, { pauseMs: -1 })).rejects.toThrow(/pause/)
     expect(mockQuery).not.toHaveBeenCalled()
   })
 
-  it('drains multiple bounded batches and reports cumulative progress', async () => {
+  it('resumes each batch from the pool cursor the previous batch returned', async () => {
     mockQuery
-      .mockResolvedValueOnce({ rowCount: 2 })
-      .mockResolvedValueOnce({ rowCount: 1 })
-      .mockResolvedValueOnce({ rowCount: 0 })
-    retentionLogger.info.mockClear()
+      .mockResolvedValueOnce(batch(2, 'pool-b'))
+      .mockResolvedValueOnce(batch(2, 'pool-d'))
+      .mockResolvedValueOnce(batch(0))
     const onProgress = vi.fn()
 
-    expect(await pruneOldPoolSnapshots(30, 'mainnet', 2, onProgress)).toBe(3)
+    expect(await pruneOldPoolSnapshots(30, 'mainnet', { batchSize: 2, onProgress, sleep: noSleep })).toBe(4)
     expect(mockQuery.mock.calls.map(call => call[1])).toEqual([
-      ['mainnet', 30, 2],
-      ['mainnet', 30, 2],
-      ['mainnet', 30, 2],
+      ['mainnet', 30, 2, ''],
+      ['mainnet', 30, 2, 'pool-b'],
+      ['mainnet', 30, 2, 'pool-d'],
     ])
     expect(retentionLogger.info).toHaveBeenCalledWith(
-      expect.objectContaining({ network: 'mainnet', batch: 2, rows: 1, total: 3 }),
+      expect.objectContaining({ network: 'mainnet', batch: 2, rows: 2, total: 4 }),
       'pruned pool snapshot retention batch'
     )
-    expect(onProgress).toHaveBeenLastCalledWith({
-      network: 'mainnet',
-      batch: 2,
-      batchRows: 1,
-      totalPruned: 3,
-    })
+    expect(onProgress).toHaveBeenLastCalledWith({ network: 'mainnet', batch: 2, batchRows: 2, totalPruned: 4 })
   })
 
-  it('preserves at least the newest row per pool even when a pool only has expired snapshots', async () => {
-    type Row = { id: number; network: string; pool_id: string; timestamp: Date }
-    const now = Date.now()
-    const dayMs = 24 * 60 * 60 * 1000
-    const table: Row[] = [
-      // Pool A: dormant for 45 days (single old snapshot must stay)
-      { id: 1, network: 'testnet', pool_id: 'pool-dormant', timestamp: new Date(now - 45 * dayMs) },
-      // Pool B: inactive for 40 days with 2 old snapshots -> id 2 deleted, id 3 kept
-      { id: 2, network: 'testnet', pool_id: 'pool-two-old', timestamp: new Date(now - 50 * dayMs) },
-      { id: 3, network: 'testnet', pool_id: 'pool-two-old', timestamp: new Date(now - 40 * dayMs) },
-      // Pool C: active -> id 4 deleted (40d), id 5 kept (1d)
-      { id: 4, network: 'testnet', pool_id: 'pool-active', timestamp: new Date(now - 40 * dayMs) },
-      { id: 5, network: 'testnet', pool_id: 'pool-active', timestamp: new Date(now - 1 * dayMs) },
-      // Other network rows untouched when pruning testnet
-      { id: 6, network: 'mainnet', pool_id: 'pool-dormant', timestamp: new Date(now - 60 * dayMs) },
-    ]
+  it('stops after a short batch without another query', async () => {
+    mockQuery.mockResolvedValueOnce(batch(2, 'pool-b')).mockResolvedValueOnce(batch(1, 'pool-c'))
 
-    mockQuery.mockImplementation(async (sql: string, params: unknown[]) => {
-      const [network, days, limit] = params as [string, number, number]
-      expect(sql).toMatch(/latest_per_pool/)
-      const cutoff = now - days * dayMs
+    expect(await pruneOldPoolSnapshots(30, 'testnet', { batchSize: 2, sleep: noSleep })).toBe(3)
+    expect(mockQuery).toHaveBeenCalledTimes(2)
+  })
 
-      const latestByPool = new Map<string, Row>()
-      for (const row of table) {
-        if (row.network !== network) continue
-        const prev = latestByPool.get(row.pool_id)
-        if (!prev || row.timestamp > prev.timestamp || (row.timestamp.getTime() === prev.timestamp.getTime() && row.id > prev.id)) {
-          latestByPool.set(row.pool_id, row)
-        }
-      }
-      const protectedIds = new Set([...latestByPool.values()].map(r => r.id))
+  it('pauses between batches, not after the last one', async () => {
+    mockQuery
+      .mockResolvedValueOnce(batch(2))
+      .mockResolvedValueOnce(batch(2))
+      .mockResolvedValueOnce(batch(1))
+    const sleep = vi.fn(noSleep)
 
-      const eligible = table
-        .filter(r => r.network === network && r.timestamp.getTime() < cutoff && !protectedIds.has(r.id))
-        .slice(0, limit)
-      const deleteIds = new Set(eligible.map(r => r.id))
-      for (let i = table.length - 1; i >= 0; i--) {
-        if (deleteIds.has(table[i].id)) table.splice(i, 1)
-      }
-      return { rowCount: deleteIds.size }
-    })
+    await pruneOldPoolSnapshots(30, 'testnet', { batchSize: 2, pauseMs: 250, sleep })
 
-    const pruned = await pruneOldPoolSnapshots(30, 'testnet', 1)
+    expect(sleep).toHaveBeenCalledTimes(2)
+    expect(sleep).toHaveBeenCalledWith(250)
+  })
 
-    expect(pruned).toBe(2)
-    expect(table.map(r => r.id)).toEqual([1, 3, 5, 6])
+  it('stops at the per-run batch cap and leaves the rest for the next run', async () => {
+    mockQuery.mockResolvedValue(batch(2))
+    const sleep = vi.fn(noSleep)
+
+    expect(await pruneOldPoolSnapshots(30, 'testnet', { batchSize: 2, maxBatches: 3, sleep })).toBe(6)
+    expect(mockQuery).toHaveBeenCalledTimes(3)
+    expect(sleep).toHaveBeenCalledTimes(2)
+    expect(retentionLogger.info).toHaveBeenCalledWith(
+      expect.objectContaining({ network: 'testnet', batches: 3, total: 6 }),
+      expect.stringMatching(/per-run batch cap/)
+    )
   })
 })
 
 describe('pruneAllPoolSnapshotNetworks', () => {
-  const saved = process.env.ENABLED_NETWORKS
-
   beforeEach(() => {
     mockQuery.mockReset()
   })
 
   afterEach(() => {
-    if (saved === undefined) delete process.env.ENABLED_NETWORKS
-    else process.env.ENABLED_NETWORKS = saved
+    delete process.env.ENABLED_NETWORKS
   })
 
   it('prunes all configured networks and collects errors without skipping healthy networks', async () => {
     process.env.ENABLED_NETWORKS = 'testnet,mainnet'
-    let mainnetBatches = 0
     mockQuery.mockImplementation(async (_sql: string, params: unknown[]) => {
       if (params[0] === 'testnet') throw new Error('db timeout')
-      mainnetBatches += 1
-      return { rowCount: mainnetBatches === 1 ? 3 : 0 }
+      return batch(3)
     })
 
     await expect(pruneAllPoolSnapshotNetworks()).rejects.toThrow(/testnet: db timeout/)
@@ -185,11 +193,26 @@ describe('pruneAllPoolSnapshotNetworks', () => {
       const net = params[0] as string
       const count = remaining[net] ?? 0
       remaining[net] = 0
-      return { rowCount: count }
+      return batch(count)
     })
 
-    const counts = await pruneAllPoolSnapshotNetworks()
+    expect(await pruneAllPoolSnapshotNetworks()).toEqual({ testnet: 5, mainnet: 2 })
+  })
+})
 
-    expect(counts).toEqual({ testnet: 5, mainnet: 2 })
+describe('poolSnapshotHistoryLimitHours', () => {
+  it('is null while retention is off, since nothing is pruned', () => {
+    expect(poolSnapshotHistoryLimitHours({})).toBeNull()
+    expect(poolSnapshotHistoryLimitHours({ POOL_SNAPSHOT_RETENTION_ENABLED: 'false', POOL_SNAPSHOT_RETENTION_DAYS: '7' })).toBeNull()
+  })
+
+  it('is the retention period in hours while retention is on', () => {
+    expect(poolSnapshotHistoryLimitHours({ POOL_SNAPSHOT_RETENTION_ENABLED: 'true' })).toBe(30 * 24)
+    expect(poolSnapshotHistoryLimitHours({ POOL_SNAPSHOT_RETENTION_ENABLED: 'true', POOL_SNAPSHOT_RETENTION_DAYS: '7' })).toBe(7 * 24)
+  })
+
+  it('is null for a retention value the job would refuse to run with', () => {
+    expect(poolSnapshotHistoryLimitHours({ POOL_SNAPSHOT_RETENTION_ENABLED: 'true', POOL_SNAPSHOT_RETENTION_DAYS: '0' })).toBeNull()
+    expect(poolSnapshotHistoryLimitHours({ POOL_SNAPSHOT_RETENTION_ENABLED: 'true', POOL_SNAPSHOT_RETENTION_DAYS: 'abc' })).toBeNull()
   })
 })

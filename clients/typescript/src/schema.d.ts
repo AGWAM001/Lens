@@ -2344,7 +2344,7 @@ export interface operations {
                 network?: components["parameters"]["NetworkQuery"];
                 /** @description Return historical time series of TVL when true */
                 history?: boolean;
-                /** @description Historical lookback window in hours (default 24) */
+                /** @description Historical lookback window in hours (default 24). When the server prunes old pool snapshots, the window is capped at that retention period; the response's `window` field reports the window actually used. */
                 window?: string;
             };
             header?: never;

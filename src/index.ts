@@ -21,13 +21,8 @@ import { createAggregateQueue, startAggregateWorker, scheduleAggregateRefresh } 
 import { createSnapshotRetentionQueue, startSnapshotRetentionWorker, scheduleSnapshotRetention, pruneAllNetworks, SNAPSHOT_RETENTION_DAYS } from './jobs/snapshotRetention'
 import { createVenueReconciliationQueue, startVenueReconciliationWorker, scheduleVenueReconciliation, startInProcessVenueReconciliation } from './jobs/venueReconciliation'
 import { createRateRetentionQueue, startRateRetentionWorker, scheduleRateRetention, pruneAllRateNetworks, RATE_RETENTION_DAYS } from './jobs/lendingRateRetention'
-import {
-  createPoolSnapshotRetentionQueue,
-  startPoolSnapshotRetentionWorker,
-  schedulePoolSnapshotRetention,
-  pruneAllPoolSnapshotNetworks,
-  POOL_SNAPSHOT_RETENTION_DAYS,
-} from './jobs/poolSnapshotRetention'
+import { POOL_SNAPSHOT_RETENTION_ENABLED, poolSnapshotRetentionJob } from './jobs/poolSnapshotRetention'
+import { startScheduledJob } from './jobs/scheduledJob'
 import {
   createPricePointsPartitionQueue,
   startPricePointsPartitionWorker,
@@ -269,38 +264,20 @@ async function main() {
     }
   }
 
-  // ── Pool snapshot retention ───────────────────────────────────────────────
-  const safePoolSnapshotPrune = async () => {
-    try {
-      const counts = await pruneAllPoolSnapshotNetworks()
-      for (const [network, pruned] of Object.entries(counts)) {
-        if (pruned > 0) {
-          log.info(
-            { network, pruned, retentionDays: POOL_SNAPSHOT_RETENTION_DAYS },
-            'pruned old pool snapshots'
-          )
-        }
-      }
-    } catch (err) {
-      log.error({ err }, 'pool snapshot prune failed')
-    }
-  }
-
-  await safePoolSnapshotPrune()
-
-  {
-    let poolSnapshotQueue: ReturnType<typeof createPoolSnapshotRetentionQueue> | undefined
-    let poolSnapshotWorker: ReturnType<typeof startPoolSnapshotRetentionWorker> | undefined
-    try {
-      poolSnapshotQueue = createPoolSnapshotRetentionQueue()
-      poolSnapshotWorker = startPoolSnapshotRetentionWorker()
-      await schedulePoolSnapshotRetention(poolSnapshotQueue)
-      log.info('pool snapshot retention worker started')
-    } catch (err) {
-      log.warn({ err }, 'pool snapshot retention worker unavailable; falling back to hourly in-process prune')
-      await Promise.allSettled([poolSnapshotQueue?.close(), poolSnapshotWorker?.close()])
-      setInterval(() => { void safePoolSnapshotPrune() }, 60 * 60 * 1000).unref()
-    }
+  // ── Pool snapshot retention (opt-in) ──────────────────────────────────────
+  // Off unless POOL_SNAPSHOT_RETENTION_ENABLED=true: the prune deletes rows,
+  // cannot be undone, and pool_snapshots has never been pruned before (#689).
+  //
+  // Not awaited: startup must not wait on a prune or on Redis. The first run
+  // is delayed, and each run drains in paused, capped batches, so a large
+  // backlog is worked off over several hourly runs in the background while
+  // the ingesters start and /ready goes healthy as usual.
+  if (POOL_SNAPSHOT_RETENTION_ENABLED) {
+    void startScheduledJob(poolSnapshotRetentionJob).catch(err => {
+      log.error({ err }, 'pool snapshot retention could not be scheduled')
+    })
+  } else {
+    log.info('pool snapshot retention disabled; set POOL_SNAPSHOT_RETENTION_ENABLED=true to prune pool_snapshots')
   }
 
   // ── Price points partition maintenance & retention ────────────────────────

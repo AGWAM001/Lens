@@ -216,7 +216,7 @@
             "name": "window",
             "in": "query",
             "required": false,
-            "description": "Historical lookback window in hours (default 24)",
+            "description": "Historical lookback window in hours (default 24). When the server prunes old pool snapshots, the window is capped at that retention period; the response's `window` field reports the window actually used.",
             "schema": {
               "type": "string",
               "default": 24
