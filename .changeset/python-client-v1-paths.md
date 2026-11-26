@@ -1,0 +1,5 @@
+---
+'lens': patch
+---
+
+Bring the Python client back in line with `openapi.yaml` (#700). All four methods (`get_price`, `get_route`, `get_candles`, `compare_oracle`) now call the `/v1` paths — `get_route` used `/route/{from}/{to}`, which does not exist — and read the documented field names (`RouteInfo.route`, `estimatedOutput`, …) instead of inventing `inputAsset`/`outputAsset`. The client accepts an optional `api_key` (sent as `Authorization: Bearer`), an x402 `payment` (sent as `X-PAYMENT`) and a `network` query parameter, asks for exact decimals with `X-Decimal-Format: string`, and parses quantities as `decimal.Decimal` rather than `float`. HTTP errors no longer collapse into `None`: they raise `LensAPIError` with the status code and the decoded error body, so a 401, 402, 429 and 500 are distinguishable; only a 404 "pair not watched" from `get_price`/`get_route` still returns `None`, as documented. Still standard library only, with 18 `unittest` tests against a local `http.server` stub.

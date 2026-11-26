@@ -35,7 +35,7 @@ res = requests.get(BASE_URL + "/v1/discovery/resources", params=[], headers={}, 
 print("listDiscoveryResources", res.status_code, res.json())
 
 # searchDiscoveryResources: GET /v1/discovery/search
-res = requests.get(BASE_URL + "/v1/discovery/search", params=[["q","USDC"]], headers={}, timeout=30)
+res = requests.get(BASE_URL + "/v1/discovery/search", params=[["q","USDC"],["network","testnet"]], headers={}, timeout=30)
 print("searchDiscoveryResources", res.status_code, res.json())
 
 # getMyUsage: GET /v1/usage/me
