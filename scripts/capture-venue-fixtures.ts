@@ -28,7 +28,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import axios from 'axios'
-import { Horizon, rpc as SorobanRpc, Asset } from '@stellar/stellar-sdk'
+import { Horizon, rpc as SorobanRpc, Asset, Networks } from '@stellar/stellar-sdk'
 import { requestKey, buildAxiosUrl, VENUE_FIXTURE_DIR, type RecordedExchange, type VenueFixture } from '../tests/support/venueFixtures'
 
 process.env.LOG_LEVEL = process.env.LOG_LEVEL ?? 'silent'
@@ -104,6 +104,35 @@ function installRecorder(): void {
       }
     }
   }
+}
+
+// ── Redaction ────────────────────────────────────────────────────────────────
+
+/** Placeholder written in place of a trader's account. Not a valid strkey, so it can never be mistaken for one. */
+const REDACTED_ACCOUNT = 'REDACTED_TRADER_ACCOUNT'
+
+const TRADER_ACCOUNT_FIELDS = new Set(['base_account', 'counter_account'])
+
+/**
+ * Remove the accounts of the people behind a trade before it is committed.
+ * Horizon /trades names both sides' accounts (and links to them); no adapter
+ * reads them, and fixtures must not carry real users' wallet addresses.
+ * Asset issuers, contract ids and pool ids are protocol data and are kept.
+ */
+function redactTraderAccounts(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(redactTraderAccounts)
+  if (value === null || typeof value !== 'object') return value
+  const out: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (TRADER_ACCOUNT_FIELDS.has(k) && typeof v === 'string') {
+      out[k] = REDACTED_ACCOUNT
+    } else if ((k === 'base' || k === 'counter') && v && typeof v === 'object' && typeof (v as any).href === 'string' && (v as any).href.includes('/accounts/')) {
+      out[k] = { ...(v as object), href: (v as any).href.replace(/\/accounts\/[^/?#]+/, `/accounts/${REDACTED_ACCOUNT}`) }
+    } else {
+      out[k] = redactTraderAccounts(v)
+    }
+  }
+  return out
 }
 
 // ── Capture plans ────────────────────────────────────────────────────────────
@@ -201,15 +230,23 @@ async function plans(): Promise<Capture[]> {
       // The token contracts are taken from the list itself, matched on the
       // watched asset's code *and* issuer, so the capture stays a faithful
       // record of what Soroswap publishes.
+      //
+      // The published list (v1.6.3) has no entry for native XLM. Its Stellar
+      // Asset Contract id is not looked up or typed in: it is derived from the
+      // protocol (Asset.native().contractId(Networks.PUBLIC)), the same
+      // derivation that reproduces the list's own Circle USDC contract.
       run: async () => {
         const net = getNetworkConfig('mainnet')
         const res = await fetch(net.soroswap.tokenListUrl)
         const list = (await res.json()) as { assets?: Array<{ code: string; issuer?: string; contract: string }> }
         const find = (code: string, issuer: string | null) =>
           list.assets?.find((a) => a.code === code && (issuer ? a.issuer === issuer : !a.issuer))?.contract
-        const xlm = find('XLM', null)
+        const xlm = find('XLM', null) ?? Asset.native().contractId(Networks.PUBLIC)
         const usdc = find('USDC', CIRCLE_USDC_MAINNET)
-        if (!xlm || !usdc) throw new Error('XLM or Circle USDC not in the published Soroswap token list')
+        if (!usdc) throw new Error('Circle USDC not in the published Soroswap token list')
+        if (usdc !== new Asset('USDC', CIRCLE_USDC_MAINNET).contractId(Networks.PUBLIC)) {
+          throw new Error('Soroswap token list USDC contract does not match the Circle USDC asset contract')
+        }
         const pools = await fetchPoolsFromFactory(net.soroswap.factoryAddress, xlm, usdc, 'mainnet')
         if (pools.length === 0) throw new Error('Soroswap factory returned no XLM/USDC pool')
         for (const pool of pools) await fetchPoolReserves(pool, 'mainnet')
@@ -294,7 +331,7 @@ async function main(): Promise<void> {
       capturedAt,
       sourceUrl: recorded[0].request.url,
       description: plan.description,
-      exchanges: recorded,
+      exchanges: recorded.map((ex) => ({ ...ex, response: { ...ex.response, body: redactTraderAccounts(ex.response.body) } })),
     }
     const file = path.join(VENUE_FIXTURE_DIR, plan.venue, `${plan.name}.json`)
     fs.mkdirSync(path.dirname(file), { recursive: true })

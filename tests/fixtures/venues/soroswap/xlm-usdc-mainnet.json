@@ -1,0 +1,729 @@
+{
+  "venue": "soroswap",
+  "network": "mainnet",
+  "capturedAt": "2026-11-26T10:01:20.075Z",
+  "sourceUrl": "https://raw.githubusercontent.com/soroswap/token-list/main/tokenList.json",
+  "description": "Soroswap token list, factory get_pools, pool get_reserves and token decimals for XLM / USDC on mainnet (Soroban RPC).",
+  "exchanges": [
+    {
+      "key": "GET https://raw.githubusercontent.com/soroswap/token-list/main/tokenList.json",
+      "request": {
+        "method": "GET",
+        "url": "https://raw.githubusercontent.com/soroswap/token-list/main/tokenList.json"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "name": "Assets curated by Soroswap Protocol",
+          "provider": "Soroswap Protocol",
+          "description": "The list of assets curated by Soroswap Protocol",
+          "version": "1.6.3",
+          "feedback": "https://github.com/soroswap/token-list",
+          "network": "mainnet",
+          "assets": [
+            {
+              "name": "XRP by Muyu Network",
+              "code": "XRP",
+              "issuer": "GBXRPL45NPHCVMFFAYZVUVFFVKSIZ362ZXFP7I2ETNQ3QKZMFLPRDTD5",
+              "contract": "CAAV3AE3VKD2P4TY7LWTQMMJHIJ4WOCZ5ANCIJPC3NRSERKVXNHBU2W7",
+              "org": "Muyu Network",
+              "domain": "fchain.io",
+              "icon": "https://files.fchain.io/token-icons/xrp-logo.png",
+              "decimals": 7
+            },
+            {
+              "code": "SUSDE",
+              "issuer": "GDJ5BNU5NN6NQ54D7OX6NQTUYNBZ42CAT33QGM5BIQ2QIYADAC5ICH47",
+              "contract": "CACSKWC753QVGC4J6YPDBIR2BEHFVWIAE7CBSS3HOVYMN623OAIQYE2M",
+              "name": "Staked USDe",
+              "org": "Ethena",
+              "icon": "https://gateway.pinata.cloud/ipfs/QmTQsoQenmJoc7ArBzkeAtoFCEV4W3ghPjTBcEqc7Ftn3m",
+              "decimals": 7
+            },
+            {
+              "code": "VELO",
+              "issuer": "GDM4RQUQQUVSKQA7S6EM7XBZP3FCGH4Q7CL6TABQ7B2BEJ5ERARM2M5M",
+              "contract": "CAESLMGW5LYTIEJI7FJHK6SFSWRELLNVX5Q4WR4UZEALMTRWQDBKDPAG",
+              "name": "VELO",
+              "org": "Velo Labs",
+              "icon": "https://coin-images.coingecko.com/coins/images/12538/large/Logo_200x_200.png",
+              "decimals": 7
+            },
+            {
+              "code": "CETES",
+              "issuer": "GCRYUGD5NVARGXT56XEZI5CIFCQETYHAPQQTHO2O3IQZTHDH4LATMYWC",
+              "contract": "CAL6ER2TI6CTRAY6BFXWNWA7WTYXUXTQCHUBCIBU5O6KM3HJFG6Z6VXV",
+              "name": "Etherfuse CETES",
+              "org": "Etherfuse",
+              "domain": "etherfuse.com",
+              "icon": "https://stablebonds.s3.us-west-2.amazonaws.com/stablebond/spl-cetes.png",
+              "decimals": 7
+            },
+            {
+              "name": "BTC by Ultra Capital",
+              "code": "BTC",
+              "issuer": "GDPJALI4AZKUU2W426U5WKMAT6CN3AJRPIIRYR2YM54TL2GDWO5O2MZM",
+              "contract": "CAO7DDJNGMOYQPRYDY5JVZ5YEK4UQBSMGLAEWRCUOTRMDSBMGWSAATDZ",
+              "org": "Ultra Capital LLC",
+              "domain": "ultracapital.xyz",
+              "icon": "https://ultracapital.xyz/static/images/icons/BTC.png",
+              "decimals": 7
+            },
+            {
+              "code": "JQQQ",
+              "name": "JHI NASDAQ-100 Index Fund",
+              "contract": "CAQYPRTX2E6H6BM57QRBYZWP667FPDYDUHMOQXGXM2HA64KO6AISRFEK",
+              "org": "Centrifuge",
+              "icon": "https://centrifuge-files.mypinata.cloud/ipfs/QmQcNLvyiGF1rN6VHFwJJDhfnmPjtCDFiTeHAWdyghv7yv",
+              "decimals": 18
+            },
+            {
+              "code": "ZOMB",
+              "issuer": "GBGMZVSIHG7QPMD2I7DYLNTYN3KSFEP47E32C7YCDGCWV4X5NLYVM3M7",
+              "contract": "CATNYPHNO3U72V7ZVUE6QESDWTSBORW2BE7WFM3BQABQNNZQ32F2HYNC",
+              "name": "Zombie Coin",
+              "org": "Silver Hen Tech",
+              "domain": "xlmeme.com",
+              "icon": "https://imagedelivery.net/BMsStEZme-xi9eCyEb_01g/a2b0f7e2-09ac-4a89-086e-5e928f57ab00/public",
+              "decimals": 7
+            },
+            {
+              "code": "ACT",
+              "issuer": "GAHHULDPDVGB5WS5PH7BCGLJ7ZHECDBIIMKB62UPVDUOCHNFL7HX3FS7",
+              "contract": "CAU7TR4L52CSCYOLOPXPJJ7T6EMEXTEE4XKRH2ASY23EFYEMU5WUFYP2",
+              "name": "APAY Community Token",
+              "org": "Authentic-Payment",
+              "domain": "authentic-payment.com",
+              "icon": "https://authentic-payment.com/wp-content/uploads/2025/10/ACTlogoORGnoBG-1.png",
+              "decimals": 7
+            },
+            {
+              "code": "AQUA",
+              "issuer": "GBNZILSTVQZ4R7IKQDGHYGY2QXL5QOFJYQMXPKWRRM5PAV7Y4M67AQUA",
+              "contract": "CAUIKL3IYGMERDRUN6YSCLWVAKIFG5Q4YJHUKM4S4NJZQIA3BAS6OJPK",
+              "name": "AQUA Token",
+              "org": "Aquarius dba AQUA token",
+              "domain": "aqua.network",
+              "icon": "https://aqua.network/assets/img/aqua-logo.png",
+              "decimals": 7
+            },
+            {
+              "name": "Glo Dollar",
+              "code": "USDGLO",
+              "issuer": "GBBS25EGYQPGEZCGCFBKG4OAGFXU6DSOQBGTHELLJT3HZXZJ34HWS6XV",
+              "contract": "CB226ZOEYXTBPD3QEGABTJYSKZVBP2PASEISLG3SBMTN5CE4QZUVZ3CE",
+              "org": "Glo Development Foundation",
+              "domain": "app.glodollar.org",
+              "icon": "https://app.glodollar.org/glo-logo.png",
+              "decimals": 7
+            },
+            {
+              "name": "The Blockchain Superfood",
+              "code": "KALE",
+              "issuer": "GBDVX4VELCDSQ54KQJYTNHXAHFLBCA77ZY2USQBM4CSHTTV7DME7KALE",
+              "contract": "CB23WRDQWGSP6YPMY4UV5C4OW5CBTXKYN3XEATG7KJEZCXMJBYEHOUOV",
+              "org": "The KALEpail Project",
+              "domain": "kalepail.com",
+              "icon": "https://imagedelivery.net/yd3qPvu7Jy_6BfgoQb2pZQ/30466c1d-ef73-4d2b-8814-949157465a00/public",
+              "decimals": 7
+            },
+            {
+              "name": "yBTC by Ultra Capital",
+              "code": "yBTC",
+              "issuer": "GBUVRNH4RW4VLHP4C5MOF46RRIRZLAVHYGX45MVSTKA2F6TMR7E7L6NW",
+              "contract": "CB2XMFB6BDIHFOSFB5IXHDOYV3SI3IXMNIZLPDZHC7ENDCXSBEBZAO2Y",
+              "org": "Ultra Capital LLC",
+              "domain": "ultracapital.xyz",
+              "icon": "https://ultracapital.xyz/static/images/icons/yBTC.png",
+              "decimals": 7
+            },
+            {
+              "name": "Ondo U.S. Dollar Yield",
+              "code": "USDY",
+              "issuer": "GAJMPX5NBOG6TQFPQGRABJEEB2YE7RFRLUKJDZAZGAD5GFX4J7TADAZ6",
+              "contract": "CB3YA656OYIHU57657I5KGSBRHE5I3OZU4VFC22PYAOANFZHEWNYGAGP",
+              "org": "Ondo Finance",
+              "domain": "ondo.finance",
+              "icon": "https://cdn.ondo.finance/brand/logos/ondo-icon-black_160x160.png",
+              "decimals": 7
+            },
+            {
+              "name": "Gravity HITZ",
+              "org": "Skyhitz",
+              "contract": "CBAPZAZNNB4X3VPXV2LYA5RMV7XHXIVREES2GG7R5GUXDZ4R4CKOY4EU",
+              "code": "HITZ",
+              "domain": "skyhitz.io",
+              "icon": "https://skyhitz.io/icon.png",
+              "decimals": 7,
+              "comment": "HITZ Protocol token (SEP-41). An account holding more than its Event Horizon, L = √S, can send HITZ only to a registered pool. See skyhitz.io"
+            },
+            {
+              "code": "GBPx",
+              "issuer": "GAVH5ZWACAY2PHPUG4FL3LHHJIYIHOFPSIUGM2KHK25CJWXHAV6QKDMN",
+              "contract": "CBCO65UOWXY2GR66GOCMCN6IU3Y45TXCPBY3FLUNL4AOUMOCKVIVV6JC",
+              "name": "Decentralized GBP Coin",
+              "org": "FxDAO LLC",
+              "domain": "fxdao.io",
+              "icon": "https://assets.fxdao.io/stablecoins/GBPx-logo.png",
+              "decimals": 7
+            },
+            {
+              "name": "LIBRE",
+              "code": "LIBRE",
+              "issuer": "GAYCCWKECNGDRHYU3UTREBD2XLC3CUQN6FV22TKM4WCQER3IWR7TF5CY",
+              "contract": "CBEM2CAIYLM3HBOPU5HLQL7V5BUAKM3N77DYQKX4FNHTQLQUUD2ZFBOX",
+              "org": "LibreTradingEcosystem",
+              "icon": "https://librequidity.org/LIBRE.png",
+              "decimals": 7
+            },
+            {
+              "name": "ETH by Ultra Capital",
+              "code": "ETH",
+              "issuer": "GBFXOHVAS43OIWNIO7XLRJAHT3BICFEIKOJLZVXNT572MISM4CMGSOCC",
+              "contract": "CBH4M45TQBLDPXOK6L7VYKMEJWFITBOL64BN3WDAIIDT4LNUTWTTOCKF",
+              "org": "Ultra Capital LLC",
+              "domain": "ultracapital.xyz",
+              "icon": "https://ultracapital.xyz/static/images/icons/ETH.png",
+              "decimals": 7
+            },
+            {
+              "code": "SSLX",
+              "issuer": "GBHFGY3ZNEJWLNO4LBUKLYOCEK4V7ENEBJGPRHHX7JU47GWHBREH37UR",
+              "contract": "CBHBD77PWZ3AXPQVYVDBHDKEMVNOR26UZUZHWCB6QC7J5SETQPRUQAS4",
+              "name": "SSLX Cassator",
+              "org": "Cassator Corp.",
+              "domain": "sslx.sl8.online",
+              "icon": "https://sl8.online/assets/sslx-icon-e36e8c6134f6d93e6af1cd4d084a053c.png",
+              "decimals": 7
+            },
+            {
+              "name": "deJTRSY",
+              "contract": "CBI7UCH5KGSVQRO5H4SUCZUTZABCITZLRHQQZTWL2TK4RZ72TAR6IHRV",
+              "org": "Centrifuge",
+              "icon": "https://centrifuge.mypinata.cloud/ipfs/bafkreieracb5e57bhg7bphd7sp4hxf3yhbm3cxinst3o5mennfosagkxuu",
+              "decimals": 18,
+              "code": "deJTRSY"
+            },
+            {
+              "code": "XRF",
+              "issuer": "GCHI6I3X62ND5XUMWINNNKXS2HPYZWKFQBZZYBSMHJ4MIP2XJXSZTXRF",
+              "contract": "CBLLEW7HD2RWATVSMLAGWM4G3WCHSHDJ25ALP4DI6LULV5TU35N2CIZA",
+              "name": "Reflector xRF",
+              "org": "Reflector",
+              "domain": "reflector.network",
+              "icon": "https://reflector.network/favicon-32x32.png",
+              "decimals": 7
+            },
+            {
+              "code": "USTRY",
+              "issuer": "GCRYUGD5NVARGXT56XEZI5CIFCQETYHAPQQTHO2O3IQZTHDH4LATMYWC",
+              "contract": "CBLV4ATSIWU67CFSQU2NVRKINQIKUZ2ODSZBUJTJ43VJVRSBTZYOPNUR",
+              "name": "Etherfuse USTRY",
+              "org": "Etherfuse",
+              "domain": "etherfuse.com",
+              "icon": "https://stablebonds.s3.us-west-2.amazonaws.com/stablebond/spl-ustry.png",
+              "decimals": 7
+            },
+            {
+              "code": "EURx",
+              "issuer": "GAVH5ZWACAY2PHPUG4FL3LHHJIYIHOFPSIUGM2KHK25CJWXHAV6QKDMN",
+              "contract": "CBN3NCJSMOQTC6SPEYK3A44NU4VS3IPKTARJLI3Y77OH27EWBY36TP7U",
+              "name": "Decentralized EUR Coin",
+              "org": "FxDAO LLC",
+              "domain": "fxdao.io",
+              "icon": "https://assets.fxdao.io/stablecoins/EURx-logo.png",
+              "decimals": 7
+            },
+            {
+              "code": "HYB",
+              "name": "NYLIM US High Yield Bond Fund",
+              "contract": "CBNT35PZXQBXKCNKPA6AL6TXHANGLAZMPE35TJUPI2BCO7OGHVKW3WYA",
+              "org": "Centrifuge",
+              "icon": "https://ipfs.centrifuge.io/ipfs/bafkreian2nvj6b4cuintgx5j7lexnttgxfebgovn6vda5dahdcoskwshgi",
+              "decimals": 18
+            },
+            {
+              "code": "XRP",
+              "issuer": "GBVOL67TMUQBGL4TZYNMY3ZQ5WGQYFPFD5VJRWXR72VA33VFNL225PL5",
+              "contract": "CBPMFYWP4FFV7PQUYHXJZBXS75EHR6FXYSYEZWH2UM7AUYSKI2Z3PTCG",
+              "name": "Ripple",
+              "org": "unknown",
+              "domain": "stellarport.io",
+              "icon": "https://stellarport.io/assets/issues/xrp.png",
+              "decimals": 7
+            },
+            {
+              "code": "YBX",
+              "issuer": "GBUYYBXWCLT2MOSSHRFCKMEDFOVSCAXNIEW424GLN666OEXHAAWBDYMX",
+              "contract": "CBRP2VD3CZLEQIQZ4JMBXGA5AC2U6JE26YU5CCIOICIZCVWPGBO2QRUB",
+              "name": "YieldBlox",
+              "org": "YieldBlox DAO",
+              "domain": "script3.io",
+              "icon": "https://uploads-ssl.webflow.com/607f603d2f412c67690368b8/60df683719cc056004ea932b_YBX%20token%20web%20bad.png",
+              "decimals": 7
+            },
+            {
+              "code": "USDT0",
+              "issuer": "GATISXX6BZ6NC7IKQBY37CJD4SOZL3CYZJWXEDG6JVIY4WBS6KXJHN6Q",
+              "contract": "CBSJZEIO5C7KC2SF3MKSNXXJSW5G3VTNBX4ATMKUI3B2MR4JKM4R26YF",
+              "name": "USDT0",
+              "org": "USDT0",
+              "icon": "https://docs.usdt0.to/downloads/usdt0/Symbol_USDT0_Secondary.png",
+              "decimals": 7
+            },
+            {
+              "name": "Poye",
+              "code": "POYE",
+              "issuer": "GCANJQJUFIWG7TXKCAJPG726KWW5CXISB2KM2MZRYLVV6AMZENZQN2ZE",
+              "contract": "CBT2U7I6J7LSEEJQQXBEOSRXNRNLH5UQPWG74Q36J3RHNQOQ5KEFCJ4Y",
+              "org": "Poye Network",
+              "domain": "poye.xyz",
+              "icon": "https://poye.xyz/logo.png",
+              "decimals": 7
+            },
+            {
+              "code": "LSP",
+              "issuer": "GAB7STHVD5BDH3EEYXPI3OM7PCS4V443PYB5FNT6CFGJVPDLMKDM24WK",
+              "contract": "CBXE6V454EUYWVQCI4TCSOG4CSNPQ2BLYOTKAKXYFHO3KNVX4CXYCY2T",
+              "name": "Lumenswap asset",
+              "org": "Lumenswap LLC dba Lumenswap",
+              "domain": "lumenswap.io",
+              "icon": "https://coin-images.coingecko.com/coins/images/18173/large/Lumenswap-200px.png",
+              "decimals": 7
+            },
+            {
+              "code": "NGNC",
+              "issuer": "GASBV6W7GGED66MXEVC7YZHTWWYMSVYEY35USF2HJZBLABLYIFQGXZY6",
+              "contract": "CBYFV4W2LTMXYZ3XWFX5BK2BY255DU2DSXNAE4FJ5A5VYUWGIBJDOIGG",
+              "name": "NGNC Coin",
+              "org": "LINK.IO LTD",
+              "domain": "ngnc.online",
+              "icon": "https://uploads-ssl.webflow.com/60a70a1080cf2974d4b1595e/61961ce43c530394bcb05349_NGRC.png",
+              "decimals": 7
+            },
+            {
+              "code": "USST",
+              "name": "USST",
+              "contract": "CBZ4DCE7PYMUTOAKKUTRSUPT3FJFVOWCSKWUM5A72D6SAVMUJE5JN2PJ",
+              "org": "STBL Protocol",
+              "domain": "stbl.com",
+              "icon": "https://coin-images.coingecko.com/coins/images/102175554/large/USST_.jpg",
+              "decimals": 18
+            },
+            {
+              "code": "oUSD",
+              "issuer": "GBIWJGAOSFC4KUPHXM573TKTWHMI7VW7D4GCHYZYH243Q6HVBV7ORBIT",
+              "contract": "CBZPEXQLJCGUYTAQRQ4FGCXUV5O4TZER5WSOMCGNDNIIO4EJ4FU5GQNZ",
+              "name": "Orbit USD",
+              "org": "Orbit CDP",
+              "domain": "orbitcdp.finance",
+              "icon": "https://assets.orbitcdp.finance/images/ousd.png",
+              "decimals": 7
+            },
+            {
+              "name": "yXLM by Ultra Capital",
+              "code": "yXLM",
+              "issuer": "GARDNV3Q7YGT4AKSDF25LT32YSCCW4EV22Y2TV3I2PU2MMXJTEDL5T55",
+              "contract": "CBZVSNVB55ANF24QVJL2K5QCLOAB6XITGTGXYEAF6NPTXYKEJUYQOHFC",
+              "org": "Ultra Capital LLC",
+              "domain": "ultracapital.xyz",
+              "icon": "https://ultracapital.xyz/static/images/icons/yXLM.png",
+              "decimals": 7
+            },
+            {
+              "code": "XAUM",
+              "contract": "CC2RBGYNCFBCVENIDL5BFBWPH4OUZM2UA3OD2K2N54GLMWCC4KWPVAGO",
+              "name": "Matrixdock Gold",
+              "org": "Matrixdock",
+              "domain": "matrixdock.com",
+              "icon": "https://coin-images.coingecko.com/coins/images/51962/large/xaum_200px_logo_1x.png",
+              "decimals": 9
+            },
+            {
+              "code": "KPOP",
+              "issuer": "GDRXHIO2G7AQMXLME46XSHH4UVYD6BTNXB6V2NNMP6X4CAKH2SK4OHIT",
+              "contract": "CC54Q7EYBMPOEK7ZX4AKG76SXD3P3LQH325OHWKPMDUYA7M3XHZLWQ2N",
+              "name": "KPOP Token",
+              "org": "KPOP ROCKS",
+              "domain": "kpop.rocks",
+              "icon": "https://kpop.rocks/images/kpop-rocks-2.jpg",
+              "decimals": 7
+            },
+            {
+              "name": "deJAAA",
+              "contract": "CC64WBDGS6QQP22QTTIACYIXT3WF7BBQEYOQPLTP7GTKYY7PZ74QYGSL",
+              "org": "Centrifuge",
+              "icon": "https://centrifuge.mypinata.cloud/ipfs/bafkreifp5ww5lpbgrny36oxgzg2kjw2226lmj2vmekp4nqemm5ewhhtmwi",
+              "decimals": 18,
+              "code": "deJAAA"
+            },
+            {
+              "name": "BLNT Protocol",
+              "code": "BLNT",
+              "issuer": "GAP2ACGH3O6TRFAERGM4USJ6XWU3U2BFIK224JPV6NI3CUNEEEGTBTFB",
+              "contract": "CCBNWP5L7ZSXA3DBWCMFAVKFVRW3ZHWO7B5J557W42O64DDZNPJP7VDS",
+              "org": "BLNT Protocol",
+              "domain": "blnt.trade",
+              "icon": "https://blnt.trade/icons/tokens/blnt.png",
+              "decimals": 7
+            },
+            {
+              "name": "PYUSD",
+              "code": "PYUSD",
+              "issuer": "GDQE7IXJ4HUHV6RQHIUPRJSEZE4DRS5WY577O2FY6YQ5LVWZ7JZTU2V5",
+              "contract": "CCCRWH6Q3FNP3I2I57BDLM5AFAT7O6OF6GKQOC6SSJNDAVRZ57SPHGU2",
+              "org": "www.paxos.com",
+              "domain": "token-metadata.paxos.com",
+              "icon": "https://424565.fs1.hubspotusercontent-na1.net/hubfs/424565/PYUSDLOGO.png",
+              "decimals": 7
+            },
+            {
+              "code": "ARS",
+              "issuer": "GCYE7C77EB5AWAA25R5XMWNI2EDOKTTFTTPZKM2SR5DI4B4WFD52DARS",
+              "contract": "CCD6H4LBTHAPY3NGEE6TLLRUSPJGX4K5XI2J6E4MUNDB5TNXEKC23H5B",
+              "name": "ARS by Anclap",
+              "org": "Anclap",
+              "domain": "api.anclap.com",
+              "icon": "https://static.anclap.com/coin/ars.png",
+              "decimals": 7
+            },
+            {
+              "name": "Lumenaire",
+              "code": "xLMNR",
+              "issuer": "GDKA6WVMFSA73BMEVKPO6WXSSWP4MPRBDJVSXLLSEVIEVH226L5RJ7NL",
+              "contract": "CCEIVLOFQHALNB2ZVQJW55OYKEL7GG52JIGLUGHLRTEAFMISNSMOM5XW",
+              "org": "Lumenaire",
+              "domain": "www.thelumenaire.com",
+              "icon": "https://www.thelumenaire.com/images/xLMNR.png",
+              "decimals": 7
+            },
+            {
+              "code": "AFR",
+              "issuer": "GBX6YI45VU7WNAAKA3RBFDR3I3UKNFHTJPQ5F6KOOKSGYIAM4TRQN54W",
+              "contract": "CCG27OZ5AV4WUXS6XTECWAXEY5UOMEFI2CWFA3LHZGBTLYZWTJF3MJYQ",
+              "name": "AFREUM",
+              "org": "Afreum Inc dba Afreum",
+              "domain": "afreum.com",
+              "icon": "https://afreum.com/stellar/ST_Afreum.png",
+              "decimals": 7
+            },
+            {
+              "code": "SCOP",
+              "issuer": "GC6OYQJIZF3HFXCYPFCBXYXNGIBQ4TNSFUBUXQJOZWIP6F3YZK4QH3VQ",
+              "contract": "CCJVS6IVXAAXWCMFVK6QLWHZHR4RTVRSEZRQ53GOAEDN3VY2BLPVY72J",
+              "name": "Scopuly",
+              "org": "Scopuly",
+              "domain": "scopuly.com",
+              "icon": "https://scopuly.com/img/logo/icon.png",
+              "decimals": 7
+            },
+            {
+              "code": "SHX",
+              "issuer": "GDSTRSHXHGJ7ZIVRBXEYE5Q74XUVCUSEKEBR7UCHEUUEK72N7I7KJ6JH",
+              "contract": "CCKCKCPHYVXQD4NECBFJTFSCU2AMSJGCNG4O6K4JVRE2BLPR7WNDBQIQ",
+              "name": "Stronghold SHx",
+              "org": "Stronghold",
+              "domain": "stronghold.co",
+              "icon": "https://stronghold.co/.well-known/logo.png",
+              "decimals": 7
+            },
+            {
+              "code": "USDE",
+              "issuer": "GDJ5BNU5NN6NQ54D7OX6NQTUYNBZ42CAT33QGM5BIQ2QIYADAC5ICH47",
+              "contract": "CCNOV6XVI2O5BSTA3232GIRUQULDEBV7IWGKM6QKI6II5OIIQTU24JJN",
+              "name": "USDe",
+              "org": "Ethena",
+              "icon": "https://gateway.pinata.cloud/ipfs/QmR1aVRkbXUBQoXDeQvQcM52EG4DuC63crziQpaBVmjGfR",
+              "decimals": 7
+            },
+            {
+              "code": "deHYB",
+              "name": "HYB deRWA",
+              "contract": "CCRTH4IJKVIBU6VQLRHFKDQYWXBEBJJXKDFNWVETLKUJJ7U62HBAZOIH",
+              "org": "Centrifuge",
+              "icon": "https://ipfs.centrifuge.io/ipfs/QmZDeyrfAq2qPtr4jXEqzHt4HQkbb1Pd1GVdjvJbYYkhjW",
+              "decimals": 18
+            },
+            {
+              "code": "USDC",
+              "issuer": "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+              "contract": "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75",
+              "name": "USD Coin",
+              "org": "Centre Consortium LLC",
+              "domain": "centre.io",
+              "icon": "https://www.circle.com/usdc-icon",
+              "decimals": 7
+            },
+            {
+              "code": "BLND",
+              "issuer": "GDJEHTBE6ZHUXSWFI642DCGLUOECLHPF3KSXHPXTSTJ7E3JF6MQ5EZYY",
+              "contract": "CD25MNVTZDL4Y3XBCPCJXGXATV5WUHHOWMYFF4YBEGU5FCPGMYTVG5JY",
+              "name": "Blend",
+              "org": "Blend Protocol",
+              "domain": "blend.capital",
+              "icon": "https://mainnet.blend.capital/icons/tokens/blnd.svg",
+              "decimals": 7
+            },
+            {
+              "name": "DAWG",
+              "code": "DAWG",
+              "issuer": "GBVYKIM4QGW7NK3Q5S76GWMZMLAWYB6FB43JQ4J7ZOXHAA3LEZZGYHSD",
+              "contract": "CD3X4GOWBPDU57NIPMPEMH7LFNAMBDTY5SKJCHLY7IDDWJQVUTU7CBBK",
+              "org": "LibreTradingEcosystem",
+              "domain": "librequidity.org",
+              "icon": "https://librequidity.org/DAWG.png",
+              "decimals": 7
+            },
+            {
+              "code": "ENA",
+              "issuer": "GDJ5BNU5NN6NQ54D7OX6NQTUYNBZ42CAT33QGM5BIQ2QIYADAC5ICH47",
+              "contract": "CDAJNVEB7AC5DOSXEGRYY65D2HKVUKZYGY4ZXB2T4RTVL4BWBOAOLYIA",
+              "name": "ENA",
+              "org": "Ethena",
+              "icon": "https://gateway.pinata.cloud/ipfs/QmeAUc2SpxYXkMZPTrNtLabktChsMRqoj9PGQdeiCyXyrC",
+              "decimals": 7
+            },
+            {
+              "name": "Dogstar",
+              "code": "XTAR",
+              "issuer": "GAORYJ3KBDGIM7FFSKVUJHJ5NEFWIRDIAGGBJBJS7TY6ECZS53257IG4",
+              "contract": "CDCKFBZYF2AQCSM3JOF2ZM27O3Y6AJAI4OTCQKAFNZ3FHBYUTFOKICIY",
+              "org": "Dogstar",
+              "domain": "dogstarcoin.com",
+              "icon": "https://www.dogstarcoin.com/assets/img/dogstarcoin-logo.png",
+              "decimals": 7
+            },
+            {
+              "code": "STROOPY",
+              "issuer": "GBZ3SMMNNSOLVV6LGNDBDWRVD2N56VUZZ6LVB6VGOOJGSMWI7ISLOJEC",
+              "contract": "CDDL6HGNYGVRCQB37DDFTIFYMGTX36AQMCXI6U3NOAO2BBZDNGKMGQSY",
+              "name": "STROOPY",
+              "org": "Silver Hen Tech",
+              "domain": "xlmeme.com",
+              "icon": "https://imagedelivery.net/BMsStEZme-xi9eCyEb_01g/bfb4bba0-00d6-434b-ea8a-89d733dcd000/public",
+              "decimals": 7
+            },
+            {
+              "name": "Stellarcarbon CARBON tCO₂e",
+              "code": "CARBON",
+              "issuer": "GCBOATLWKXACOWKRRWORARDI2HFDSYPALMTS23YBZKHOB6XLW6CARBON",
+              "contract": "CDDS7IQJGQ2ZMO66E3MUYXZ56H2OO7RBTTAGZLZKOEA4EXCGZX65JGA7",
+              "org": "Stellarcarbon",
+              "domain": "stellarcarbon.io",
+              "icon": "https://www.stellarcarbon.io/stellarcarbon-icon.png",
+              "decimals": 3
+            },
+            {
+              "code": "USDx",
+              "issuer": "GAVH5ZWACAY2PHPUG4FL3LHHJIYIHOFPSIUGM2KHK25CJWXHAV6QKDMN",
+              "contract": "CDIKURWHYS4FFTR5KOQK6MBFZA2K3E26WGBQI6PXBYWZ4XIOPJHDFJKP",
+              "name": "Decentralized USD Coin",
+              "org": "FxDAO LLC",
+              "domain": "fxdao.io",
+              "icon": "https://assets.fxdao.io/stablecoins/USDx-logo.png",
+              "decimals": 7
+            },
+            {
+              "code": "MGUSD",
+              "issuer": "GAIUGZZZSL47BKH27SUDZESZELFJDPE2UM52RACOSFJ7BIVBGKUEJSUZ",
+              "contract": "CDK2LDSYUKPEFN3HNE7K7ETUT3VIOBHSOXAK5CTO4A4RKKZQUCAIWCJA",
+              "name": "MoneyGram USD",
+              "org": "MoneyGram",
+              "domain": "mgusd.moneygram.com",
+              "icon": "https://mgusd.moneygram.com/mgusd-logo.jpeg",
+              "decimals": 7
+            },
+            {
+              "code": "XLD",
+              "issuer": "GBE6IZPK5MPLVPMD3NZ2YW5BY4GBB5IDYDXTIERGA3A5S2XANCUCTXLD",
+              "contract": "CDNDPEI4X6NYKEVAIOH2T3AIVYOWY6LDT7RITBTT3XXTIETTUSATZQ7A",
+              "name": "XLM Domains",
+              "org": "XLM Domains",
+              "domain": "xlm.domains",
+              "icon": "https://xlm.domains/assets/xld-token.png",
+              "decimals": 7
+            },
+            {
+              "name": "yUSDC",
+              "code": "yUSDC",
+              "issuer": "GDGTVWSM4MGS4T7Z6W4RPWOCHE2I6RDFCIFZGS3DOA63LWQTRNZNTTFF",
+              "contract": "CDOFW7HNKLUZRLFZST4EW7V3AV4JI5IHMT6BPXXSY2IEFZ4NE5TWU2P4",
+              "org": "Ultra Capital LLC",
+              "domain": "ultracapital.xyz",
+              "icon": "https://ultracapital.xyz/static/images/icons/yUSDC.png",
+              "decimals": 7
+            },
+            {
+              "code": "EURC",
+              "issuer": "GDHU6WRG4IEQXM5NZ4BMPKOXHW76MZM4Y2IEMFDVXBSDP6SJY4ITNPP2",
+              "contract": "CDTKPWPLOURQA2SGTKTUQOWRCBZEORB4BWBOMJ3D3ZTQQSGE5F6JBQLV",
+              "name": "EUR Coin",
+              "org": "Circle Internet Financial, LLC",
+              "domain": "circle.com",
+              "icon": "https://www.circle.com/eurc-icon",
+              "decimals": 7
+            },
+            {
+              "name": "yETH By Ultra Capital",
+              "code": "yETH",
+              "issuer": "GDYQNEF2UWTK4L6HITMT53MZ6F5QWO3Q4UVE6SCGC4OMEQIZQQDERQFD",
+              "contract": "CDYEOOVL6WV4JRY45CXQKOBJFFAPOM5KNQCCDNM333L6RM2L4RO3LKYG",
+              "org": "Ultra Capital LLC",
+              "domain": "ultracapital.xyz",
+              "icon": "https://ultracapital.xyz/static/images/icons/yETH.png",
+              "decimals": 7
+            }
+          ]
+        }
+      }
+    },
+    {
+      "key": "POST https://mainnet.sorobanrpc.com/ rpc:simulateTransaction CA4HEQTL2WPEUYKYKCDOHCDNIV4QHNJ7EL4J4NQ6VADP7SYHVRYZ7AW2.get_pair(AAAAEgAAAAEltPzYWa7C+mNIQ4xImzw8EMmLbSG+T9PLMMtolT75dw==,AAAAEgAAAAGt785ZruUpaPdgYdSUwlJbdWWfpClqZfSZ7ynlZHfklg==)",
+      "request": {
+        "method": "POST",
+        "url": "https://mainnet.sorobanrpc.com/",
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "method": "simulateTransaction",
+          "params": {
+            "transaction": "AAAAAgAAAAAW8SyTBGz0F9uqKbT23U6lirGL1iCggD/3lKjlNNFMywAAAGQAAAAAAAAAAQAAAAEAAAAAAAAAAAAAAABrCAOQAAAAAAAAAAEAAAAAAAAAGAAAAAAAAAABOHJCa9WeSmFYUIbjiG1FeQO1PyL4njYeqAb/ywescZ8AAAAIZ2V0X3BhaXIAAAACAAAAEgAAAAEltPzYWa7C+mNIQ4xImzw8EMmLbSG+T9PLMMtolT75dwAAABIAAAABre/OWa7lKWj3YGHUlMJSW3Vln6QpamX0me8p5WR35JYAAAAAAAAAAAAAAAA="
+          }
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "result": {
+            "transactionData": "AAAAAAAAAAMAAAAGAAAAAThyQmvVnkphWFCG44htRXkDtT8i+J42HqgG/8sHrHGfAAAAEAAAAAEAAAACAAAADwAAABVQYWlyQWRkcmVzc2VzQnlUb2tlbnMAAAAAAAAQAAAAAQAAAAIAAAASAAAAASW0/NhZrsL6Y0hDjEibPDwQyYttIb5P08swy2iVPvl3AAAAEgAAAAGt785ZruUpaPdgYdSUwlJbdWWfpClqZfSZ7ynlZHfklgAAAAEAAAAGAAAAAThyQmvVnkphWFCG44htRXkDtT8i+J42HqgG/8sHrHGfAAAAFAAAAAEAAAAHXbc4sF2RSBKKJAsOLBy5NcKAUZK/mKV5Qhqs2jZMja4AAAAAAAlInAAAAAAAAAAAAAAAAAAAnuc=",
+            "events": [
+              "AAAAAQAAAAAAAAAAAAAAAgAAAAAAAAADAAAADwAAAAdmbl9jYWxsAAAAAA0AAAAgOHJCa9WeSmFYUIbjiG1FeQO1PyL4njYeqAb/ywescZ8AAAAPAAAACGdldF9wYWlyAAAAEAAAAAEAAAACAAAAEgAAAAEltPzYWa7C+mNIQ4xImzw8EMmLbSG+T9PLMMtolT75dwAAABIAAAABre/OWa7lKWj3YGHUlMJSW3Vln6QpamX0me8p5WR35JY=",
+              "AAAAAQAAAAAAAAABOHJCa9WeSmFYUIbjiG1FeQO1PyL4njYeqAb/ywescZ8AAAACAAAAAAAAAAIAAAAPAAAACWZuX3JldHVybgAAAAAAAA8AAAAIZ2V0X3BhaXIAAAASAAAAARnx47s3t3BwCYy1zPqlwAspF/4W4550JO4pssJd13rn"
+            ],
+            "minResourceFee": "40679",
+            "results": [
+              {
+                "auth": [],
+                "xdr": "AAAAEgAAAAEZ8eO7N7dwcAmMtcz6pcALKRf+FuOedCTuKbLCXdd65w=="
+              }
+            ],
+            "latestLedger": 65680244
+          }
+        }
+      }
+    },
+    {
+      "key": "POST https://mainnet.sorobanrpc.com/ rpc:simulateTransaction CAM7DY53G63XA4AJRS24Z6VFYAFSSF76C3RZ45BE5YU3FQS5255OOABP.get_reserves()",
+      "request": {
+        "method": "POST",
+        "url": "https://mainnet.sorobanrpc.com/",
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "method": "simulateTransaction",
+          "params": {
+            "transaction": "AAAAAgAAAAAW8SyTBGz0F9uqKbT23U6lirGL1iCggD/3lKjlNNFMywAAAGQAAAAAAAAAAQAAAAEAAAAAAAAAAAAAAABrCAOUAAAAAAAAAAEAAAAAAAAAGAAAAAAAAAABGfHjuze3cHAJjLXM+qXACykX/hbjnnQk7imywl3XeucAAAAMZ2V0X3Jlc2VydmVzAAAAAAAAAAAAAAAAAAAAAA=="
+          }
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "result": {
+            "transactionData": "AAAAAAAAAAIAAAAGAAAAARnx47s3t3BwCYy1zPqlwAspF/4W4550JO4pssJd13rnAAAAFAAAAAEAAAAHGAUUVoFrZvEudzpW93xXlPrBsft6tuItT61aQSdw9z4AAAAAAAillQAAAAAAAAAAAAAAAAAAGUs=",
+            "events": [
+              "AAAAAQAAAAAAAAAAAAAAAgAAAAAAAAADAAAADwAAAAdmbl9jYWxsAAAAAA0AAAAgGfHjuze3cHAJjLXM+qXACykX/hbjnnQk7imywl3XeucAAAAPAAAADGdldF9yZXNlcnZlcwAAAAE=",
+              "AAAAAQAAAAAAAAABGfHjuze3cHAJjLXM+qXACykX/hbjnnQk7imywl3XeucAAAACAAAAAAAAAAIAAAAPAAAACWZuX3JldHVybgAAAAAAAA8AAAAMZ2V0X3Jlc2VydmVzAAAAEAAAAAEAAAACAAAACgAAAAAAAAAAAAAAFQw9NMQAAAAKAAAAAAAAAAAAAAACskfQEw=="
+            ],
+            "minResourceFee": "6475",
+            "results": [
+              {
+                "auth": [],
+                "xdr": "AAAAEAAAAAEAAAACAAAACgAAAAAAAAAAAAAAFQw9NMQAAAAKAAAAAAAAAAAAAAACskfQEw=="
+              }
+            ],
+            "latestLedger": 65680244
+          }
+        }
+      }
+    },
+    {
+      "key": "POST https://mainnet.sorobanrpc.com/ rpc:simulateTransaction CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA.decimals()",
+      "request": {
+        "method": "POST",
+        "url": "https://mainnet.sorobanrpc.com/",
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "method": "simulateTransaction",
+          "params": {
+            "transaction": "AAAAAgAAAAAW8SyTBGz0F9uqKbT23U6lirGL1iCggD/3lKjlNNFMywAAAGQAAAAAAAAAAQAAAAEAAAAAAAAAAAAAAABrCAOXAAAAAAAAAAEAAAAAAAAAGAAAAAAAAAABJbT82FmuwvpjSEOMSJs8PBDJi20hvk/TyzDLaJU++XcAAAAIZGVjaW1hbHMAAAAAAAAAAAAAAAAAAAAA"
+          }
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "result": {
+            "transactionData": "AAAAAAAAAAEAAAAGAAAAASW0/NhZrsL6Y0hDjEibPDwQyYttIb5P08swy2iVPvl3AAAAFAAAAAEAAAAAAAGqRQAAAAAAAAAAAAAAAAAAF+4=",
+            "events": [
+              "AAAAAQAAAAAAAAAAAAAAAgAAAAAAAAADAAAADwAAAAdmbl9jYWxsAAAAAA0AAAAgJbT82FmuwvpjSEOMSJs8PBDJi20hvk/TyzDLaJU++XcAAAAPAAAACGRlY2ltYWxzAAAAAQ==",
+              "AAAAAQAAAAAAAAABJbT82FmuwvpjSEOMSJs8PBDJi20hvk/TyzDLaJU++XcAAAACAAAAAAAAAAIAAAAPAAAACWZuX3JldHVybgAAAAAAAA8AAAAIZGVjaW1hbHMAAAADAAAABw=="
+            ],
+            "minResourceFee": "6126",
+            "results": [
+              {
+                "auth": [],
+                "xdr": "AAAAAwAAAAc="
+              }
+            ],
+            "latestLedger": 65680245
+          }
+        }
+      }
+    },
+    {
+      "key": "POST https://mainnet.sorobanrpc.com/ rpc:simulateTransaction CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75.decimals()",
+      "request": {
+        "method": "POST",
+        "url": "https://mainnet.sorobanrpc.com/",
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "method": "simulateTransaction",
+          "params": {
+            "transaction": "AAAAAgAAAAAW8SyTBGz0F9uqKbT23U6lirGL1iCggD/3lKjlNNFMywAAAGQAAAAAAAAAAQAAAAEAAAAAAAAAAAAAAABrCAOYAAAAAAAAAAEAAAAAAAAAGAAAAAAAAAABre/OWa7lKWj3YGHUlMJSW3Vln6QpamX0me8p5WR35JYAAAAIZGVjaW1hbHMAAAAAAAAAAAAAAAAAAAAA"
+          }
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "result": {
+            "transactionData": "AAAAAAAAAAEAAAAGAAAAAa3vzlmu5Slo92Bh1JTCUlt1ZZ+kKWpl9JnvKeVkd+SWAAAAFAAAAAEAAAAAAAHWOQAAAAAAAAAAAAAAAAAAF/I=",
+            "events": [
+              "AAAAAQAAAAAAAAAAAAAAAgAAAAAAAAADAAAADwAAAAdmbl9jYWxsAAAAAA0AAAAgre/OWa7lKWj3YGHUlMJSW3Vln6QpamX0me8p5WR35JYAAAAPAAAACGRlY2ltYWxzAAAAAQ==",
+              "AAAAAQAAAAAAAAABre/OWa7lKWj3YGHUlMJSW3Vln6QpamX0me8p5WR35JYAAAACAAAAAAAAAAIAAAAPAAAACWZuX3JldHVybgAAAAAAAA8AAAAIZGVjaW1hbHMAAAADAAAABw=="
+            ],
+            "minResourceFee": "6130",
+            "results": [
+              {
+                "auth": [],
+                "xdr": "AAAAAwAAAAc="
+              }
+            ],
+            "latestLedger": 65680245
+          }
+        }
+      }
+    }
+  ]
+}
