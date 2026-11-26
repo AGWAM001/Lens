@@ -352,6 +352,7 @@ export const ammAdapter: VenueAdapter<any, any> = {
   name: 'AMM',
   kind: 'amm',
   source: 'AMM',
+  onChain: true,
   sourceTimeCapability: { status: 'provided', semantic: 'ledger_close' },
   classification: 'primary',
   type: 'Liquidity Pool',

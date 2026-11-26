@@ -78,16 +78,11 @@ export const registeredVenues: VenueRegistration[] = [
 
 /**
  * Determines whether a venue adapter represents an on-chain execution venue.
- * Adapters are on-chain unless explicitly marked or identified as a centralized exchange.
+ * Adapters default to not on-chain unless explicitly configured with onChain: true.
  */
 export function isOnChainVenue(adapter: VenueAdapter): boolean {
   if (adapter.onChain !== undefined) return adapter.onChain
-  if ('fetchTicker' in adapter) return false
-  const lower = adapter.name.toLowerCase()
-  if (lower === 'kucoin' || lower === 'gate.io' || lower === 'coinbase' || lower === 'binance') {
-    return false
-  }
-  return true
+  return false
 }
 
 /**
@@ -98,10 +93,9 @@ export function isOnChainVenue(adapter: VenueAdapter): boolean {
 export function getOnChainSources(): string[] {
   const sources = new Set<string>()
   for (const reg of registeredVenues) {
-    if (reg.onChain !== false && isOnChainVenue(reg.adapter)) {
-      if (reg.adapter.source) {
-        sources.add(reg.adapter.source)
-      }
+    const onChain = reg.onChain !== undefined ? reg.onChain : isOnChainVenue(reg.adapter)
+    if (onChain && reg.adapter.source) {
+      sources.add(reg.adapter.source)
     }
   }
   return Array.from(sources).sort()
