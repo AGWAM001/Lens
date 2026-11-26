@@ -1,12 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const {
-  addedJobs, queueNames, workers,
+  addedJobs, queueNames, queueOptions, workers,
   mockUpsert, mockSetCachedPrice,
   mockCalculateVWAP, mockCalculateOHLCV, mockGetAggregatedPrice, mockGetBestRoute,
 } = vi.hoisted(() => ({
   addedJobs: [] as Array<{ queue: string; name: string; data: any; opts: any }>,
   queueNames: [] as string[],
+  queueOptions: [] as any[],
   workers: [] as Array<{ name: string; processor: (job: any) => Promise<void> }>,
   mockUpsert: vi.fn(),
   mockSetCachedPrice: vi.fn(),
@@ -19,9 +20,10 @@ const {
 vi.mock('bullmq', () => {
   class Queue {
     name: string
-    constructor(name: string) {
+    constructor(name: string, options?: any) {
       this.name = name
       queueNames.push(name)
+      queueOptions.push(options)
     }
     async add(name: string, data: any, opts?: any) {
       addedJobs.push({ queue: this.name, name, data, opts })
@@ -87,6 +89,7 @@ describe('aggregateRefresh runs once per enabled network', () => {
   beforeEach(() => {
     addedJobs.length = 0
     queueNames.length = 0
+    queueOptions.length = 0
     workers.length = 0
     vi.clearAllMocks()
     mockCalculateVWAP.mockResolvedValue(0.25)
@@ -105,6 +108,9 @@ describe('aggregateRefresh runs once per enabled network', () => {
 
     expect(queueNames).toEqual(['testnet:aggregate-refresh', 'mainnet:aggregate-refresh'])
     expect(workers.map(w => w.name)).toEqual(['testnet:aggregate-refresh', 'mainnet:aggregate-refresh'])
+    // #696: one attempt, pinned on the queue — a failed run is stored as
+    // failed, not retried forever.
+    expect(queueOptions.map(o => o?.defaultJobOptions)).toEqual([{ attempts: 1 }, { attempts: 1 }])
   })
 
   it('schedules that network’s pairs, not the active network’s', async () => {
@@ -156,6 +162,16 @@ describe('aggregateRefresh runs once per enabled network', () => {
       expect(arg.where.network_pairKey_window_bucket.pairKey).toBe(mainnetPair.pairKey)
       expect(arg.create.network).toBe('mainnet')
     }
+  })
+
+  it('a failing refresh rejects instead of resolving, so BullMQ stores it as failed (#696)', async () => {
+    mockGetAggregatedPrice.mockRejectedValueOnce(new Error('upstream down'))
+    startAggregateWorker('mainnet')
+
+    await expect(
+      workers[0].processor({ data: { pairKey: mainnetPair.pairKey, pair: mainnetPair, network: 'mainnet' } })
+    ).rejects.toThrow('upstream down')
+    expect(mockSetCachedPrice).not.toHaveBeenCalled()
   })
 
   it('a testnet worker never writes a mainnet row', async () => {
