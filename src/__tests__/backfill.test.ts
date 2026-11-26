@@ -148,7 +148,9 @@ const { mockPrisma, mockPgPool, mockUpsertPricePoints, storedGaps, storedPoints 
         baseVolume: p.baseVolume,
         counterVolume: p.counterVolume,
         ledger: p.ledger,
-        timestamp: p.timestamp,
+        observedAt: p.observedAt ?? p.timestamp ?? new Date(),
+        sourceTime: p.sourceTime !== undefined ? p.sourceTime : null,
+        timestamp: p.timestamp ?? p.observedAt ?? new Date(),
         eventId: p.eventId ?? null,
       })),
       skipDuplicates: true,
@@ -189,6 +191,7 @@ vi.mock('../network/clients', () => ({
 
 import { detectGaps, recordGaps, findOverlappingGaps, supportsHistory } from '../backfill/gaps'
 import { backfill } from '../backfill/backfillService'
+import { deriveSdexPricePoints } from '../ingest/venues/sdex'
 import { registerPriceRoutes } from '../routes/price'
 import { registerHistoryRoutes } from '../api/history'
 import { registerCandleRoutes } from '../routes/candles'
@@ -618,5 +621,154 @@ describe('Incomplete Window Declarations in API Responses', () => {
     // Should NOT be flagged incomplete
     expect(body.incomplete).toBeUndefined()
     expect(body.gaps).toBeUndefined()
+  })
+})
+
+describe('Backfill ObservedAt & SourceTime Consistency (#655)', () => {
+  beforeEach(() => {
+    storedGaps.length = 0
+    storedPoints.length = 0
+    vi.clearAllMocks()
+    ;(globalThis as any).__lens_prisma = mockPrisma
+    ;(globalThis as any).__lens_pgPool = mockPgPool
+  })
+
+  it('stamps backfilled SDEX trades with ledger_close_time for observedAt and sourceTime, landing in the historical candle hour', async () => {
+    const historicalCloseTime = '2026-10-15T02:15:30Z'
+    const start = new Date('2026-10-15T02:00:00Z')
+    const end = new Date('2026-10-15T03:00:00Z')
+    const currentHourMs = Math.floor(Date.now() / 3_600_000) * 3_600_000
+
+    mockHorizonTrades
+      .mockResolvedValueOnce({
+        records: [
+          {
+            id: 'sdex-backfill-655-1',
+            paging_token: '5190000001',
+            ledger_close_time: historicalCloseTime,
+            base_asset_type: 'native',
+            base_amount: '100',
+            counter_amount: '12',
+            price: { n: 12, d: 100 },
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ records: [] })
+
+    const res = await backfill({
+      source: 'SDEX',
+      pair: 'XLM/USDC',
+      start,
+      end,
+      network: 'testnet',
+    })
+
+    expect(res.pointsIngested).toBe(1)
+    expect(storedPoints).toHaveLength(1)
+    const pt = storedPoints[0]
+    expect(pt.observedAt.toISOString()).toBe('2026-10-15T02:15:30.000Z')
+    expect(pt.sourceTime.toISOString()).toBe('2026-10-15T02:15:30.000Z')
+    expect(pt.timestamp.toISOString()).toBe('2026-10-15T02:15:30.000Z')
+
+    const bucketHourMs = Math.floor(pt.observedAt.getTime() / 3_600_000) * 3_600_000
+    expect(new Date(bucketHourMs).toISOString()).toBe('2026-10-15T02:00:00.000Z')
+    expect(bucketHourMs).not.toBe(currentHourMs)
+  })
+
+  it('stamps backfilled AMM trades with ledger_close_time for observedAt and sourceTime', async () => {
+    const historicalCloseTime = '2026-10-15T04:45:00Z'
+    const start = new Date('2026-10-15T04:00:00Z')
+    const end = new Date('2026-10-15T05:00:00Z')
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (String(url).includes('/liquidity_pools?')) {
+          return {
+            ok: true,
+            json: async () => ({
+              _embedded: { records: [{ id: 'pool-amm-655' }] },
+            }),
+          }
+        }
+        if (String(url).includes('/liquidity_pools/pool-amm-655/trades')) {
+          const isFirst = !String(url).includes('cursor=5190000099')
+          return {
+            ok: true,
+            json: async () => ({
+              _embedded: {
+                records: isFirst
+                  ? [
+                      {
+                        id: 'amm-backfill-655-1',
+                        paging_token: '5190000099',
+                        ledger_close_time: historicalCloseTime,
+                        base_asset_type: 'native',
+                        base_amount: '50',
+                        counter_amount: '10',
+                      },
+                    ]
+                  : [],
+              },
+            }),
+          }
+        }
+        return { ok: true, json: async () => ({ _embedded: { records: [] } }) }
+      })
+    )
+
+    try {
+      const res = await backfill({
+        source: 'AMM',
+        pair: 'XLM/USDC',
+        start,
+        end,
+        network: 'testnet',
+      })
+
+      expect(res.pointsIngested).toBe(1)
+      expect(storedPoints).toHaveLength(1)
+      const pt = storedPoints[0]
+      expect(pt.observedAt.toISOString()).toBe('2026-10-15T04:45:00.000Z')
+      expect(pt.sourceTime.toISOString()).toBe('2026-10-15T04:45:00.000Z')
+      expect(pt.timestamp.toISOString()).toBe('2026-10-15T04:45:00.000Z')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('keeps live deriveSdexPricePoints stamping observedAt with current wall-clock time', () => {
+    const beforeMs = Date.now()
+    const derived = deriveSdexPricePoints(
+      {
+        records: [
+          {
+            id: 'sdex-live-655',
+            paging_token: '5190000010',
+            ledger_close_time: '2026-10-15T01:00:00Z',
+            base_asset_type: 'native',
+            base_amount: '10',
+            counter_amount: '2',
+            price: { n: 2, d: 10 },
+          },
+        ],
+        cursor: '0',
+        stateId: 'sdex:testnet:XLM/USDC',
+        lastLedger: null,
+      },
+      {
+        pairKey: 'XLM/USDC',
+        assetA: { code: 'XLM', issuer: null },
+        assetB: {
+          code: 'USDC',
+          issuer: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
+        },
+      }
+    )
+
+    expect(derived).not.toBeNull()
+    const pt = derived!.points[0]
+    expect(pt.sourceTime?.toISOString()).toBe('2026-10-15T01:00:00.000Z')
+    expect(pt.observedAt.getTime()).toBeGreaterThanOrEqual(beforeMs)
   })
 })

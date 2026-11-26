@@ -125,6 +125,10 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   // #268: one policy no longer covers public reads, credentialed calls and the
   // admin surface. See src/cors.ts.
   await app.register(cors, { delegator: createCorsDelegator(options.corsConfig) })
+  // Per-route Cache-Control policy (issue #266) must run BEFORE registerETag so
+  // ETag routes inherit cachePolicyFor's policy (max-age, Vary, x402 private)
+  // rather than tripping ETag's fallback, and 304 replies keep those headers.
+  await app.register(registerCachePolicy)
   await app.register(registerETag)
   await app.register(compress)
 
@@ -233,11 +237,6 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   await app.register(registerFacilitatorRoutes)
 
   await app.register(registerX402)
-
-  // Per-route Cache-Control policy (issue #266) — every response carries a
-  // deliberate Cache-Control header. Registered before the routes so the
-  // onSend hook observes all of them.
-  await app.register(registerCachePolicy)
 
   await registerRESTRoutes(app)
   await registerWebhookRoutes(app)
