@@ -8,4 +8,6 @@ dist/
 
 # Soroban build artifacts for the SEP-40 oracle contract (oracle/contract)
 oracle/contract/target/
+examples/oracle-relay/contract/target/
+examples/oracle-relay/contract/Cargo.lock
 oracle/contract/test_snapshots/

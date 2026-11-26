@@ -266,10 +266,138 @@ describe('GET /movers', () => {
 
     expect(res.statusCode).toBe(200)
     const item = res.json().volumeMovers[0]
-    expect(item.volumeChangePct).toBe(100)
+    // "Grew from nothing" is not a percentage: it must not be reported as
+    // 100 (which would look exactly like "doubled").
+    expect(item.volumeChangePct).toBeNull()
+    expect(item.hasPreviousVolume).toBe(false)
     expect(item.previousVolume).toBe(0)
     expect(item.currentVolume).toBe(500)
 
+    await app.close()
+  })
+
+  it('sorts pairs with no previous volume after pairs with a computable volume change', async () => {
+    mockQuery.mockResolvedValue({
+      rows: [
+        makeRow({
+          pair_key: 'NEW/XLM',
+          start_price: '1.0',
+          end_price: '1.2',
+          current_volume: '999999',
+          prev_volume: '0',
+        }),
+        makeRow({
+          pair_key: 'DOUBLED/XLM',
+          start_price: '1.0',
+          end_price: '1.1',
+          current_volume: '200',
+          prev_volume: '100', // +100%
+        }),
+      ],
+    })
+
+    const app = await buildApp()
+    const res = await app.inject({ method: 'GET', url: '/movers' })
+
+    expect(res.statusCode).toBe(200)
+    const movers = res.json().volumeMovers
+    expect(movers.map((m: any) => m.pairKey)).toEqual(['DOUBLED/XLM', 'NEW/XLM'])
+    expect(movers[0].volumeChangePct).toBeCloseTo(100)
+    expect(movers[0].hasPreviousVolume).toBe(true)
+    expect(movers[1].volumeChangePct).toBeNull()
+    expect(movers[1].hasPreviousVolume).toBe(false)
+
+    await app.close()
+  })
+
+  it('does not cast to float in the aggregation query', async () => {
+    mockQuery.mockResolvedValue({ rows: [] })
+    const app = await buildApp()
+    const res = await app.inject({ method: 'GET', url: '/movers' })
+
+    expect(res.statusCode).toBe(200)
+    const { sql } = lastCall()
+    expect(sql).not.toMatch(/::float/i)
+    expect(sql).not.toMatch(/float/i)
+
+    await app.close()
+  })
+
+  it('returns a high-precision price exactly in string decimal mode', async () => {
+    mockQuery.mockResolvedValue({
+      rows: [
+        makeRow({
+          pair_key: 'PRECISE/XLM',
+          start_price: '0.123456789012345678',
+          end_price: '0.246913578024691356',
+          current_volume: '1000.1234567',
+          prev_volume: '500',
+        }),
+      ],
+    })
+
+    const app = await buildApp()
+    const res = await app.inject({
+      method: 'GET',
+      url: '/movers?decimals=string',
+    })
+
+    expect(res.statusCode).toBe(200)
+    const item = res.json().gainers[0]
+    expect(item.startPrice).toBe('0.123456789012345678')
+    expect(item.endPrice).toBe('0.246913578024691356')
+    expect(item.currentVolume).toBe('1000.1234567')
+    expect(item.previousVolume).toBe('500')
+
+    await app.close()
+  })
+
+  it('honours limit for each list', async () => {
+    mockQuery.mockResolvedValue({
+      rows: [1, 2, 3].map((n) =>
+        makeRow({
+          pair_key: `G${n}/XLM`,
+          start_price: '1.0',
+          end_price: String(1 + n / 10),
+          current_volume: '1000',
+          prev_volume: '500',
+        })
+      ),
+    })
+
+    const app = await buildApp()
+    const res = await app.inject({ method: 'GET', url: '/movers?limit=2' })
+
+    expect(res.statusCode).toBe(200)
+    const body = res.json()
+    expect(body.gainers).toHaveLength(2)
+    expect(body.volumeMovers).toHaveLength(2)
+
+    await app.close()
+  })
+
+  it('clamps an over-maximum limit instead of erroring', async () => {
+    mockQuery.mockResolvedValue({
+      rows: [
+        makeRow({ pair_key: 'ONLY/XLM', start_price: '1.0', end_price: '1.5' }),
+      ],
+    })
+
+    const app = await buildApp()
+    const res = await app.inject({ method: 'GET', url: '/movers?limit=100000' })
+
+    expect(res.statusCode).toBe(200)
+    expect(res.json().gainers).toHaveLength(1)
+
+    await app.close()
+  })
+
+  it('rejects a non-numeric limit with 400', async () => {
+    const app = await buildApp()
+    const res = await app.inject({ method: 'GET', url: '/movers?limit=abc' })
+
+    expect(res.statusCode).toBe(400)
+    expect(mockQuery).not.toHaveBeenCalled()
     await app.close()
   })
 
