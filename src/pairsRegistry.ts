@@ -1,28 +1,39 @@
-import { getNetworkConfig, type NetworkName } from './config'
+import { config, activeNetwork, getNetworkConfig, type NetworkName } from './config'
 import { prisma } from './db'
 import { getEnabledNetworks } from './network/enabledNetworks'
 import type { WatchedPair, AssetId } from './types'
 
 // ─── Per-network runtime pairs store ──────────────────────────────────────────
-// Seeded independently from each network's declared config so dual-network
-// ingesters, persistence, and runtime POST /pairs registrations stay isolated.
-const pairsByNetwork: Record<NetworkName, WatchedPair[]> = {
-  testnet: [...getNetworkConfig('testnet').pairs],
-  mainnet: [...getNetworkConfig('mainnet').pairs],
+// One list per network, seeded from that network's declared config so
+// dual-network ingesters, persistence, and runtime POST /pairs registrations
+// stay isolated. A list is seeded the first time it is used, not at import, so
+// importing this module reads no network config (as before the split).
+const pairsByNetwork: Partial<Record<NetworkName, WatchedPair[]>> = {}
+
+function pairsFor(network: NetworkName): WatchedPair[] {
+  let pairs = pairsByNetwork[network]
+  if (!pairs) {
+    // config.pairs is the active network's declared list, a view over
+    // getNetworkConfig(activeNetwork).pairs.
+    const declared = network === activeNetwork ? config.pairs : getNetworkConfig(network).pairs
+    pairs = [...declared]
+    pairsByNetwork[network] = pairs
+  }
+  return pairs
 }
 
 export function getActivePairs(network: NetworkName): readonly WatchedPair[] {
-  return pairsByNetwork[network]
+  return pairsFor(network)
 }
 
 export function hasPair(pairKey: string, network: NetworkName): boolean {
-  return pairsByNetwork[network].some(p => p.pairKey === pairKey)
+  return pairsFor(network).some(p => p.pairKey === pairKey)
 }
 
 /** Add a new pair to the in-memory registry for `network`. Returns false if already present. */
 export function registerPair(pair: WatchedPair, network: NetworkName): boolean {
   if (hasPair(pair.pairKey, network)) return false
-  pairsByNetwork[network].push(pair)
+  pairsFor(network).push(pair)
   return true
 }
 
@@ -70,7 +81,7 @@ export async function loadPersistedPairs(
   })
   for (const row of rows) {
     const net = row.network as NetworkName
-    if (!pairsByNetwork[net]) continue
+    if (!networks.includes(net)) continue
     const pair: WatchedPair = {
       assetA: { code: row.assetACode, issuer: row.assetAIssuer },
       assetB: { code: row.assetBCode, issuer: row.assetBIssuer },
