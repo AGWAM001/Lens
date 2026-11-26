@@ -43,6 +43,24 @@ describe('aggregator/vwap.ts', () => {
   })
 
   describe('calculateVWAP', () => {
+    it('calculates VWAP without source filter', async () => {
+      mockQuery.mockResolvedValueOnce({
+        rows: [{ vwap: '0.125000' }],
+      })
+
+      const result = await calculateVWAP(PAIR, 60, NETWORK)
+
+      expect(result).toBe(0.125)
+      expect(mockQuery).toHaveBeenCalledTimes(1)
+      const [sql, params] = mockQuery.mock.calls[0]
+      expect(sql).toContain('WHERE pair_key = $1')
+      expect(sql).toContain('AND network = $2')
+      expect(sql).toContain("AND COALESCE(observed_at, timestamp) > NOW() - ($3 || ' minutes')::interval")
+      expect(sql).not.toContain('AND source = $4')
+      expect(sql).toContain('AND source = ANY($4)')
+      expect(params).toEqual([PAIR, NETWORK, 60, getOnChainSources()])
+    })
+
     it('calculates VWAP with dynamic on-chain sources filter (#652)', async () => {
       mockQuery.mockResolvedValueOnce({
         rows: [{ vwap: '0.125000' }],
