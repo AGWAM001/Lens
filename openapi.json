@@ -984,6 +984,7 @@
             "schema": {
               "type": "integer",
               "default": 100,
+              "minimum": 1,
               "maximum": 1000
             }
           },
@@ -1041,7 +1042,10 @@
             }
           },
           "400": {
-            "description": "Invalid parameters"
+            "description": "Invalid window or limit parameter"
+          },
+          "404": {
+            "description": "Asset pair is not watched on this network"
           },
           "429": {
             "$ref": "#/components/responses/TooManyRequests"
@@ -6671,15 +6675,14 @@
               "totalNetworkTrades",
               "assetsTracked",
               "assetsWithActivity",
+              "excludedAssetCount",
+              "excludedAssets",
               "status",
+              "reason",
               "venues"
             ],
             "properties": {
               "tradeCoverageRatio": {
-                "type": "number",
-                "nullable": true
-              },
-              "volumeCoverageRatio": {
                 "type": "number",
                 "nullable": true
               },
@@ -6694,6 +6697,29 @@
               },
               "assetsWithActivity": {
                 "type": "integer"
+              },
+              "excludedAssetCount": {
+                "type": "integer",
+                "description": "Number of assets omitted from overall totals because Horizon data was incomplete."
+              },
+              "excludedAssets": {
+                "type": "array",
+                "description": "Assets omitted from overall totals, with the Horizon failure reason.",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "asset",
+                    "reason"
+                  ],
+                  "properties": {
+                    "asset": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  }
+                }
               },
               "status": {
                 "type": "string",

@@ -10,23 +10,10 @@ export const X402_NETWORK_LABEL: Record<NetworkName, `${string}:${string}`> = {
   mainnet: 'stellar:pubnet',
 }
 
-/**
- * The x402 payment address for a given network.
- *
- * Resolution order (first non-empty wins), mirroring `config.ts`'s per-network
- * env var convention:
- *   1. `ORACLE_PAYMENT_ADDRESS_TESTNET` / `ORACLE_PAYMENT_ADDRESS_MAINNET`
- *   2. `ORACLE_PAYMENT_ADDRESS` (back-compat with single-network setups)
- */
-export function paymentAddressFor(network: NetworkName): string | undefined {
-  const suffix = network.toUpperCase()
-  return process.env[`ORACLE_PAYMENT_ADDRESS_${suffix}`] || process.env.ORACLE_PAYMENT_ADDRESS
-}
-
-/** True if x402 gating should be active for at least one network. */
-export function isX402Configured(): boolean {
-  return Boolean(paymentAddressFor('testnet') || paymentAddressFor('mainnet'))
-}
+// The x402 payment-address env resolution and the "is x402 configured" check
+// live in ./gating so the cache layer can share them without importing the
+// @x402 packages (issue #677). Re-exported here so existing imports keep working.
+export { paymentAddressFor, isX402Configured } from './gating'
 
 // One resource server per network, built and initialised lazily on first use
 // so a network that's never requested never pays the initialize() cost.

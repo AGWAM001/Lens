@@ -1,0 +1,69 @@
+{
+  "venue": "amm",
+  "network": "mainnet",
+  "capturedAt": "2026-11-26T10:05:31.157Z",
+  "sourceUrl": "https://horizon.stellar.org/liquidity_pools?reserves=native%2CUSDC%3AGA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN&limit=10",
+  "description": "Horizon liquidity_pools for XLM / USDC (Circle) reserves on mainnet.",
+  "exchanges": [
+    {
+      "key": "GET https://horizon.stellar.org/liquidity_pools?reserves=native%2CUSDC%3AGA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN&limit=10",
+      "request": {
+        "method": "GET",
+        "url": "https://horizon.stellar.org/liquidity_pools?reserves=native%2CUSDC%3AGA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN&limit=10"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "_links": {
+            "self": {
+              "href": "https://horizon.stellar.org/liquidity_pools?cursor=&limit=10&order=asc&reserves=native%2CUSDC%3AGA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"
+            },
+            "next": {
+              "href": "https://horizon.stellar.org/liquidity_pools?cursor=a468d41d8e9b8f3c7209651608b74b7db7ac9952dcae0cdf24871d1d9c7b0088&limit=10&order=asc&reserves=native%2CUSDC%3AGA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"
+            },
+            "prev": {
+              "href": "https://horizon.stellar.org/liquidity_pools?cursor=a468d41d8e9b8f3c7209651608b74b7db7ac9952dcae0cdf24871d1d9c7b0088&limit=10&order=desc&reserves=native%2CUSDC%3AGA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"
+            }
+          },
+          "_embedded": {
+            "records": [
+              {
+                "_links": {
+                  "self": {
+                    "href": "https://horizon.stellar.org/liquidity_pools/a468d41d8e9b8f3c7209651608b74b7db7ac9952dcae0cdf24871d1d9c7b0088"
+                  },
+                  "transactions": {
+                    "href": "https://horizon.stellar.org/liquidity_pools/a468d41d8e9b8f3c7209651608b74b7db7ac9952dcae0cdf24871d1d9c7b0088/transactions{?cursor,limit,order}",
+                    "templated": true
+                  },
+                  "operations": {
+                    "href": "https://horizon.stellar.org/liquidity_pools/a468d41d8e9b8f3c7209651608b74b7db7ac9952dcae0cdf24871d1d9c7b0088/operations{?cursor,limit,order}",
+                    "templated": true
+                  }
+                },
+                "id": "a468d41d8e9b8f3c7209651608b74b7db7ac9952dcae0cdf24871d1d9c7b0088",
+                "paging_token": "a468d41d8e9b8f3c7209651608b74b7db7ac9952dcae0cdf24871d1d9c7b0088",
+                "fee_bp": 30,
+                "type": "constant_product",
+                "total_trustlines": "831",
+                "total_shares": "3203481.8914984",
+                "reserves": [
+                  {
+                    "asset": "native",
+                    "amount": "12127047.4184909"
+                  },
+                  {
+                    "asset": "USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+                    "amount": "1557327.5018109"
+                  }
+                ],
+                "last_modified_ledger": 65680273,
+                "last_modified_time": "2026-11-26T10:03:51Z"
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

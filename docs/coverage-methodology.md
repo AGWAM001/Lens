@@ -45,6 +45,10 @@ $$\text{tradeCoverageRatio}(W, N) = \frac{\text{totalIndexedTrades}(W, N)}{\text
 
 Because trade count is dimensionless, it can be meaningfully aggregated across different assets to provide a macro picture of network coverage.
 
+The overall endpoint reports only this aggregate trade-count ratio. It does not report an overall volume ratio: asset volumes are denominated in each asset's native units, so adding (for example) XLM and USDC amounts would have no meaningful interpretation. Volume coverage is available only per asset using the ratio defined in §2.1.
+
+An asset is included in neither side of the overall trade totals if any Horizon pair request needed for that asset fails. The response lists each excluded asset and its failure reason, and reports the number excluded. Its per-asset result remains available and is marked `unanswerable`.
+
 ---
 
 ## 3. Data Sources
@@ -135,7 +139,7 @@ To reproduce the coverage figure for `XLM` over the last 24 hours on `testnet`:
 
 ## 5. API Endpoints
 
-- **`GET /coverage`**: Overall market coverage ratio across all watched assets, with per-asset list, trade coverage, and full provenance.
+- **`GET /coverage`**: Overall trade-count coverage ratio across assets with complete Horizon data, with per-asset results, exclusions, and full provenance. No overall volume ratio is returned because native-unit volumes cannot be aggregated across assets.
 - **`GET /coverage/:asset`**: Asset-specific market coverage ratio, venue breakdown, Horizon network activity comparison, and provenance.
 
 Both routes require no authentication and support:

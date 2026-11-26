@@ -127,6 +127,24 @@ export function updatePoolMetrics() {
 setPoolMetricsUpdater(updatePoolMetrics)
 
 /**
+ * Start-up check that Postgres is reachable. Checks out one client, runs a
+ * trivial query, and always hands the client back so start-up does not hold a
+ * pool slot for the life of the process (#687). Uses connect/release rather
+ * than the instrumented pgPool.query so a failed check is not counted as pool
+ * exhaustion. Rejects if the database cannot be reached.
+ */
+export async function checkDatabaseReachable(
+  pool: Pick<Pool, 'connect'> = pgPool,
+): Promise<void> {
+  const client = await pool.connect()
+  try {
+    await client.query('SELECT 1')
+  } finally {
+    client.release()
+  }
+}
+
+/**
  * Detects whether an error represents database connection pool exhaustion or acquisition timeout.
  */
 export function isPoolExhaustionError(err: unknown): boolean {
