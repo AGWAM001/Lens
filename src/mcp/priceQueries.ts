@@ -1,6 +1,7 @@
 import { getAggregatedPrice } from '../aggregator/vwap'
 import { getBestRoute } from '../aggregator/bestRoute'
-import { activeNetwork, getNetworkConfig } from '../config'
+import { activeNetwork } from '../config'
+import { getActivePairs } from '../pairsRegistry'
 import type { NetworkName } from '../config'
 import type { LensPriceQueries } from './priceTool.js'
 
@@ -23,12 +24,11 @@ export function createLensPriceQueries(): LensPriceQueries {
   return {
     activeNetwork,
 
-    // The declared pair list for that network, not the process-wide runtime
-    // registry: entries added through POST /pairs are registered against
-    // whichever network the API process runs, so reading them here would let a
-    // mainnet request resolve a pair that was only ever added on testnet.
+    // Uses the same per-network registry as REST and lensDataQueries: each
+    // network's list holds its declared config plus the pairs POST /pairs added
+    // for that network, so a pair added on one network never resolves on another.
     watchedPairs(network: NetworkName) {
-      return getNetworkConfig(network).pairs
+      return getActivePairs(network)
     },
 
     aggregatedPrice(pairKey: string, network: NetworkName) {

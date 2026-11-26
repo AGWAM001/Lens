@@ -20,6 +20,14 @@ async function durationCounts() {
   return (await durationSamples()).filter(v => v.metricName === 'http_request_duration_seconds_count')
 }
 
+it('exports runtime metrics with the Lens label on repeated scrapes', async () => {
+  for (let pass = 0; pass < 2; pass++) {
+    const scrape = await register.metrics()
+    expect(scrape).toMatch(/^process_resident_memory_bytes\{app="lens"\} /m)
+    expect(scrape).toMatch(/^nodejs_eventloop_lag_seconds\{app="lens"\} /m)
+  }
+})
+
 /**
  * Builds an app wired the way src/index.ts wires it: the metrics plugin is
  * registered FIRST, ahead of the hooks that can reject a request, so the

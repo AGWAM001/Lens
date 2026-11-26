@@ -104,11 +104,12 @@ export interface OverallCoverageResponse {
   endTime: string
   overall: {
     tradeCoverageRatio: number | null
-    volumeCoverageRatio: number | null
     totalIndexedTrades: number
     totalNetworkTrades: number
     assetsTracked: number
     assetsWithActivity: number
+    excludedAssetCount: number
+    excludedAssets: Array<{ asset: string; reason: string }>
     status: 'computed' | 'unanswerable'
     reason: string | null
     venues: string[]
@@ -258,6 +259,17 @@ export function parseAssetString(
     return { code, issuer, canonical: `${code}:${issuer}`, horizon: new Asset(code, issuer) }
   }
 
+  // Bare USDC always resolves to the issuer for the requested network.
+  if (code === 'USDC') {
+    const defaultUsdc = CANONICAL_USDC[network]
+    return {
+      code: 'USDC',
+      issuer: defaultUsdc.issuer,
+      canonical: `USDC:${defaultUsdc.issuer}`,
+      horizon: new Asset('USDC', defaultUsdc.issuer),
+    }
+  }
+
   // Code given without issuer: check if it matches a watched pair
   const matches = activePairs.filter(
     p => (p.assetA.code === code && p.assetA.issuer) || (p.assetB.code === code && p.assetB.issuer)
@@ -271,17 +283,6 @@ export function parseAssetString(
         canonical: `${code}:${matchedAsset.issuer}`,
         horizon: new Asset(code, matchedAsset.issuer),
       }
-    }
-  }
-
-  // Fallback to canonical USDC if USDC was requested without issuer
-  if (code === 'USDC') {
-    const defaultUsdc = CANONICAL_USDC[activeNetwork]
-    return {
-      code: 'USDC',
-      issuer: defaultUsdc.issuer,
-      canonical: `USDC:${defaultUsdc.issuer}`,
-      horizon: new Asset('USDC', defaultUsdc.issuer),
     }
   }
 
@@ -520,8 +521,8 @@ export async function getAssetCoverage(
   const startTime = new Date(endTime.getTime() - hours * 60 * 60 * 1000)
   const resolutionMs = hours <= 24 ? 3600000 : 86400000
 
-  const asset = parseAssetString(assetRaw, undefined, network)
   const pairs = getActivePairs(network)
+  const asset = parseAssetString(assetRaw, pairs, network)
 
   const indexed = await fetchIndexedAssetActivity(asset, network, startTime, endTime)
   const horizon = await fetchHorizonAssetActivity(
@@ -648,7 +649,7 @@ export async function getOverallCoverage(
       for (const assetStr of [row.asset_a, row.asset_b]) {
         if (!assetStr || assetMap.has(assetStr)) continue
         try {
-          const parsed = parseAssetString(assetStr, pairs)
+          const parsed = parseAssetString(assetStr, pairs, network)
           assetMap.set(parsed.canonical, parsed)
         } catch {
           // Skip unparseable identifiers
@@ -677,12 +678,11 @@ export async function getOverallCoverage(
   const assetResults: OverallCoverageResponse['assets'] = []
   let totalIndexedTrades = 0
   let totalNetworkTrades = 0
-  let totalIndexedVolume = 0
-  let totalNetworkVolume = 0
   let totalIndexedSamples = 0
   let totalNetworkSamples = 0
   const allVenues = new Set<string>()
   let assetsWithActivity = 0
+  const excludedAssets: OverallCoverageResponse['overall']['excludedAssets'] = []
 
   for (const asset of assetMap.values()) {
     const indexed = await fetchIndexedAssetActivity(asset, network, startTime, endTime)
@@ -695,23 +695,27 @@ export async function getOverallCoverage(
       resolutionMs
     )
 
-    for (const v of indexed.venues) {
-      allVenues.add(v)
+    if (horizon.ok) {
+      for (const v of indexed.venues) {
+        allVenues.add(v)
+      }
+
+      totalIndexedTrades += indexed.tradeCount
+      totalIndexedSamples += indexed.sampleCount
+      totalNetworkTrades += horizon.tradeCount
+      totalNetworkSamples += horizon.sampleCount
+    } else {
+      excludedAssets.push({
+        asset: asset.canonical,
+        reason: `Horizon API unreachable: ${horizon.error ?? 'Unknown error'}`,
+      })
     }
-
-    totalIndexedTrades += indexed.tradeCount
-    totalIndexedSamples += indexed.sampleCount
-    totalNetworkTrades += horizon.tradeCount
-    totalNetworkSamples += horizon.sampleCount
-
-    totalIndexedVolume += indexed.totalVolume
-    totalNetworkVolume += horizon.totalVolume
 
     const volResult = horizon.ok
       ? computeCoverageRatio(indexed.totalVolume, horizon.totalVolume)
       : { coverageRatio: null, status: 'unanswerable' as const, reason: horizon.error }
 
-    if (horizon.totalVolume > 0 || indexed.totalVolume > 0) {
+    if (horizon.ok && (horizon.totalVolume > 0 || indexed.totalVolume > 0)) {
       assetsWithActivity++
     }
 
@@ -731,7 +735,6 @@ export async function getOverallCoverage(
   }
 
   const overallTradeCoverage = computeTradeCoverageRatio(totalIndexedTrades, totalNetworkTrades)
-  const overallVolCoverage = computeCoverageRatio(totalIndexedVolume, totalNetworkVolume)
 
   const horizonUrl = getNetworkConfig(network).horizon.url
 
@@ -742,11 +745,12 @@ export async function getOverallCoverage(
     endTime: endTime.toISOString(),
     overall: {
       tradeCoverageRatio: overallTradeCoverage.coverageRatio,
-      volumeCoverageRatio: overallVolCoverage.coverageRatio,
       totalIndexedTrades,
       totalNetworkTrades,
       assetsTracked: assetMap.size,
       assetsWithActivity,
+      excludedAssetCount: excludedAssets.length,
+      excludedAssets,
       status: overallTradeCoverage.status,
       reason: overallTradeCoverage.reason ?? null,
       venues: Array.from(allVenues).sort(),
@@ -763,10 +767,9 @@ export async function getOverallCoverage(
       endTime: endTime.toISOString(),
     },
     methodology:
-      'Overall market coverage compares cumulative trade volume and trade counts indexed by Lens across its configured venues against total network activity from Horizon across all watched assets over the window. ' +
+      'Overall trade coverage compares trade counts indexed by Lens across its configured venues against trade counts from Horizon across assets with complete Horizon data over the window. Assets with incomplete Horizon data are excluded from both sides of the overall trade totals and listed in overall.excludedAssets. ' +
       'Overall tradeCoverageRatio = totalIndexedTrades / totalNetworkTrades. ' +
-      'Overall volumeCoverageRatio = totalIndexedVolume / totalNetworkVolume. ' +
-      'Per-asset coverageRatio = indexedVolume / networkVolume. ' +
+      'No overall volume ratio is reported because native-unit volumes cannot be meaningfully summed across assets. Per-asset coverageRatio = indexedVolume / networkVolume. ' +
       'When network activity is zero, ratios are reported as null with status "unanswerable". ' +
       'When indexed activity is zero and network activity is positive, ratios are 0.0, published regardless of value.',
   }

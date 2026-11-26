@@ -191,7 +191,7 @@ async function backfillSdexTrades(
           lastLedger: null,
         }
 
-        const derived = deriveSdexPricePoints(raw, pair)
+        const derived = deriveSdexPricePoints(raw, pair, { observedAtSource: 'ledger_close' })
         if (derived && derived.points.length > 0) {
           const count = await upsertPricePoints(derived.points, network)
           totalIngested += count
@@ -270,6 +270,8 @@ async function backfillAmmTrades(
                 ? parseFloat(t.counter_amount) / parseFloat(t.base_amount)
                 : parseFloat(t.base_amount) / parseFloat(t.counter_amount)
 
+              const sourceTime = new Date(t.ledger_close_time)
+
               return {
                 assetA: pair.assetA.code,
                 assetB: pair.assetB.code,
@@ -280,7 +282,9 @@ async function backfillAmmTrades(
                 baseVolume: parseFloat(t.base_amount),
                 counterVolume: parseFloat(t.counter_amount),
                 ledger: ledgers[i],
-                timestamp: new Date(t.ledger_close_time),
+                observedAt: sourceTime,
+                sourceTime,
+                timestamp: sourceTime,
                 eventId: t.id,
               }
             })

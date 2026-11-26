@@ -19,6 +19,14 @@ Prometheus label.
 
 ## What is exported
 
+### Process and Node.js metrics
+
+The same registry collects process and runtime metrics with the `app="lens"`
+label. Useful signals include `process_cpu_seconds_total` for CPU usage,
+`process_resident_memory_bytes` for resident memory,
+`nodejs_heap_size_used_bytes` for heap usage, `nodejs_eventloop_lag_seconds`
+for event-loop lag, and `nodejs_gc_duration_seconds` for GC duration.
+
 ### `http_requests_total`
 
 Counter. Labels: `method`, `route`, `status_class`.
