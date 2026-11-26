@@ -1,7 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import websocket from '@fastify/websocket'
-import { priceEmitter, PRICE_UPDATE, PriceUpdateEvent } from '../events'
-import { activeNetwork, config, type NetworkName } from '../config'
+import { config, type NetworkName } from '../config'
 import { X402_NETWORK_LABEL, paymentAddressFor, getX402ResourceServer } from '../x402/network'
 import { resolveNetworkName } from '../middleware/network'
 import { fanOutManager } from '../ws/fanout'
@@ -25,20 +24,6 @@ export async function registerWebSocket(app: FastifyInstance) {
       return
     }
     const network: NetworkName = resolved.network
-
-    // This process only ingests and streams live prices for `activeNetwork`
-    // (see src/config.ts) — the underlying price events carry no network tag
-    // yet (that's the deeper aggregation-layer work), so a request for any
-    // other network can't be honestly served here.
-    if (network !== activeNetwork) {
-      socket.send(JSON.stringify({
-        type: 'error',
-        status: 400,
-        message: `This instance streams "${activeNetwork}" only; requested "${network}"`,
-      }))
-      socket.close()
-      return
-    }
 
     const paymentAddress = paymentAddressFor(network)
     const paymentHeader = (req.headers['x-payment'] as string) || (req.query as any).payment
@@ -69,7 +54,7 @@ export async function registerWebSocket(app: FastifyInstance) {
             socket.send(JSON.stringify({ type: 'error', message: 'Invalid payment' }))
             socket.close()
           } else {
-            setupStream(socket, req)
+            setupStream(socket, req, network)
           }
         })
         .catch(err => {
@@ -87,12 +72,12 @@ export async function registerWebSocket(app: FastifyInstance) {
       return
     }
 
-    setupStream(socket, req)
+    setupStream(socket, req, network)
   })
 
-  function setupStream(socket: any, req: FastifyRequest) {
-    app.log.info('[ws] Connection authorized')
-    socket.send(JSON.stringify({ type: 'status', message: 'Streaming active' }))
+  function setupStream(socket: any, req: FastifyRequest, network: NetworkName) {
+    app.log.info({ network }, '[ws] Connection authorized')
+    socket.send(JSON.stringify({ type: 'status', message: 'Streaming active', network }))
 
     // Register with fan-out manager for backpressure-aware broadcasting
     const clientId = uuid()
@@ -117,7 +102,7 @@ export async function registerWebSocket(app: FastifyInstance) {
       // the only backpressure signal available, and every threshold in
       // FanOutManager is measured against it.
       bufferedAmount: () => socket.bufferedAmount,
-    })
+    }, network)
 
     // Heartbeat ping/pong handling
     const pingIntervalMs = config.ws.pingIntervalMs
