@@ -16,7 +16,7 @@ jobs:
         with:
           node-version: '22'
           cache: npm
-      - run: npm ci || npm install
+      - run: npm ci
       - run: node node_modules/prisma/build/index.js generate
       - name: Generate TypeScript client from openapi.yaml
         run: npm run client:gen
@@ -91,7 +91,7 @@ jobs:
         with:
           node-version: '22'
           cache: npm
-      - run: npm ci || npm install
+      - run: npm ci
       - run: node node_modules/prisma/build/index.js generate
 
       - name: Create empty shadow database
