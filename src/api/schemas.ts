@@ -1020,6 +1020,8 @@ export const pegsResponseSchema = {
           'currentPrice',
           'currentDeviationBps',
           'worstDeviationBps',
+          'status',
+          'reason',
           'window',
           'provenance',
         ],
@@ -1034,6 +1036,11 @@ export const pegsResponseSchema = {
           currentPrice: { type: ['number', 'null'] },
           currentDeviationBps: { type: ['number', 'null'] },
           worstDeviationBps: { type: ['number', 'null'] },
+          status: {
+            type: 'string',
+            enum: ['on_peg', 'off_peg', 'no_reference', 'no_data', 'error'],
+          },
+          reason: { type: ['string', 'null'] },
           window: { type: 'string' },
           provenance: {
             type: 'object',
@@ -1052,6 +1059,62 @@ export const pegsResponseSchema = {
         },
       },
     },
+  },
+} as const
+
+/** GET /movers */
+const moverItemSchema = {
+  type: 'object',
+  required: [
+    'pairKey',
+    'assetA',
+    'assetB',
+    'priceChangePct',
+    'startPrice',
+    'endPrice',
+    'currentVolume',
+    'previousVolume',
+    'volumeChangePct',
+    'hasPreviousVolume',
+    'venues',
+    'isSingleVenue',
+    'sampleCount',
+    'lastUpdated',
+  ],
+  additionalProperties: false,
+  properties: {
+    pairKey: { type: 'string' },
+    assetA: { type: 'string' },
+    assetB: { type: 'string' },
+    priceChangePct: { type: ['number', 'null'] },
+    startPrice: { type: ['number', 'string', 'null'] },
+    endPrice: { type: ['number', 'string', 'null'] },
+    currentVolume: { type: ['number', 'string'] },
+    previousVolume: { type: ['number', 'string'] },
+    volumeChangePct: { type: ['number', 'null'] },
+    hasPreviousVolume: { type: 'boolean' },
+    venues: {
+      type: 'array',
+      items: { type: 'string' },
+    },
+    isSingleVenue: { type: 'boolean' },
+    sampleCount: { type: 'integer' },
+    lastUpdated: { type: ['string', 'null'] },
+  },
+} as const
+
+export const moversResponseSchema = {
+  type: 'object',
+  required: ['network', 'window', 'startTime', 'endTime', 'gainers', 'losers', 'volumeMovers'],
+  additionalProperties: false,
+  properties: {
+    network: { type: 'string', enum: ['testnet', 'mainnet'] },
+    window: { type: 'string', enum: ['1h', '24h', '7d'] },
+    startTime: { type: 'string' },
+    endTime: { type: 'string' },
+    gainers: { type: 'array', items: moverItemSchema },
+    losers: { type: 'array', items: moverItemSchema },
+    volumeMovers: { type: 'array', items: moverItemSchema },
   },
 } as const
 

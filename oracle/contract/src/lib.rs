@@ -175,7 +175,9 @@ impl Sep40OracleContract {
     /// `set_publisher` and `upgrade`. Unset, `report` falls back to the admin.
     pub fn set_publisher(env: Env, publisher: Address) {
         Self::require_admin(&env);
-        env.storage().instance().set(&DataKey::Publisher, &publisher);
+        env.storage()
+            .instance()
+            .set(&DataKey::Publisher, &publisher);
     }
 
     /// Swap the implementation without changing the contract address, which
@@ -353,7 +355,11 @@ impl Sep40OracleContract {
         }
         // Asking for more than the feed has kept is not an error: the feed
         // answers with everything it has, newest first.
-        let take = if records > history.len() { history.len() } else { records };
+        let take = if records > history.len() {
+            history.len()
+        } else {
+            records
+        };
         let mut out = Vec::<PriceData>::new(&env);
         for i in 0..take {
             out.push_back(history.get(i)?);
@@ -440,8 +446,8 @@ fn equal_assets(a: &Asset, b: &Asset) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soroban_sdk::InvokeError;
     use soroban_sdk::testutils::{Address as _, AuthorizedFunction, Ledger as _};
+    use soroban_sdk::InvokeError;
 
     const DECIMALS: u32 = 14;
     const RESOLUTION: u32 = 60;
@@ -480,9 +486,19 @@ mod tests {
         let client = Sep40OracleContractClient::new(&env, &contract_id);
         let admin = Address::generate(&env);
         let publisher = Address::generate(&env);
-        client.initialize(&admin, &Asset::Other(sym(&env, "USDC")), &DECIMALS, &RESOLUTION);
+        client.initialize(
+            &admin,
+            &Asset::Other(sym(&env, "USDC")),
+            &DECIMALS,
+            &RESOLUTION,
+        );
         client.set_publisher(&publisher);
-        Feed { env, client, admin, publisher }
+        Feed {
+            env,
+            client,
+            admin,
+            publisher,
+        }
     }
 
     /// Publish at `timestamp`, taking the ledger clock with it. A real publisher
@@ -539,8 +555,12 @@ mod tests {
         let f = feed(NOW);
         // 0.025 USDC per XLM at 14 decimals.
         let price: i128 = 250_000_000_000_000;
-        f.client
-            .report(&xlm(&f.env), &price, &NOW, &venues(&f.env, &["SDEX", "AMM"]));
+        f.client.report(
+            &xlm(&f.env),
+            &price,
+            &NOW,
+            &venues(&f.env, &["SDEX", "AMM"]),
+        );
 
         let last = f.client.lastprice(&xlm(&f.env)).expect("price");
         assert_eq!(last.price, price);
@@ -594,7 +614,13 @@ mod tests {
             .report(&xlm(&f.env), &price, &NOW, &venues(&f.env, &["SDEX"]));
         // A deviation-triggered feed has no record at every resolution tick;
         // asking for a later one still yields the value in effect.
-        assert_eq!(f.client.price(&xlm(&f.env), &(NOW + 300)).unwrap().timestamp, NOW);
+        assert_eq!(
+            f.client
+                .price(&xlm(&f.env), &(NOW + 300))
+                .unwrap()
+                .timestamp,
+            NOW
+        );
         // …and one from before the first report has nothing in effect yet.
         assert_eq!(f.client.price(&xlm(&f.env), &(NOW - 60)), None);
     }
@@ -629,12 +655,9 @@ mod tests {
 
         // A replay of the same tick is refused for the same reason, so a
         // retried publish cannot rewrite the value consumers already read.
-        let same = f.client.try_report(
-            &xlm(&f.env),
-            &price,
-            &NOW,
-            &venues(&f.env, &["SDEX"]),
-        );
+        let same = f
+            .client
+            .try_report(&xlm(&f.env), &price, &NOW, &venues(&f.env, &["SDEX"]));
         assert_eq!(same.err(), Some(Ok(Error::NotNewer)));
     }
 
@@ -678,20 +701,14 @@ mod tests {
         );
         assert_eq!(none.err(), Some(Ok(Error::NoVenues)));
 
-        let zero = f.client.try_report(
-            &xlm(&f.env),
-            &0,
-            &NOW,
-            &venues(&f.env, &["SDEX"]),
-        );
+        let zero = f
+            .client
+            .try_report(&xlm(&f.env), &0, &NOW, &venues(&f.env, &["SDEX"]));
         assert_eq!(zero.err(), Some(Ok(Error::NonPositivePrice)));
 
-        let negative = f.client.try_report(
-            &xlm(&f.env),
-            &-1,
-            &NOW,
-            &venues(&f.env, &["SDEX"]),
-        );
+        let negative = f
+            .client
+            .try_report(&xlm(&f.env), &-1, &NOW, &venues(&f.env, &["SDEX"]));
         assert_eq!(negative.err(), Some(Ok(Error::NonPositivePrice)));
     }
 
@@ -699,8 +716,8 @@ mod tests {
     fn more_venues_than_the_feed_will_store_is_rejected() {
         let f = feed(NOW);
         let names: [&str; 17] = [
-            "SDEX", "AMM", "a_1", "a_2", "a_3", "a_4", "a_5", "a_6", "a_7", "a_8", "a_9",
-            "b_1", "b_2", "b_3", "b_4", "b_5", "b_6",
+            "SDEX", "AMM", "a_1", "a_2", "a_3", "a_4", "a_5", "a_6", "a_7", "a_8", "a_9", "b_1",
+            "b_2", "b_3", "b_4", "b_5", "b_6",
         ];
         let result = f.client.try_report(
             &xlm(&f.env),
@@ -720,11 +737,19 @@ mod tests {
             let timestamp = NOW + 60 * (i as u64) + 60;
             report_at(&f, &xlm(&f.env), price, timestamp, &["SDEX"]);
         }
-        assert_eq!(f.client.prices(&xlm(&f.env), &1_000).unwrap().len(), MAX_HISTORY);
+        assert_eq!(
+            f.client.prices(&xlm(&f.env), &1_000).unwrap().len(),
+            MAX_HISTORY
+        );
         // The oldest retained record is the first one still inside the window:
         // everything older than the newest `MAX_HISTORY` writes is gone.
         assert_eq!(
-            f.client.prices(&xlm(&f.env), &1_000).unwrap().get(MAX_HISTORY - 1).unwrap().timestamp,
+            f.client
+                .prices(&xlm(&f.env), &1_000)
+                .unwrap()
+                .get(MAX_HISTORY - 1)
+                .unwrap()
+                .timestamp,
             NOW + 60_u64 * (writes - MAX_HISTORY) as u64 + 60
         );
     }
@@ -823,12 +848,8 @@ mod tests {
         // tokens both called USDC are different assets here.
         let f = feed(NOW);
         let usdc = Asset::Stellar(Address::generate(&f.env));
-        f.client.report(
-            &usdc,
-            &40_000_000_000_000,
-            &NOW,
-            &venues(&f.env, &["SDEX"]),
-        );
+        f.client
+            .report(&usdc, &40_000_000_000_000, &NOW, &venues(&f.env, &["SDEX"]));
         assert_eq!(f.client.lastprice(&usdc).unwrap().price, 40_000_000_000_000);
         assert_eq!(f.client.assets().get(0).unwrap(), usdc);
     }
@@ -837,7 +858,13 @@ mod tests {
     fn a_second_report_of_the_same_asset_does_not_duplicate_the_registry() {
         let f = feed(NOW);
         for offset in [60_u64, 120] {
-            report_at(&f, &xlm(&f.env), 1_000_000_000_000_000, NOW + offset, &["SDEX"]);
+            report_at(
+                &f,
+                &xlm(&f.env),
+                1_000_000_000_000_000,
+                NOW + offset,
+                &["SDEX"],
+            );
         }
         assert_eq!(f.client.assets().len(), 1);
     }
