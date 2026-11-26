@@ -5,6 +5,7 @@ import { setCachedPrice } from '../redis'
 import { calculateVWAP, calculateOHLCV, getAggregatedPrice } from '../aggregator/vwap'
 import { getBestRoute } from '../aggregator/bestRoute'
 import { createLogger } from '../logger'
+import { runJob } from './jobMetrics'
 
 const log = createLogger('job:aggregate-refresh')
 
@@ -26,7 +27,13 @@ function redisConnection() {
 }
 
 export function createAggregateQueue(network: NetworkName) {
-  return new Queue(queueName(network), { connection: redisConnection() })
+  // One attempt, pinned: BullMQ's default is already 1, but a failed run
+  // must be stored as failed, not retried forever — the next repeat fires
+  // on schedule. See src/jobs/jobMetrics.ts.
+  return new Queue(queueName(network), {
+    connection: redisConnection(),
+    defaultJobOptions: { attempts: 1 },
+  })
 }
 
 export function startAggregateWorker(network: NetworkName) {
@@ -34,7 +41,11 @@ export function startAggregateWorker(network: NetworkName) {
     queueName(network),
     async (job) => {
       const { pairKey, pair } = job.data
-      try {
+      // No try/catch: runJob() records the outcome and rethrows, so a
+      // failed refresh is stored as failed by BullMQ instead of looking
+      // like a success (worker.on('failed') below can then fire). `pair`
+      // is deliberately NOT a metric label — see src/jobs/jobMetrics.ts.
+      await runJob('aggregate-refresh', network, async () => {
         const agg = await getAggregatedPrice(pairKey, network)
         const route = await getBestRoute(pair.assetA, pair.assetB, pairKey, 1000, network)
 
@@ -95,9 +106,7 @@ export function startAggregateWorker(network: NetworkName) {
         }
 
         log.info({ network, pair: pairKey, price: agg.price, route: route.route }, 'refreshed aggregate')
-      } catch (err) {
-        log.error({ network, pair: pairKey, err }, 'aggregate refresh failed')
-      }
+      })
     },
     { connection: redisConnection(), concurrency: 5 }
   )

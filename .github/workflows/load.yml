@@ -3,7 +3,9 @@ name: Load test (prices)
 # Price endpoints are polled hard by trading bots, so we guard their latency
 # under load on a schedule (and on demand). Acceptance criterion: p95 < 80ms at
 # 5k RPS, enforced by the k6 thresholds in tests/load/prices.k6.js (the run
-# exits non-zero if a threshold is breached).
+# exits non-zero if a threshold is breached). Thresholds are per endpoint
+# (price 80ms; twap/vwap 500ms — they compute over a 60-minute window), and the
+# database is seeded before the run so /price has data to serve.
 on:
   schedule:
     # 04:00 UTC daily — off-peak, so a sustained 5k-RPS flood doesn't collide
@@ -24,6 +26,9 @@ jobs:
   k6:
     name: k6 — p95 < 80ms @ 5k RPS
     runs-on: ubuntu-latest
+    # The run is a 1m load test plus setup; 30 minutes bounds a hung one
+    # instead of letting it burn the runner until the workflow-level limit.
+    timeout-minutes: 30
 
     services:
       postgres:
@@ -84,6 +89,15 @@ jobs:
       - name: Apply committed migrations
         run: node node_modules/prisma/build/index.js migrate deploy
 
+      - name: Seed the database
+        # The load test measures /price and /price/twap|vwap for XLM/USDC,
+        # which need price points in the DB. Without a seed the run executes
+        # against an empty database and the checks measure nothing. Seeding
+        # testnet only: the workflow runs the server on testnet (the default)
+        # and the k6 pairs default to XLM/USDC on that network. Seeded rows
+        # are idempotent (re-seeding replaces the previous fixture rows).
+        run: npm run seed -- --network testnet
+
       - name: Start server
         run: |
           npm start > server.log 2>&1 &
@@ -92,7 +106,7 @@ jobs:
       - name: Wait for server to be ready
         run: |
           for i in $(seq 1 60); do
-            if curl -sf http://localhost:3002/status > /dev/null; then
+            if curl -sf http://localhost:3002/ready > /dev/null; then
               echo "Server is up."
               exit 0
             fi
@@ -123,6 +137,15 @@ jobs:
           BASE_URL: http://localhost:3002
           RATE: ${{ github.event.inputs.rate || '5000' }}
           DURATION: ${{ github.event.inputs.duration || '1m' }}
+
+      - name: Upload k6 summary
+        # Keep the run's numbers even when a threshold fails — that is when
+        # they are most needed (e.g. whether a hosted runner can hold 5k RPS).
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: k6-summary
+          path: k6-summary.json
 
       - name: Dump server logs on failure
         if: failure()
