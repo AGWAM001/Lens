@@ -214,6 +214,30 @@ In addition, live service responses are verified against their published schemas
 
 All routes are partitioned into three security and CORS tiers (`public`, `credentialed`, and `admin`) with a split CORS policy — see the [Route Classification & CORS Guide](docs/routes.md).
 
+## API-key authentication
+
+Client API keys must be sent as `Authorization: Bearer <key>`; `X-API-Key` is **not supported**. A key cannot be supplied as a query parameter. The admin credential is separate: set `ADMIN_TOKEN` on the server and send it in `X-Admin-Token` (or Bearer with the *admin* token) when creating or revoking keys. Admin routes bypass client-key auth but enforce their own admin authorization.
+
+To create a key and inspect its usage on a locally configured Lens server, run this example in a shell that has `ADMIN_TOKEN` set to the **same value used by the running server**. No real key is included here:
+
+```bash
+export LENS_URL="http://localhost:3002"
+test -n "$ADMIN_TOKEN" || { echo "Set ADMIN_TOKEN first" >&2; exit 1; }
+RESPONSE="$(curl --fail-with-body -sS -X POST "$LENS_URL/admin/keys" \
+  -H "X-Admin-Token: $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  --data '{"label":"example-client","ratePerMin":60,"ratePerDay":10000}')"
+API_KEY="$(printf '%s' "$RESPONSE" | node -e 'let s="";process.stdin.on("data",c=>s+=c);process.stdin.on("end",()=>process.stdout.write(JSON.parse(s).key))')"
+curl --fail-with-body -sS "$LENS_URL/usage/me" -H "Authorization: Bearer $API_KEY"
+```
+
+The key is returned in plaintext **only in the creation response**. Lens stores its deterministic SHA-256 hash, not plaintext, so save the returned credential securely. The key can later be revoked through `DELETE /admin/keys/:id` using its returned `id` and the admin token. Revoked or expired keys no longer authenticate. Optional `scopes` and `expiresAt` restrict a key; see the admin API for rotation and key listing.
+
+`ratePerMin` (default **60**) and `ratePerDay` (default **10000**) are request-rate limits; a depleted request quota returns 429. Monetary metering uses `dailyQuotaCents` (default **500**) and `monthlyQuotaCents` (default **10000**) with `overagePolicy` (`block`, `charge_402`, or `allow_overage`). `GET /usage/me` shows the calling key's usage.
+
+**Authentication errors:** an absent `Authorization` header produces HTTP 401 with `code: "missing"` and a message naming that header; a malformed or non-Bearer value produces `code: "malformed"`. Unknown, revoked, and expired credentials return distinct 401 codes. The table below enumerates them. An `X-API-Key` header alone is handled as missing. Admin authorization failures use `code: "admin_unauthorized"`.
+
+
 The `?network=testnet\|mainnet` query param (or `x-network` header) selects the
 Stellar network. It is validated on every request — an unrecognised value gets a
 `400` — and defaults to this instance's `STELLAR_NETWORK`. Only the routes whose
