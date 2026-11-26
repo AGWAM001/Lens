@@ -2745,8 +2745,15 @@ export interface operations {
                     };
                 };
             };
-            /** @description Invalid parameters */
+            /** @description Invalid window or limit parameter */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Asset pair is not watched on this network */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
