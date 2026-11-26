@@ -6665,15 +6665,14 @@
               "totalNetworkTrades",
               "assetsTracked",
               "assetsWithActivity",
+              "excludedAssetCount",
+              "excludedAssets",
               "status",
+              "reason",
               "venues"
             ],
             "properties": {
               "tradeCoverageRatio": {
-                "type": "number",
-                "nullable": true
-              },
-              "volumeCoverageRatio": {
                 "type": "number",
                 "nullable": true
               },
@@ -6688,6 +6687,29 @@
               },
               "assetsWithActivity": {
                 "type": "integer"
+              },
+              "excludedAssetCount": {
+                "type": "integer",
+                "description": "Number of assets omitted from overall totals because Horizon data was incomplete."
+              },
+              "excludedAssets": {
+                "type": "array",
+                "description": "Assets omitted from overall totals, with the Horizon failure reason.",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "asset",
+                    "reason"
+                  ],
+                  "properties": {
+                    "asset": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  }
+                }
               },
               "status": {
                 "type": "string",
