@@ -1038,6 +1038,28 @@ curl -s http://localhost:3002/price/XLM/USDC | jq '{price, ammPrice, lastUpdated
 
 *(Note: timestamp values above reflect the dynamic hourly anchor at seed execution time and request time).*
 
+## Load testing
+
+The price endpoints are load-tested with k6 (`.github/workflows/load.yml`,
+`tests/load/prices.k6.js`), on a schedule and on demand. The acceptance
+criterion is **price p95 < 80ms at 5k RPS**; twap/vwap get a looser
+p95 < 500ms because they compute over a 60-minute window. Thresholds are
+per endpoint, and the k6 summary is uploaded as a `k6-summary` artifact on
+every run, so a failing run still leaves its numbers behind.
+
+To try a small run locally against docker-compose (with k6 installed — see
+https://k6.io/docs/get-started/installation/). The database must be seeded
+first: an empty database has no price points for `/price` to serve.
+
+```bash
+docker compose up -d
+npm run seed -- --network testnet
+RATE=200 DURATION=20s k6 run tests/load/prices.k6.js
+```
+
+(The full 5k RPS run needs a machine with enough headroom to both serve and
+generate the load; a hosted CI runner is the reference environment for it.)
+
 ## Backfill & Ingestion Gap Detection
 
 Lens provides persistent gap detection and an idempotent historical backfill CLI to recover missing trade history and declare incomplete time windows in API responses.
