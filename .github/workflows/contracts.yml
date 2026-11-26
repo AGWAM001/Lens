@@ -1,0 +1,80 @@
+name: Soroban contracts
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    paths:
+      - 'oracle/contract/**'
+      - 'examples/oracle-relay/contract/**'
+      - '.github/workflows/contracts.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: contracts-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contracts:
+    name: Build & test Soroban contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.89.0 --profile minimal --component rustfmt,clippy --target wasm32v1-none
+          rustup default 1.89.0
+
+      - name: Cache Cargo registry and target directories
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            oracle/contract/target
+            examples/oracle-relay/contract/target
+          key: ${{ runner.os }}-cargo-1.89.0-${{ hashFiles('oracle/contract/Cargo.lock', 'examples/oracle-relay/contract/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-1.89.0-
+
+      - name: Check formatting (oracle/contract)
+        working-directory: oracle/contract
+        run: cargo fmt --check
+
+      - name: Run clippy (oracle/contract)
+        working-directory: oracle/contract
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Run unit tests (oracle/contract)
+        working-directory: oracle/contract
+        run: cargo test --locked --lib
+
+      - name: Build release WASM (oracle/contract)
+        working-directory: oracle/contract
+        run: cargo build --locked --release --target wasm32v1-none
+
+      - name: Build release WASM (examples/oracle-relay/contract)
+        working-directory: examples/oracle-relay/contract
+        run: cargo build --release --target wasm32v1-none
+
+      - name: Write WASM size and SHA-256 to job summary
+        run: |
+          {
+            echo "### Soroban Contract WASM Artifacts"
+            echo ""
+            echo "| Contract | Size (bytes) | SHA-256 |"
+            echo "|---|---|---|"
+            for wasm in \
+              oracle/contract/target/wasm32v1-none/release/lens_sep40_oracle.wasm \
+              examples/oracle-relay/contract/target/wasm32v1-none/release/oracle_relay.wasm; do
+              size=$(wc -c < "$wasm" | tr -d ' ')
+              hash=$(sha256sum "$wasm" | awk '{print $1}')
+              echo "| \`$wasm\` | $size | \`$hash\` |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
