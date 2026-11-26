@@ -205,7 +205,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Convert asset price to fiat currency with NGN support (#290) */
+        /**
+         * Convert asset price to fiat currency with NGN support (#290)
+         * @description Converts the asset USD price to a supported fiat currency using a dated static reference rate table (overridable via FIAT_RATES_JSON). Exposes rateTimestamp, rateAgeSeconds, stale, supportedCurrencies, and fiatRatesAsOf so callers can inspect rate freshness.
+         */
         get: operations["getFiatPrice"];
         put?: never;
         post?: never;
@@ -2618,7 +2621,30 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": {
+                        asset: string;
+                        currency: string;
+                        priceInFiat: number;
+                        baseUsdPrice: number;
+                        fiatPerUsd: number;
+                        crossLegs: {
+                            from?: string;
+                            to?: string;
+                            rate?: number;
+                            source?: string;
+                            /** Format: date-time */
+                            asOf?: string;
+                        }[];
+                        supportedCurrencies: string[];
+                        /** Format: date-time */
+                        fiatRatesAsOf: string;
+                        /** @enum {string} */
+                        rateSource: "static_reference";
+                        /** Format: date-time */
+                        rateTimestamp: string;
+                        rateAgeSeconds: number;
+                        stale: boolean;
+                    };
                 };
             };
             /** @description Invalid parameters */
