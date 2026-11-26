@@ -6,7 +6,16 @@ import ws from 'k6/ws'
 /**
  * Load test for the price endpoints fronted by trading bots.
  *
- * Acceptance criteria: p95 < 80ms at 5k RPS.
+ * Acceptance criteria: price p95 < 80ms at 5k RPS; twap/vwap p95 < 500ms.
+ * Thresholds are per endpoint, using the `endpoint` tag the scenarios
+ * already set. They used to be a single p(95)<200 on the global
+ * http_req_duration metric — a looser limit than the 80ms the workflow
+ * title claims, and it lumped the slower twap/vwap endpoints in with the
+ * hot price path.
+ *
+ * The database must be seeded before a run (`npm run seed -- --network
+ * testnet`); an empty database has no price points, so /price returns no
+ * data and the run measures nothing. The CI workflow seeds it for you.
  *
  * The test drives `GET /price/:assetA/:assetB` — the hot path bots poll. It uses
  * a constant-arrival-rate executor so the load is expressed in requests/second
@@ -76,10 +85,25 @@ export const options = {
     },
   },
   thresholds: {
-    http_req_duration: ['p(95)<200'],
+    // The price endpoint is the hot path bots poll: its p95 must match the
+    // <80ms acceptance criterion in the workflow title and the header above.
+    'http_req_duration{endpoint:price}': ['p(95)<80'],
+    // twap/vwap compute over a 60-minute window, so they get a looser bound.
+    'http_req_duration{endpoint:twap}': ['p(95)<500'],
+    'http_req_duration{endpoint:vwap}': ['p(95)<500'],
+    twap_duration: ['p(95)<500'],
+    vwap_duration: ['p(95)<500'],
     errors: ['rate<0.05'],
     http_req_failed: ['rate<0.01'],
   },
+}
+
+// Save the full run summary so a failing run still leaves its numbers
+// behind (the CI workflow uploads k6-summary.json as an artifact).
+export function handleSummary(data) {
+  return {
+    'k6-summary.json': JSON.stringify(data, null, 2),
+  }
 }
 
 const params = {

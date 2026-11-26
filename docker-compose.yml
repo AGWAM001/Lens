@@ -7,18 +7,25 @@ services:
       - DATABASE_URL=postgresql://lens:lens@postgres:5432/lens
       - REDIS_URL=redis://redis:6379
       - WATCHED_PAIRS=XLM:native/USDC:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5
+      # Network this stack ingests (the code defaults to testnet); stated
+      # here so a reader can tell which network the stack ingests at a glance.
+      - STELLAR_NETWORK=testnet
       - REQUIRE_API_KEY=false
     depends_on:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3002/status"]
+      # /ready, not /status: /status answers as soon as the server listens,
+      # before boot finishes; /ready stays unhealthy until markBootComplete()
+      # and the Postgres/Redis probes pass (src/health.ts, docs/health.md).
+      test: ["CMD", "curl", "-f", "http://localhost:3002/ready"]
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 20s
+      # First-run migrations run before the server can become ready.
+      start_period: 60s
 
   postgres:
     image: postgres:15-alpine
@@ -41,6 +48,11 @@ services:
     ports:
       - "6379:6379"
     command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
     volumes:
       - redisdata:/data
 
