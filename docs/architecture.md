@@ -105,3 +105,7 @@ All candle aggregation (`/candles`), time-window filtering, TWAP, and VWAP calcu
 1. **Universality across venues**: Snapshot-only venues (Soroswap, Aquarius, AMM reserve snapshots) have no native trade timestamps (`source_time = null`). Bucketing on source time would drop or misrepresent state snapshots.
 2. **Single monotonic timeline**: Observation time provides a unified, monotonic reference clock across decentralized order books, AMMs, and off-chain exchanges, avoiding clock skew, Horizon polling latency skews, and historical reorg gaps.
 
+### Backfilled Historical Observations
+
+For **backfilled SDEX and AMM trades** (`src/backfill/backfillService.ts`), both `observed_at` (along with the legacy `timestamp` mirror) and `source_time` are set to the trade's `ledger_close_time`. Setting `observed_at` to `ledger_close_time` ensures backfilled trades land in their historical candle, TWAP, and VWAP windows instead of polluting the current wall-clock hour, while live ingesters continue stamping `observed_at` with the current ingestion time.
+

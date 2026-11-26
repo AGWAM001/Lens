@@ -1,4 +1,4 @@
-import { Registry, Counter, Gauge, Histogram } from 'prom-client'
+import { Registry, Counter, Gauge, Histogram, collectDefaultMetrics } from 'prom-client'
 
 export const register = new Registry()
 
@@ -6,6 +6,7 @@ export const register = new Registry()
 register.setDefaultLabels({
   app: 'lens'
 })
+collectDefaultMetrics({ register })
 
 // Ingest metrics are network-scoped. One ingester set runs per enabled network
 // against one shared Registry, so without `network` the testnet loop and the
@@ -153,6 +154,20 @@ export const api_key_cache_lookups_total = new Counter({
   // A hit is served entirely from the in-process cache with no Postgres query;
   // a miss falls through to `prisma.apiKey.findUnique`.
   labelNames: ['result'],
+  registers: [register]
+})
+
+export const cache_requests_total = new Counter({
+  name: 'cache_requests_total',
+  help: 'Redis cache reads by cache and outcome',
+  labelNames: ['cache', 'result'],
+  registers: [register]
+})
+
+export const cache_write_errors_total = new Counter({
+  name: 'cache_write_errors_total',
+  help: 'Failed writes to Redis caches',
+  labelNames: ['cache'],
   registers: [register]
 })
 

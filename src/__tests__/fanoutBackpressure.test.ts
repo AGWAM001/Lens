@@ -59,7 +59,7 @@ process.env.WS_MAX_CONGESTED_MS = String(MAX_CONGESTED_MS)
 process.env.WS_BUFFER_SWEEP_INTERVAL_MS = '25'
 
 const fanout = await import('../ws/fanout')
-const { priceEmitter, PRICE_UPDATE } = await import('../events')
+const { priceEmitter, PRICE_PUBLISHED, publishPriceUpdate } = await import('../events')
 const { resolveBackpressureLimits, DEFAULT_BACKPRESSURE_LIMITS } = await import('../ws/backpressure')
 
 /** Aggregate (`*`) total of a counter. */
@@ -139,18 +139,17 @@ function healthySocket(id: string) {
   }
 }
 
-function priceUpdate(price: number) {
-  return {
-    assetA: 'XLM',
-    assetB: 'USDC',
-    previousPrice: price,
-    currentPrice: price + 0.001,
-    timestamp: new Date(0),
-  }
+function publish(price: number): void {
+  publishPriceUpdate({
+    pair: 'USDC/XLM',
+    price,
+    ts: new Date(0).toISOString(),
+    network: 'testnet',
+  })
 }
 
 function emit(count: number, from = 0): void {
-  for (let i = 0; i < count; i++) priceEmitter.emit(PRICE_UPDATE, priceUpdate(from + i))
+  for (let i = 0; i < count; i++) publish(from + i)
 }
 
 beforeEach(async () => {
@@ -159,7 +158,7 @@ beforeEach(async () => {
   // destroy() also clears the emitter subscription, so the next initialize()
   // installs exactly one.
   await fanout.fanOutManager.destroy()
-  priceEmitter.removeAllListeners(PRICE_UPDATE)
+  priceEmitter.removeAllListeners(PRICE_PUBLISHED)
   await fanout.fanOutManager.initialize()
   for (const metric of [
     'ws_messages_sent_total',
@@ -218,7 +217,7 @@ describe('memory stays bounded for a stalled peer', () => {
 
     // Cross the hard limit so the client is evicted with an update still held.
     stalled.bytesHeld = HARD_LIMIT
-    priceEmitter.emit(PRICE_UPDATE, priceUpdate(11))
+    publish(11)
 
     expect(stalled.closeCalls).toEqual([{ code: 1013, reason: 'buffer limit exceeded' }])
 
@@ -255,7 +254,7 @@ describe('slow-client policy', () => {
     const stalled = stalledSocket('stalled-6', HARD_LIMIT)
     fanout.fanOutManager.register('*', stalled)
 
-    priceEmitter.emit(PRICE_UPDATE, priceUpdate(1))
+    publish(1)
 
     expect(stalled.closeCalls).toEqual([{ code: 1013, reason: 'buffer limit exceeded' }])
     expect(await counterTotal('ws_clients_dropped_total')).toBe(1)
@@ -267,11 +266,11 @@ describe('slow-client policy', () => {
     const stalled = stalledSocket('stalled-7', SOFT_LIMIT)
     fanout.fanOutManager.register('*', stalled)
 
-    priceEmitter.emit(PRICE_UPDATE, priceUpdate(1))
+    publish(1)
     expect(stalled.closeCalls).toHaveLength(0)
 
     await new Promise(resolve => setTimeout(resolve, MAX_CONGESTED_MS + 100))
-    priceEmitter.emit(PRICE_UPDATE, priceUpdate(2))
+    publish(2)
 
     expect(stalled.closeCalls).toEqual([{ code: 1013, reason: 'congested too long' }])
     expect(await counterTotal('ws_clients_dropped_total')).toBe(1)
@@ -281,13 +280,13 @@ describe('slow-client policy', () => {
     const stalled = stalledSocket('stalled-8', SOFT_LIMIT)
     fanout.fanOutManager.register('*', stalled)
 
-    priceEmitter.emit(PRICE_UPDATE, priceUpdate(1))
+    publish(1)
     expect(stalled.framesQueued).toBe(0)
 
     // The peer starts reading again. Coalescing must not have cost it the
     // subscription, and the update it missed must still reach it.
     stalled.drain(SOFT_LIMIT)
-    priceEmitter.emit(PRICE_UPDATE, priceUpdate(2))
+    publish(2)
 
     expect(stalled.closeCalls).toHaveLength(0)
     expect(stalled.framesQueued).toBe(1)
@@ -345,7 +344,7 @@ describe('sent accounting', () => {
     const healthy = healthySocket('healthy-1')
     fanout.fanOutManager.register('*', healthy)
 
-    priceEmitter.emit(PRICE_UPDATE, priceUpdate(1))
+    publish(1)
 
     expect(healthy.send).toHaveBeenCalledTimes(1)
     expect(await counterTotal('ws_messages_sent_total')).toBe(1)
@@ -355,7 +354,7 @@ describe('sent accounting', () => {
     const stalled = stalledSocket('stalled-9')
     fanout.fanOutManager.register('*', stalled)
 
-    priceEmitter.emit(PRICE_UPDATE, priceUpdate(1))
+    publish(1)
 
     // `send()` returned, so the old code counted this. The write never
     // completed, so it was not delivered and must not be counted as sent.
@@ -367,8 +366,8 @@ describe('sent accounting', () => {
     const send = vi.fn((_data: string, cb?: (err?: Error | null) => void) => cb?.(new Error('EPIPE')))
     fanout.fanOutManager.register('*', { id: 'failing-1', send, close: vi.fn(), bufferedAmount: () => 0 })
 
-    priceEmitter.emit(PRICE_UPDATE, priceUpdate(1))
-    priceEmitter.emit(PRICE_UPDATE, priceUpdate(2))
+    publish(1)
+    publish(2)
 
     expect(await counterTotal('ws_messages_sent_total')).toBe(0)
     // Unregistered after the failed write, so the second update went nowhere.
@@ -388,7 +387,7 @@ describe('sent accounting', () => {
     const healthy = healthySocket('healthy-2')
     fanout.fanOutManager.register('*', healthy)
 
-    priceEmitter.emit(PRICE_UPDATE, priceUpdate(1))
+    publish(1)
 
     expect(await counterTotal('ws_messages_sent_total')).toBe(1)
     expect(healthy.received).toHaveLength(1)
@@ -397,7 +396,7 @@ describe('sent accounting', () => {
   it('treats a client that cannot report its buffer as unbuffered', () => {
     const client = { id: 'opaque-1', send: vi.fn(), close: vi.fn() }
     expect(() => fanout.fanOutManager.register('*', client)).not.toThrow()
-    expect(() => priceEmitter.emit(PRICE_UPDATE, priceUpdate(1))).not.toThrow()
+    expect(() => publish(1)).not.toThrow()
   })
 })
 
@@ -408,7 +407,7 @@ describe('scrape visibility', () => {
     // Prometheus never looks.
     const healthy = healthySocket('healthy-6')
     fanout.fanOutManager.register('*', healthy)
-    priceEmitter.emit(PRICE_UPDATE, priceUpdate(1))
+    publish(1)
 
     const scrape = await register.metrics()
     for (const name of [

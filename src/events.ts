@@ -3,16 +3,6 @@ import type { NetworkName } from './config'
 
 export const priceEmitter = new EventEmitter()
 
-export const PRICE_UPDATE = 'price:update'
-
-export interface PriceUpdateEvent {
-  assetA: string
-  assetB: string
-  previousPrice: number
-  currentPrice: number
-  timestamp: Date
-}
-
 /**
  * Emitted by every ingester after it records a new price for a pair. This is
  * the feed that backs the GraphQL `priceUpdated` subscription. It is kept

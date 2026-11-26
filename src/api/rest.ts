@@ -25,11 +25,9 @@ import {
 import { findOverlappingGaps } from '../backfill/gaps'
 import { getDepth, getImpact } from '../pricing/depth'
 import { getRetentionPath } from '../jobs/retentionStatus'
+import { parseLimit } from '../pagination'
 
 import { apiError } from '../errors'
-function makePairKey(a: string, b: string): string {
-  return [a, b].sort().join('/')
-}
 
 export const HISTORY_DEFAULT_LIMIT = 100
 export const HISTORY_MAX_LIMIT = 1000
@@ -311,18 +309,28 @@ export async function registerRESTRoutes(app: FastifyInstance) {
     '/price/:assetA/:assetB/history',
     { config: { scope: 'read:history' }, schema: { response: { 200: historyResponseSchema } } },
     async (req, reply) => {
+      const window = req.query.window ?? '1h'
+      if (!['1m', '5m', '1h', '24h'].includes(window)) {
+        return reply.status(400).send(apiError('bad_window', 'window must be one of: 1m, 5m, 1h, 24h'))
+      }
+
+      const parsedLimit = parseLimit(req.query.limit, HISTORY_DEFAULT_LIMIT, HISTORY_MAX_LIMIT)
+      if ('error' in parsedLimit) {
+        return reply.status(400).send(apiError('invalid_parameter', parsedLimit.error))
+      }
+      const { limit } = parsedLimit
+
       const { assetA, assetB } = req.params
       const network = req.network ?? activeNetwork
-      const window = req.query.window ?? '1h'
-      const limit = Math.min(parseInt(req.query.limit ?? String(HISTORY_DEFAULT_LIMIT), 10), HISTORY_MAX_LIMIT)
-      const pairKey = makePairKey(assetA, assetB)
+      const pair = findPair(assetA, assetB, network)
+      if (!pair) {
+        return reply.status(404).send(apiError('unwatched_pair', `Pair ${assetA}/${assetB} not watched on ${network}`))
+      }
+      const pairKey = pair.pairKey
+
       const decimalFormat = resolveDecimalFormat(req)
       if (decimalFormat === 'string') {
         reply.header('x-decimal-format', 'string')
-      }
-
-      if (!['1m', '5m', '1h', '24h'].includes(window)) {
-        return reply.status(400).send(apiError('bad_window', 'window must be one of: 1m, 5m, 1h, 24h'))
       }
 
       const result = await pgPool.query(

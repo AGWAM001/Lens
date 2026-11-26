@@ -1,6 +1,7 @@
 import Redis from 'ioredis'
 import { config, activeNetwork, type NetworkName } from './config'
 import { createLogger } from './logger'
+import { cache_requests_total, cache_write_errors_total } from './metrics'
 
 const log = createLogger('redis')
 
@@ -48,20 +49,34 @@ redis.on('error', (err) => {
   suppressedRedisErrors = 0
 })
 
-export async function getCachedPrice(pairKey: string): Promise<string | null> {
+type CacheName = 'price' | 'snapshot' | 'asset'
+
+async function readCache(cache: CacheName, key: string): Promise<string | null> {
+  let value: string | null
   try {
-    return await redis.get(`lens:${activeNetwork}:price:${pairKey}`)
+    value = await redis.get(key)
   } catch {
+    cache_requests_total.inc({ cache, result: 'error' })
     return null
+  }
+  cache_requests_total.inc({ cache, result: value === null ? 'miss' : 'hit' })
+  return value
+}
+
+async function writeCache(cache: CacheName, key: string, data: object, ttlSeconds: number): Promise<void> {
+  try {
+    await redis.set(key, JSON.stringify(data), 'EX', ttlSeconds)
+  } catch {
+    cache_write_errors_total.inc({ cache })
   }
 }
 
+export async function getCachedPrice(pairKey: string): Promise<string | null> {
+  return readCache('price', `lens:${activeNetwork}:price:${pairKey}`)
+}
+
 export async function setCachedPrice(pairKey: string, data: object, ttlSeconds: number): Promise<void> {
-  try {
-    await redis.set(`lens:${activeNetwork}:price:${pairKey}`, JSON.stringify(data), 'EX', ttlSeconds)
-  } catch {
-    // Redis cache miss is non-fatal
-  }
+  await writeCache('price', `lens:${activeNetwork}:price:${pairKey}`, data, ttlSeconds)
 }
 
 /**
@@ -72,19 +87,11 @@ export async function setCachedPrice(pairKey: string, data: object, ttlSeconds: 
  * normal recompute, never a failed request.
  */
 export async function getCachedSnapshot(network: NetworkName): Promise<string | null> {
-  try {
-    return await redis.get(`lens:snapshot:${network}`)
-  } catch {
-    return null
-  }
+  return readCache('snapshot', `lens:snapshot:${network}`)
 }
 
 export async function setCachedSnapshot(network: NetworkName, data: object, ttlSeconds: number): Promise<void> {
-  try {
-    await redis.set(`lens:snapshot:${network}`, JSON.stringify(data), 'EX', ttlSeconds)
-  } catch {
-    // Redis cache miss is non-fatal
-  }
+  await writeCache('snapshot', `lens:snapshot:${network}`, data, ttlSeconds)
 }
 
 /**
@@ -96,11 +103,7 @@ export async function setCachedSnapshot(network: NetworkName, data: object, ttlS
  * never a failed one.
  */
 export async function getCachedAsset(network: string, assetKey: string): Promise<string | null> {
-  try {
-    return await redis.get(`lens:${network}:asset:${assetKey}`)
-  } catch {
-    return null
-  }
+  return readCache('asset', `lens:${network}:asset:${assetKey}`)
 }
 
 export async function setCachedAsset(
@@ -109,9 +112,5 @@ export async function setCachedAsset(
   data: object,
   ttlSeconds: number
 ): Promise<void> {
-  try {
-    await redis.set(`lens:${network}:asset:${assetKey}`, JSON.stringify(data), 'EX', ttlSeconds)
-  } catch {
-    // Redis cache miss is non-fatal
-  }
+  await writeCache('asset', `lens:${network}:asset:${assetKey}`, data, ttlSeconds)
 }

@@ -1,87 +1,24 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { x402_payments_received_total } from '../metrics'
 import { checkQuota, recordUsage, parseCents, getQuotaConfig } from '../x402/metering'
-import { X402_NETWORK_LABEL, paymentAddressFor, isX402Configured, getX402ResourceServer } from '../x402/network'
+import { X402_NETWORK_LABEL, isX402Configured, getX402ResourceServer } from '../x402/network'
 import fp from 'fastify-plugin'
 import { apiError } from '../errors'
 import './network' // declares req.network on the FastifyRequest type
 
-export interface GatedRoute {
-  readonly path: string
-  readonly method: 'GET' | 'POST'
-  readonly price: string
-  readonly description: string
-}
+// One source of truth for the gated-route list and the path matcher (issue #677):
+// the cache layer reads the same definitions, so the two can never drift.
+// Re-exported here so existing imports from ./x402 keep working.
+import {
+  GATED_ROUTES,
+  matchesPathSegment,
+  matchGatedRoute,
+  paymentAddressFor,
+  type GatedRoute,
+} from '../x402/gating'
 
-// Routes gated by x402 and their prices, declared in deliberate order
-export const GATED_ROUTES: readonly GatedRoute[] = [
-  {
-    path: '/price',
-    method: 'GET',
-    price: '$0.10',
-    description: 'Unified SDEX+AMM price with VWAP and best route',
-  },
-  {
-    path: '/pools',
-    method: 'GET',
-    price: '$0.05',
-    description: 'AMM liquidity pool reserves and spot prices',
-  },
-  {
-    path: '/candles',
-    method: 'GET',
-    price: '$0.05',
-    description: 'OHLCV candle data for trading charts',
-  },
-  {
-    path: '/graphql',
-    method: 'POST',
-    price: '$0.10',
-    description: 'GraphQL queries for price data and market information',
-  },
-] as const
-
-/**
- * Checks whether `routedPath` matches `prefix` at a path-segment boundary.
- *
- * Query strings and fragments are stripped so they cannot affect whether a route
- * matches. A path matches at a segment boundary if each segment of the prefix
- * matches the corresponding segment of the path.
- *
- * For example:
- *   - '/price' matches '/price'
- *   - '/price/test' matches '/price'
- *   - '/pricing' does NOT match '/price' (segment 'pricing' !== 'price')
- *   - '/poolsize' does NOT match '/pools' (segment 'poolsize' !== 'pools')
- */
-export function matchesPathSegment(routedPath: string, prefix: string): boolean {
-  const cleanPath = routedPath.split('?')[0].split('#')[0]
-  const cleanPrefix = prefix.split('?')[0].split('#')[0]
-
-  const pathSegments = cleanPath.split('/').filter(Boolean)
-  const prefixSegments = cleanPrefix.split('/').filter(Boolean)
-
-  if (pathSegments.length < prefixSegments.length) {
-    return false
-  }
-
-  return prefixSegments.every((seg, i) => pathSegments[i] === seg)
-}
-
-/**
- * Finds the first matching gated route definition for a given path and HTTP method.
- * Matches on the routed path at a path-segment boundary, never on raw URLs with query strings.
- */
-export function matchGatedRoute(
-  path: string,
-  method: string,
-  routes: readonly GatedRoute[] = GATED_ROUTES,
-): GatedRoute | undefined {
-  const upperMethod = method.toUpperCase()
-  return routes.find(
-    route => route.method.toUpperCase() === upperMethod && matchesPathSegment(path, route.path)
-  )
-}
+export { GATED_ROUTES, matchesPathSegment, matchGatedRoute }
+export type { GatedRoute }
 
 /**
  * Fastify plugin that gates matching routes behind x402 USDC micropayments.
