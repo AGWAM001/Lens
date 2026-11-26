@@ -197,8 +197,26 @@ describe('API key auth hook', () => {
     expect(res.statusCode).toBe(401)
     expect(res.json()).toMatchObject({ error: 'Unauthorized' })
     expect(res.json().code).toBe('missing')
+    expect(res.json().message).toBe('Missing API key. Provide an Authorization header.')
     expect(await apiKeyAuthFailureCount('missing')).toBe(before + 1)
     expect(mockFindUnique).not.toHaveBeenCalled()
+  })
+
+  it('rejects X-API-Key in place of Authorization: Bearer', async () => {
+    const app = await buildAuthedApp()
+    try {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/price/test',
+        headers: { 'x-api-key': 'lens_not-a-real-key' },
+      })
+      expect(res.statusCode).toBe(401)
+      expect(res.json().code).toBe('missing')
+      expect(res.json().message).toBe('Missing API key. Provide an Authorization header.')
+      expect(mockFindUnique).not.toHaveBeenCalled()
+    } finally {
+      await app.close()
+    }
   })
 
   it('counts malformed authorization separately from missing credentials', async () => {

@@ -17,6 +17,7 @@ import {
   type VenueDispersionAlertPayload,
 } from '../alerts/dispersion'
 import { createLogger } from '../logger'
+import { runJob } from './jobMetrics'
 
 const log = createLogger('reconciliation')
 
@@ -152,18 +153,25 @@ export async function reconcileAllPairs(
 }
 
 export function createVenueReconciliationQueue(network: NetworkName) {
-  return new Queue(queueName(network), { connection: redisConnection() })
+  // One attempt, pinned: BullMQ's default is already 1, but a failed run
+  // must be stored as failed, not retried forever — the next repeat fires
+  // on schedule. See src/jobs/jobMetrics.ts.
+  return new Queue(queueName(network), {
+    connection: redisConnection(),
+    defaultJobOptions: { attempts: 1 },
+  })
 }
 
 export function startVenueReconciliationWorker(network: NetworkName) {
   const worker = new Worker(
     queueName(network),
     async () => {
-      try {
-        await reconcileAllPairs(network)
-      } catch (err) {
-        log.error({ err, network }, 'venue reconciliation worker cycle failed')
-      }
+      // No try/catch: runJob() records the failure and rethrows, so BullMQ
+      // stores the job as failed (worker.on('failed') below can then fire).
+      // reconcileAllPairs() itself still isolates per-pair failures — a bad
+      // pair is logged and the other pairs are reconciled — so a run only
+      // fails here when the cycle itself throws.
+      await runJob('venue-reconciliation', network, () => reconcileAllPairs(network))
     },
     { connection: redisConnection(), concurrency: 1 }
   )
@@ -192,6 +200,11 @@ export async function scheduleVenueReconciliation(queue: Queue, network: Network
 export function startInProcessVenueReconciliation(network: NetworkName) {
   const intervalMs = config.reconciliation.intervalMs
   return setInterval(() => {
-    void reconcileAllPairs(network)
+    // Same recording as the queue worker above. The catch only logs: a
+    // timer has no BullMQ to report the failure to, and an unhandled
+    // rejection must not take the process down with it.
+    void runJob('venue-reconciliation', network, () => reconcileAllPairs(network)).catch((err) => {
+      log.error({ err, network }, 'venue reconciliation in-process run failed')
+    })
   }, intervalMs).unref()
 }
