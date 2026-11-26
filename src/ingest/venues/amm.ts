@@ -55,9 +55,11 @@ export async function fetchPools(
       ? `${pair.assetB.code}:${pair.assetB.issuer}`
       : 'native'
 
+    // Horizon's filter is one comma-separated `reserves` list. The array form
+    // `reserves[]=` is ignored, and Horizon then lists unrelated pools (#226:
+    // the recorded mainnet fixture came back with XLM/GOLDBANK, BLND/QUBIC...).
     const params = new URLSearchParams()
-    params.append('reserves[]', assetAStr)
-    params.append('reserves[]', assetBStr)
+    params.set('reserves', `${assetAStr},${assetBStr}`)
     params.set('limit', '10')
 
     const data = await fetchHorizonJson<any>(
@@ -69,7 +71,17 @@ export async function fetchPools(
       log.error({ pair: pair.pairKey }, 'failed to fetch pools: response has no _embedded.records')
       return fetchFailed(new Error('Horizon liquidity_pools response has no _embedded.records'))
     }
-    return fetchOk(data._embedded.records)
+    // Never trust the filter alone: snapshotPool prices every pool it is given
+    // as this pair, so a pool holding anything else would be written as an
+    // XLM/USDC price. Keep only pools whose two reserves are exactly the pair.
+    const wanted = [assetAStr, assetBStr].sort().join('|')
+    const pools = data._embedded.records.filter(
+      (p: any) =>
+        Array.isArray(p?.reserves) &&
+        p.reserves.length === 2 &&
+        p.reserves.map((r: any) => String(r?.asset)).sort().join('|') === wanted
+    )
+    return fetchOk(pools)
   } catch (err) {
     // A persistent 429 is raised, not logged and swallowed: the runner counts
     // it and backs the whole cycle off, which is the point of #348.
