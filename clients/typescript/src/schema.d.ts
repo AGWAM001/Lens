@@ -205,7 +205,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Convert asset price to fiat currency with NGN support (#290) */
+        /**
+         * Convert asset price to fiat currency with NGN support (#290)
+         * @description Converts the asset USD price to a supported fiat currency using a dated static reference rate table (overridable via FIAT_RATES_JSON). Exposes rateTimestamp, rateAgeSeconds, stale, supportedCurrencies, and fiatRatesAsOf so callers can inspect rate freshness.
+         */
         get: operations["getFiatPrice"];
         put?: never;
         post?: never;
@@ -631,7 +634,7 @@ export interface paths {
         };
         /**
          * Get biggest gainers, biggest losers, and volume movers
-         * @description Returns the top gainers, losers, and volume movers for the specified lookback window, annotated with venue provenance, sample counts, and single-venue move labelling.
+         * @description Returns the top gainers, losers, and volume movers for the specified lookback window, annotated with venue provenance, sample counts, and single-venue move labelling. Each list is cut to `limit` entries. A pair with no volume in the earlier window reports `volumeChangePct: null` and `hasPreviousVolume: false` (never a fabricated 100), and sorts after pairs with a computable volume change, by current volume descending.
          */
         get: operations["getMovers"];
         put?: never;
@@ -737,7 +740,12 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Natural language search with ranking and quality evaluation for discoverable resources */
+        /**
+         * Natural language search with ranking and quality evaluation for discoverable resources
+         * @description Matches the catalogue in the database (one term at a time, against `serviceName`, `description`, `url`, and any tag equal to a term) and then ranks what it found: 70% text relevance, 30% metadata quality.
+         *     Ranking is bounded, and the bound is part of the contract. One request scores at most the newest 500 matching rows. When the query matches more than that, `truncated` is true, `totalMatched` still reports the full count, and `rankedCount` reports how many rows this search actually put in an order — so an older match is never silently dropped without saying so. Narrow the query (or filter by `network`/`type`) to rank a smaller set.
+         *     Paging walks the ranking, not the table: `cursor` is an opaque encoding of the last result's score and id, `nextCursor` is null on the last page, and a cursor that is malformed or does not name a position in this result is a 400. Following `nextCursor` reaches every ranked row exactly once.
+         */
         get: operations["searchDiscoveryResources"];
         put?: never;
         post?: never;
@@ -1794,11 +1802,14 @@ export interface components {
             assetA: string;
             assetB: string;
             priceChangePct: number | null;
-            startPrice: number | null;
-            endPrice: number | null;
-            currentVolume: number;
-            previousVolume: number;
+            startPrice: (number | string) | null;
+            endPrice: (number | string) | null;
+            currentVolume: number | string;
+            previousVolume: number | string;
+            /** @description Null when the earlier window had no volume (see hasPreviousVolume); there is no honest percentage for growing from nothing. */
             volumeChangePct: number | null;
+            /** @description Whether the earlier window had any volume for this pair. False means volumeChangePct is null rather than a fabricated figure. */
+            hasPreviousVolume: boolean;
             venues: string[];
             isSingleVenue: boolean;
             sampleCount: number;
@@ -1912,6 +1923,43 @@ export interface components {
             offset: number;
             total: number;
         };
+        DiscoverySearchItem: {
+            /** @description Catalogue row id. Not a cursor — see the response's `nextCursor`. */
+            id: string;
+            /** @enum {string} */
+            type: "http" | "mcp";
+            network: string;
+            url: string;
+            serviceName?: string | null;
+            description?: string | null;
+            mimeType?: string | null;
+            tags: string[];
+            iconUrl?: string | null;
+            /** @description The seller this resource is paid to. */
+            payTo: string;
+            /** @description Composite ranking score, 70% relevance plus 30% quality, quantised to four decimals. This is the value the cursor carries. */
+            score: number;
+            /** @description Text relevance of the row to the query, 0 to 1. */
+            relevanceScore: number;
+            /** @description Metadata completeness of the row, 0 to 1. */
+            qualityScore: number;
+            /** @description Which fields matched which terms. */
+            matchReasons: string[];
+        };
+        DiscoverySearchResponse: {
+            query: string;
+            network: string;
+            /** @description Every row the database matched for this query, whether or not this request ranked it. Counted, not inferred from the page. */
+            totalMatched: number;
+            /** @description Rows this search scored and ordered; the cursor walk covers exactly these. */
+            rankedCount: number;
+            /** @description True when `totalMatched` exceeds the 500-row ranking bound, so the older matches are counted but not ranked. */
+            truncated: boolean;
+            limit: number;
+            /** @description Opaque position in the ranking to continue from. Null on the last page — including when that page is exactly `limit` rows long. */
+            nextCursor: string | null;
+            items: components["schemas"]["DiscoverySearchItem"][];
+        };
         WebhookCreatedResponse: {
             id: string;
             secret: string;
@@ -2017,6 +2065,9 @@ export interface components {
             currentPrice: number | null;
             currentDeviationBps: number | null;
             worstDeviationBps: number | null;
+            /** @enum {string} */
+            status: "on_peg" | "off_peg" | "no_reference" | "no_data" | "error";
+            reason: string | null;
             window: string;
             provenance: {
                 venues: string[];
@@ -2624,7 +2675,30 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": {
+                        asset: string;
+                        currency: string;
+                        priceInFiat: number;
+                        baseUsdPrice: number;
+                        fiatPerUsd: number;
+                        crossLegs: {
+                            from?: string;
+                            to?: string;
+                            rate?: number;
+                            source?: string;
+                            /** Format: date-time */
+                            asOf?: string;
+                        }[];
+                        supportedCurrencies: string[];
+                        /** Format: date-time */
+                        fiatRatesAsOf: string;
+                        /** @enum {string} */
+                        rateSource: "static_reference";
+                        /** Format: date-time */
+                        rateTimestamp: string;
+                        rateAgeSeconds: number;
+                        stale: boolean;
+                    };
                 };
             };
             /** @description Invalid parameters */
@@ -3745,10 +3819,15 @@ export interface operations {
         parameters: {
             query?: {
                 window?: "1h" | "24h" | "7d";
+                /** @description Maximum number of entries in each list. Clamped to a maximum of 100. A non-numeric value is a 400. */
+                limit?: number;
                 /** @description Stellar network to answer for — `testnet` or `mainnet`. Defaults to this instance's configured `STELLAR_NETWORK`. An unrecognised value is rejected with 400. DB-backed reads are currently served from whichever network this instance indexes, even when another is requested. */
                 network?: components["parameters"]["NetworkQuery"];
             };
-            header?: never;
+            header?: {
+                /** @description Formatting for decimal quantities (prices, volumes, reserves). Set to `string` to serialize high-precision `Decimal(36,18)` quantities as exact strings, preventing IEEE-754 floating-point precision loss. Defaults to `number`. Can also be negotiated via `Accept: application/json; decimals=strings` or query parameter `?decimals=strings`. */
+                "X-Decimal-Format"?: components["parameters"]["DecimalFormatHeader"];
+            };
             path?: never;
             cookie?: never;
         };
@@ -3763,7 +3842,7 @@ export interface operations {
                     "application/json": components["schemas"]["MoversResponse"];
                 };
             };
-            /** @description Invalid window or network */
+            /** @description Invalid window, network or limit */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -3986,9 +4065,16 @@ export interface operations {
     searchDiscoveryResources: {
         parameters: {
             query: {
+                /** @description Free-text query. Each whitespace-separated term is matched on its own; an empty query ranks everything in scope by metadata quality. */
                 q: string;
+                /** @description Results per page. Clamped into [1, 100]; a value that is not an integer is a 400. */
                 limit?: number;
+                /** @description Opaque position in the ranking, from the previous page's `nextCursor`. Not a row id and not an offset. */
                 cursor?: string;
+                /** @description Restrict to one resource type. */
+                type?: "http" | "mcp";
+                /** @description Stellar network to answer for — `testnet` or `mainnet`. Defaults to this instance's configured `STELLAR_NETWORK`. An unrecognised value is rejected with 400. DB-backed reads are currently served from whichever network this instance indexes, even when another is requested. */
+                network?: components["parameters"]["NetworkQuery"];
             };
             header?: never;
             path?: never;
@@ -4002,10 +4088,28 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": components["schemas"]["DiscoverySearchResponse"];
+                };
+            };
+            /** @description A `limit` that is not an integer, or a `cursor` that is malformed or does not name a position in this result. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
                 };
             };
             429: components["responses"]["TooManyRequests"];
+            /** @description The catalogue could not be queried. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
         };
     };
     createWebhook: {

@@ -10,8 +10,14 @@ import {
 import { pegsResponseSchema } from '../api/schemas'
 import type { WatchedPair } from '../types'
 import '../middleware/network'
+import { apiError, sendInternalError } from '../errors'
+import {
+  findPegMeasuringPair,
+  computePegStatus,
+  getNoReferenceReason,
+  type PegStatus,
+} from '../pricing/pegRules'
 
-import { apiError } from '../errors'
 /**
  * Default deviation band in basis points (100 bps = 1.0%), aligned with
  * GET /snapshot (PEG_TOLERANCE_BPS = 100) and the peg-deviation alerting
@@ -36,40 +42,10 @@ export interface PegReport {
   currentPrice: number | null
   currentDeviationBps: number | null
   worstDeviationBps: number | null
+  status: PegStatus
+  reason: string | null
   window: string
   provenance: PegProvenance
-}
-
-/**
- * Match a pegged asset and target against configured watched pairs.
- */
-function findWatchedPair(
-  pegged: PeggedAssetConfig,
-  pairs: readonly WatchedPair[]
-): { pair: WatchedPair; isAssetA: boolean } | null {
-  const normAssetCode = pegged.asset.code.toUpperCase()
-  const normTargetCode = pegged.target.toUpperCase()
-
-  for (const pair of pairs) {
-    const pACode = pair.assetA.code.toUpperCase()
-    const pBCode = pair.assetB.code.toUpperCase()
-
-    // Case 1: pair is (pegged.asset, target)
-    if (pACode === normAssetCode && pBCode === normTargetCode) {
-      if (!pegged.asset.issuer || !pair.assetA.issuer || pegged.asset.issuer === pair.assetA.issuer) {
-        return { pair, isAssetA: true }
-      }
-    }
-
-    // Case 2: pair is (target, pegged.asset)
-    if (pBCode === normAssetCode && pACode === normTargetCode) {
-      if (!pegged.asset.issuer || !pair.assetB.issuer || pegged.asset.issuer === pair.assetB.issuer) {
-        return { pair, isAssetA: false }
-      }
-    }
-  }
-
-  return null
 }
 
 /**
@@ -93,10 +69,13 @@ export async function registerPegsRoutes(app: FastifyInstance) {
       const watchedPairs = networkConfig.pairs ?? []
 
       const reports: PegReport[] = []
+      let queriesAttempted = 0
+      let queriesFailed = 0
+      let lastQueryError: unknown = null
 
       for (const pegged of peggedConfigs) {
         const fullAsset = pegged.asset.issuer ? `${pegged.asset.code}:${pegged.asset.issuer}` : pegged.asset.code
-        const match = findWatchedPair(pegged, watchedPairs)
+        const match = findPegMeasuringPair(pegged, watchedPairs, peggedConfigs)
 
         if (!match) {
           // Say when you cannot answer: watched pair not found / unquoted
@@ -110,6 +89,32 @@ export async function registerPegsRoutes(app: FastifyInstance) {
             currentPrice: null,
             currentDeviationBps: null,
             worstDeviationBps: null,
+            status: 'no_reference',
+            reason: `no watched pair configured for ${pegged.asset.code}`,
+            window: `${pegged.windowHours ?? 24}h`,
+            provenance: {
+              venues: [],
+              sampleCount: 0,
+              freshnessSeconds: null,
+              lastSampleTimestamp: null,
+            },
+          })
+          continue
+        }
+
+        if (!match.isReference) {
+          reports.push({
+            asset: fullAsset,
+            code: pegged.asset.code,
+            issuer: pegged.asset.issuer,
+            target: pegged.target,
+            targetPrice: pegged.targetPrice,
+            pairKey: match.pair.pairKey,
+            currentPrice: null,
+            currentDeviationBps: null,
+            worstDeviationBps: null,
+            status: 'no_reference',
+            reason: getNoReferenceReason(match.quote.code, pegged.target),
             window: `${pegged.windowHours ?? 24}h`,
             provenance: {
               venues: [],
@@ -125,6 +130,8 @@ export async function registerPegsRoutes(app: FastifyInstance) {
         const priceExpr = isAssetA ? 'price::numeric' : '1.0 / NULLIF(price::numeric, 0)'
         const targetPrice = pegged.targetPrice > 0 ? pegged.targetPrice : 1.0
         const windowHours = pegged.windowHours ?? 24
+
+        queriesAttempted++
 
         // Compute latest price, window worst deviation, and provenance (venues, sampleCount, freshness)
         // Query both latest observation (without window restriction) and window stats
@@ -168,8 +175,7 @@ export async function registerPegsRoutes(app: FastifyInstance) {
 
           const latestPriceRaw = row?.latest_price
           const latestPrice = latestPriceRaw !== null && latestPriceRaw !== undefined ? parseFloat(latestPriceRaw) : null
-          const currentDeviationBps =
-            latestPrice !== null ? ((latestPrice - targetPrice) / targetPrice) * 10000 : null
+          const evalResult = computePegStatus(latestPrice, targetPrice, DEFAULT_PEG_TOLERANCE_BPS)
 
           const worstDevRaw = row?.worst_deviation_bps
           const worstDeviationBps = worstDevRaw !== null && worstDevRaw !== undefined ? parseFloat(worstDevRaw) : null
@@ -192,8 +198,10 @@ export async function registerPegsRoutes(app: FastifyInstance) {
             targetPrice,
             pairKey: pair.pairKey,
             currentPrice: latestPrice,
-            currentDeviationBps,
+            currentDeviationBps: evalResult.deviationBp,
             worstDeviationBps,
+            status: evalResult.status,
+            reason: evalResult.reason,
             window: `${windowHours}h`,
             provenance: {
               venues,
@@ -203,7 +211,11 @@ export async function registerPegsRoutes(app: FastifyInstance) {
             },
           })
         } catch (err) {
-          // Say when computation cannot be performed for this asset
+          queriesFailed++
+          lastQueryError = err
+          req.log.error({ err, pairKey: pair.pairKey, asset: fullAsset }, 'Failed to query peg metrics')
+
+          // Say when computation cannot be performed for this asset due to query failure
           reports.push({
             asset: fullAsset,
             code: pegged.asset.code,
@@ -214,6 +226,8 @@ export async function registerPegsRoutes(app: FastifyInstance) {
             currentPrice: null,
             currentDeviationBps: null,
             worstDeviationBps: null,
+            status: 'error',
+            reason: 'query failed',
             window: `${windowHours}h`,
             provenance: {
               venues: [],
@@ -223,6 +237,10 @@ export async function registerPegsRoutes(app: FastifyInstance) {
             },
           })
         }
+      }
+
+      if (queriesAttempted > 0 && queriesFailed === queriesAttempted) {
+        return sendInternalError(reply, req, lastQueryError, 'Failed to query peg data')
       }
 
       return {

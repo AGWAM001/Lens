@@ -56,7 +56,7 @@ const BASE_URL = requireEnv('LENS_BASE_URL')
 // searchDiscoveryResources: GET /v1/discovery/search
 {
   const url = new URL("/v1/discovery/search", BASE_URL)
-  url.search = new URLSearchParams([["q","USDC"]]).toString()
+  url.search = new URLSearchParams([["q","USDC"],["network","testnet"]]).toString()
   const headers: Record<string, string> = {}
   const res = await fetch(url, { headers })
   console.log("searchDiscoveryResources", res.status, await res.json())

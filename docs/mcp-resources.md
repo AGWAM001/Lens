@@ -4,7 +4,10 @@ The Lens MCP server (`src/mcp/server.ts`) offers an agent two kinds of thing:
 
 - **Tools** — functions it calls to *do* something: `bazaar_search`,
   `paid_call`, `lens_get_price`, and where Lens's own data is reachable the
-  three data tools `lens_list_pairs`, `lens_get_pools` and `lens_screen_pairs`.
+  data tools `lens_list_pairs`, `lens_get_pools`, `lens_screen_pairs` and
+  `lens_quote` — one order size in, and the route, the depth ladder and the
+  price-impact ladder out, which is what an agent needs to ask "what would
+  *my* trade cost" in a single call.
 - **Resources** — read-only content it attaches to its context once, instead of
   re-fetching by calling a tool every turn.
 
