@@ -9,6 +9,7 @@ import { getAggregatedPrice } from '../aggregator/vwap'
 import { getBestRoute } from '../aggregator/bestRoute'
 import { pgPool } from '../db'
 import { config, getNetworkConfig, activeNetwork, type NetworkName } from '../config'
+import { getPairsForNetwork } from '../pairsRegistry'
 import { isAdminConfigured } from './auth'
 import '../middleware/network' // declares req.network on the FastifyRequest type
 import {
@@ -67,7 +68,7 @@ function findPair(assetA: string, assetB: string, network: NetworkName) {
     return q.issuer === side.issuer
   }
 
-  return getNetworkConfig(network).pairs.find(
+  return getPairsForNetwork(network).find(
     p =>
       (matches(qA, p.assetA) && matches(qB, p.assetB)) ||
       (matches(qA, p.assetB) && matches(qB, p.assetA)),

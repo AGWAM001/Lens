@@ -27,6 +27,7 @@ vi.mock('../config', () => ({
     aquarius: { enabled: network === 'mainnet' },
   }),
   config: { cache: { snapshotTtl: 15 } },
+  DEFAULT_PEG_TOLERANCE_BPS: 100,
 }))
 
 import { registerSnapshotRoutes } from '../routes/snapshot'
