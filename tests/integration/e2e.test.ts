@@ -40,7 +40,7 @@ async function waitForService(timeoutMs = 120_000) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(`${API_URL}/status`)
+      const response = await fetch(`${API_URL}/ready`)
       if (response.ok) return
     } catch {
       // retry

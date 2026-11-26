@@ -146,6 +146,11 @@ async function main() {
   // schedule. If Redis is away, fall back to a plain timer that does the same
   // work in-process.
   const safePrune = async () => {
+    // This fallback run is metered the same way as the queue worker:
+    // pruneAllNetworks() records each network's run through runJob()
+    // (src/jobs/jobMetrics.ts), so no second wrapper here — it would
+    // double-count. The catch stays because a timer has no BullMQ to
+    // report the failure to; the run is already counted as a failure.
     try {
       const counts = await pruneAllNetworks()
       for (const [network, pruned] of Object.entries(counts)) {
@@ -224,6 +229,10 @@ async function main() {
 
   // ── Lending rate retention ────────────────────────────────────────────────
   const safeRatePrune = async () => {
+    // Metered per network inside pruneAllRateNetworks() (src/jobs/jobMetrics.ts),
+    // exactly as for the queue worker — no second wrapper here, it would
+    // double-count. The catch stays because a timer has no BullMQ to
+    // report the failure to; the run is already counted as a failure.
     try {
       const counts = await pruneAllRateNetworks()
       for (const [network, pruned] of Object.entries(counts)) {
@@ -259,6 +268,10 @@ async function main() {
   // expired partitions is opt-in via PRICE_POINTS_DROP_EXPIRED=true (default: off)
   // to safeguard raw historical records until rollups are complete (#231).
   const safeMaintainPartitions = async () => {
+    // Metered inside runPricePointsMaintenance() (src/jobs/jobMetrics.ts),
+    // exactly as for the queue worker — no second wrapper here, it would
+    // double-count. The catch stays because a timer has no BullMQ to
+    // report the failure to; the run is already counted as a failure.
     try {
       const result = await runPricePointsMaintenance()
       if (result.created.length > 0) {
