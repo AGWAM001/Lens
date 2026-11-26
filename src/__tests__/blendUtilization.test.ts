@@ -65,7 +65,7 @@ describe('Blend Utilisation Arithmetic (#pinning)', () => {
   })
 
   describe('deriveUtilization', () => {
-    it('derives utilization from dTokens and bTokens with 12-decimal rates (Blend v2)', () => {
+    it('derives utilization from dTokens and bTokens with 12 rateDecimals (Blend v2)', () => {
       const unitRate = 10n ** 12n // 1.0 rate
       const dSupply = 600_0000000n
       const bSupply = 1000_0000000n
@@ -74,7 +74,7 @@ describe('Blend Utilisation Arithmetic (#pinning)', () => {
       expect(util).toBe(0.6)
     })
 
-    it('derives utilization from dTokens and bTokens with 9-decimal rates (Blend v1)', () => {
+    it('derives utilization from dTokens and bTokens with 9 rateDecimals (Blend v1)', () => {
       const unitRate = 10n ** 9n // 1.0 rate
       const dSupply = 600_0000000n
       const bSupply = 1000_0000000n
