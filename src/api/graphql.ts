@@ -8,6 +8,8 @@ import {
   type DocumentNode,
   type OperationDefinitionNode,
   type FragmentDefinitionNode,
+  type FieldNode,
+  type ValidationContext,
 } from 'graphql'
 import { hasScope, extractBearer, lookupApiKey } from './auth'
 import { randomUUID } from 'node:crypto'
@@ -456,6 +458,41 @@ export const schema = `
  */
 function priceTopic(pair: string, network: string): string {
   return `${PRICE_TOPIC}/${pair}/${network}`
+}
+
+export interface GraphQLUiOptions {
+  environment?: string
+  graphiqlEnabled?: boolean
+  introspectionEnabled?: boolean
+}
+
+const NoIntrospectionFieldsRule = (context: ValidationContext) => ({
+  Field(node: FieldNode) {
+    if (node.name.value === '__schema' || node.name.value === '__type') {
+      context.reportError(new GraphQLError('GraphQL introspection is disabled', { nodes: node }))
+    }
+  },
+})
+
+/**
+ * GraphiQL is an interactive console, so production defaults it off. Schema
+ * introspection is controlled independently: it remains on by default because
+ * this is a public read API and clients need schema discovery, but operators
+ * can disable it for production deployments that require a private schema.
+ */
+export function resolveGraphQLUiOptions(
+  env: NodeJS.ProcessEnv = process.env,
+  overrides: GraphQLUiOptions = {},
+): Required<GraphQLUiOptions> {
+  const isProduction = (overrides.environment ?? env.NODE_ENV) === 'production'
+  const parseBoolean = (value: string | undefined, fallback: boolean) =>
+    value === undefined || value.trim() === '' ? fallback : value.toLowerCase() === 'true'
+
+  return {
+    environment: overrides.environment ?? env.NODE_ENV ?? 'development',
+    graphiqlEnabled: overrides.graphiqlEnabled ?? parseBoolean(env.GRAPHIQL_ENABLED, !isProduction),
+    introspectionEnabled: overrides.introspectionEnabled ?? parseBoolean(env.GRAPHQL_INTROSPECTION_ENABLED, true),
+  }
 }
 
 function makePairKey(a: string, b: string): string {
@@ -959,20 +996,24 @@ export const resolvers = {
   },
 }
 
-export async function registerGraphQL(app: FastifyInstance) {
+export async function registerGraphQL(app: FastifyInstance, uiOptions: GraphQLUiOptions = {}) {
   const maxQueryDepth = getMaxGraphQLQueryDepth()
+  const { graphiqlEnabled, introspectionEnabled } = resolveGraphQLUiOptions(process.env, uiOptions)
 
   await app.register(mercurius, {
     schema,
     resolvers,
-    graphiql: true,
+    graphiql: graphiqlEnabled,
     // Mercurius 16.9.0 supplies the selected operation name to this callback.
     // Its built-in queryDepth option neither expands fragments nor distinguishes
     // an unselected operation in a multi-operation document. A callback cannot
     // be used with Mercurius's document cache, so disable that cache rather
     // than weakening the operation-aware validation policy.
     cache: false,
-    validationRules: ({ operationName }) => queryDepthValidationRules(maxQueryDepth, operationName),
+    validationRules: ({ operationName }) => [
+      ...(introspectionEnabled ? [] : [NoIntrospectionFieldsRule]),
+      ...queryDepthValidationRules(maxQueryDepth, operationName),
+    ],
     errorFormatter: formatGraphQLErrors,
     path: '/graphql',
     subscription: {

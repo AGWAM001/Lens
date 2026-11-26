@@ -106,8 +106,13 @@ export async function fetchSoroswapTokenList(
 // ── Pool discovery ────────────────────────────────────────────────────────────
 
 /**
- * Query the Soroswap factory contract's get_pools() to enumerate pool addresses
- * for a specific token pair. Returns an empty array on RPC failure.
+ * Ask the Soroswap factory for the pair contract of a token pair.
+ *
+ * The factory exposes `get_pair(token_a, token_b) -> Address`; it has no
+ * `get_pools`, and calling one fails simulation with `Error(WasmVm,
+ * MissingValue)` (#226: found when recording the mainnet fixture). A pair
+ * that does not exist also fails simulation. Either way this returns an
+ * empty array, so callers keep their string[] contract.
  */
 export async function fetchPoolsFromFactory(
   factoryAddress: string,
@@ -128,7 +133,7 @@ export async function fetchPoolsFromFactory(
     })
       .addOperation(
         factory.call(
-          'get_pools',
+          'get_pair',
           new Contract(tokenA).address().toScVal(),
           new Contract(tokenB).address().toScVal()
         )
@@ -139,14 +144,14 @@ export async function fetchPoolsFromFactory(
     const sim = await rpc.simulateTransaction(tx)
 
     if (SorobanRpc.Api.isSimulationError(sim)) {
-      log.debug({ tokenA, tokenB, error: sim.error }, 'get_pools simulation error')
+      log.debug({ tokenA, tokenB, error: sim.error }, 'get_pair simulation error')
       return []
     }
 
     if (!sim.result?.retval) return []
 
-    const pools = scValToNative(sim.result.retval) as string[]
-    return Array.isArray(pools) ? pools : []
+    const pair = scValToNative(sim.result.retval) as unknown
+    return typeof pair === 'string' && pair.length > 0 ? [pair] : []
   } catch (err) {
     log.debug({ err }, 'fetchPoolsFromFactory error')
     return []
