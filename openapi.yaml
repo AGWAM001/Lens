@@ -2512,33 +2512,84 @@ paths:
       x-category: "Automation, Discovery & Payments"
       operationId: searchDiscoveryResources
       summary: Natural language search with ranking and quality evaluation for discoverable resources
+      description: >-
+        Matches the catalogue in the database (one term at a time, against
+        `serviceName`, `description`, `url`, and any tag equal to a term) and
+        then ranks what it found: 70% text relevance, 30% metadata quality.
+
+        Ranking is bounded, and the bound is part of the contract. One request
+        scores at most the newest 500 matching rows. When the query matches more
+        than that, `truncated` is true, `totalMatched` still reports the full
+        count, and `rankedCount` reports how many rows this search actually put
+        in an order — so an older match is never silently dropped without saying
+        so. Narrow the query (or filter by `network`/`type`) to rank a smaller
+        set.
+
+        Paging walks the ranking, not the table: `cursor` is an opaque encoding
+        of the last result's score and id, `nextCursor` is null on the last
+        page, and a cursor that is malformed or does not name a position in this
+        result is a 400. Following `nextCursor` reaches every ranked row exactly
+        once.
       parameters:
         - name: q
           in: query
           required: true
+          description: >-
+            Free-text query. Each whitespace-separated term is matched on its
+            own; an empty query ranks everything in scope by metadata quality.
           schema:
             type: string
             example: USDC
         - name: limit
           in: query
           required: false
+          description: >-
+            Results per page. Clamped into [1, 100]; a value that is not an
+            integer is a 400.
           schema:
             type: integer
+            minimum: 1
+            maximum: 100
             default: 20
         - name: cursor
           in: query
           required: false
+          description: >-
+            Opaque position in the ranking, from the previous page's
+            `nextCursor`. Not a row id and not an offset.
           schema:
             type: string
+        - name: type
+          in: query
+          required: false
+          description: Restrict to one resource type.
+          schema:
+            type: string
+            enum: [http, mcp]
+        - $ref: '#/components/parameters/NetworkQuery'
       responses:
         '200':
           description: Search results with relevance ranking and metadata quality
           content:
             application/json:
               schema:
-                type: object
+                $ref: '#/components/schemas/DiscoverySearchResponse'
+        '400':
+          description: >-
+            A `limit` that is not an integer, or a `cursor` that is malformed or
+            does not name a position in this result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '429':
           $ref: '#/components/responses/TooManyRequests'
+        '503':
+          description: The catalogue could not be queried.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
   /v1/webhooks:
     post:
@@ -5170,6 +5221,91 @@ components:
           type: integer
         total:
           type: integer
+
+    DiscoverySearchItem:
+      type: object
+      required: [id, type, network, url, tags, payTo, score, relevanceScore, qualityScore, matchReasons]
+      properties:
+        id:
+          type: string
+          description: Catalogue row id. Not a cursor — see the response's `nextCursor`.
+        type:
+          type: string
+          enum: [http, mcp]
+        network:
+          type: string
+        url:
+          type: string
+        serviceName:
+          type: string
+          nullable: true
+        description:
+          type: string
+          nullable: true
+        mimeType:
+          type: string
+          nullable: true
+        tags:
+          type: array
+          items:
+            type: string
+        iconUrl:
+          type: string
+          nullable: true
+        payTo:
+          type: string
+          description: The seller this resource is paid to.
+        score:
+          type: number
+          description: >-
+            Composite ranking score, 70% relevance plus 30% quality, quantised
+            to four decimals. This is the value the cursor carries.
+        relevanceScore:
+          type: number
+          description: Text relevance of the row to the query, 0 to 1.
+        qualityScore:
+          type: number
+          description: Metadata completeness of the row, 0 to 1.
+        matchReasons:
+          type: array
+          items:
+            type: string
+          description: Which fields matched which terms.
+
+    DiscoverySearchResponse:
+      type: object
+      required: [query, network, totalMatched, rankedCount, truncated, limit, nextCursor, items]
+      additionalProperties: false
+      properties:
+        query:
+          type: string
+        network:
+          type: string
+        totalMatched:
+          type: integer
+          description: >-
+            Every row the database matched for this query, whether or not this
+            request ranked it. Counted, not inferred from the page.
+        rankedCount:
+          type: integer
+          description: Rows this search scored and ordered; the cursor walk covers exactly these.
+        truncated:
+          type: boolean
+          description: >-
+            True when `totalMatched` exceeds the 500-row ranking bound, so the
+            older matches are counted but not ranked.
+        limit:
+          type: integer
+        nextCursor:
+          type: string
+          nullable: true
+          description: >-
+            Opaque position in the ranking to continue from. Null on the last
+            page — including when that page is exactly `limit` rows long.
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/DiscoverySearchItem'
 
     WebhookCreatedResponse:
       type: object

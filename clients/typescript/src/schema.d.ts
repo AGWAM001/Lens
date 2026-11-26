@@ -740,7 +740,12 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Natural language search with ranking and quality evaluation for discoverable resources */
+        /**
+         * Natural language search with ranking and quality evaluation for discoverable resources
+         * @description Matches the catalogue in the database (one term at a time, against `serviceName`, `description`, `url`, and any tag equal to a term) and then ranks what it found: 70% text relevance, 30% metadata quality.
+         *     Ranking is bounded, and the bound is part of the contract. One request scores at most the newest 500 matching rows. When the query matches more than that, `truncated` is true, `totalMatched` still reports the full count, and `rankedCount` reports how many rows this search actually put in an order — so an older match is never silently dropped without saying so. Narrow the query (or filter by `network`/`type`) to rank a smaller set.
+         *     Paging walks the ranking, not the table: `cursor` is an opaque encoding of the last result's score and id, `nextCursor` is null on the last page, and a cursor that is malformed or does not name a position in this result is a 400. Following `nextCursor` reaches every ranked row exactly once.
+         */
         get: operations["searchDiscoveryResources"];
         put?: never;
         post?: never;
@@ -1911,6 +1916,43 @@ export interface components {
             limit: number;
             offset: number;
             total: number;
+        };
+        DiscoverySearchItem: {
+            /** @description Catalogue row id. Not a cursor — see the response's `nextCursor`. */
+            id: string;
+            /** @enum {string} */
+            type: "http" | "mcp";
+            network: string;
+            url: string;
+            serviceName?: string | null;
+            description?: string | null;
+            mimeType?: string | null;
+            tags: string[];
+            iconUrl?: string | null;
+            /** @description The seller this resource is paid to. */
+            payTo: string;
+            /** @description Composite ranking score, 70% relevance plus 30% quality, quantised to four decimals. This is the value the cursor carries. */
+            score: number;
+            /** @description Text relevance of the row to the query, 0 to 1. */
+            relevanceScore: number;
+            /** @description Metadata completeness of the row, 0 to 1. */
+            qualityScore: number;
+            /** @description Which fields matched which terms. */
+            matchReasons: string[];
+        };
+        DiscoverySearchResponse: {
+            query: string;
+            network: string;
+            /** @description Every row the database matched for this query, whether or not this request ranked it. Counted, not inferred from the page. */
+            totalMatched: number;
+            /** @description Rows this search scored and ordered; the cursor walk covers exactly these. */
+            rankedCount: number;
+            /** @description True when `totalMatched` exceeds the 500-row ranking bound, so the older matches are counted but not ranked. */
+            truncated: boolean;
+            limit: number;
+            /** @description Opaque position in the ranking to continue from. Null on the last page — including when that page is exactly `limit` rows long. */
+            nextCursor: string | null;
+            items: components["schemas"]["DiscoverySearchItem"][];
         };
         WebhookCreatedResponse: {
             id: string;
@@ -4017,9 +4059,16 @@ export interface operations {
     searchDiscoveryResources: {
         parameters: {
             query: {
+                /** @description Free-text query. Each whitespace-separated term is matched on its own; an empty query ranks everything in scope by metadata quality. */
                 q: string;
+                /** @description Results per page. Clamped into [1, 100]; a value that is not an integer is a 400. */
                 limit?: number;
+                /** @description Opaque position in the ranking, from the previous page's `nextCursor`. Not a row id and not an offset. */
                 cursor?: string;
+                /** @description Restrict to one resource type. */
+                type?: "http" | "mcp";
+                /** @description Stellar network to answer for — `testnet` or `mainnet`. Defaults to this instance's configured `STELLAR_NETWORK`. An unrecognised value is rejected with 400. DB-backed reads are currently served from whichever network this instance indexes, even when another is requested. */
+                network?: components["parameters"]["NetworkQuery"];
             };
             header?: never;
             path?: never;
@@ -4033,10 +4082,28 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": components["schemas"]["DiscoverySearchResponse"];
+                };
+            };
+            /** @description A `limit` that is not an integer, or a `cursor` that is malformed or does not name a position in this result. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
                 };
             };
             429: components["responses"]["TooManyRequests"];
+            /** @description The catalogue could not be queried. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
         };
     };
     createWebhook: {
