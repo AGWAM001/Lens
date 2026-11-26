@@ -136,3 +136,147 @@ to trade again, so a pair that never trades does not page anyone. Adding
 correct — without it the two networks' series are indistinguishable and the
 threshold can be satisfied or violated by whichever network happens to be
 active.
+
+## Background job metrics
+
+The background jobs in [`src/jobs/`](../src/jobs/) report to the same
+registry, through the `runJob()` helper in
+[`src/jobs/jobMetrics.ts`](../src/jobs/jobMetrics.ts). Before this change
+they reported nothing — `src/metrics.ts` had only `snapshot_retention_path`
+for jobs — so nobody could answer when snapshot retention last succeeded,
+how long a venue reconciliation run takes, or whether the aggregate refresh
+was failing.
+
+There was a second problem. Every worker caught its own errors and logged
+them, so the handler never threw and BullMQ recorded the job as completed;
+the `worker.on('failed')` handler under it could never fire for a real
+failure. The workers no longer catch: `runJob()` records the failure and
+rethrows, so BullMQ stores the run as failed. The in-process fallback timers
+in [`src/index.ts`](../src/index.ts) (`safePrune`, `safeRatePrune`,
+`safeMaintainPartitions`) are the one place that still catches — a timer has
+no BullMQ to report to, and the run is already counted as a failure by then.
+
+## What is exported
+
+| Metric | Type | Labels |
+| --- | --- | --- |
+| `job_runs_total` | Counter | `job`, `network`, `outcome` |
+| `job_duration_seconds` | Histogram | `job`, `network` |
+| `job_last_success_timestamp` | Gauge | `job`, `network` |
+| `job_rows_deleted_total` | Counter | `job`, `network` |
+
+| Label | Values | Notes |
+| --- | --- | --- |
+| `job` | `aggregate-refresh`, `snapshot-retention`, `venue-reconciliation`, `rate-retention`, `oracle-retention`, `price-points-retention`, `price-points-partition` | The BullMQ queue name (minus the network prefix) of the job that ran. A closed set, hard-coded as `JobName` in `src/jobs/jobMetrics.ts`. |
+| `network` | `testnet`, `mainnet` | The network the run worked on. For the retention jobs this is the network of the prune loop, not the process-wide `STELLAR_NETWORK`. |
+| `outcome` | `success`, `failure` | Only on `job_runs_total`. Failure rate = `failure / (success + failure)`. |
+
+All four are also emitted with the registry-wide `app="lens"` default label.
+
+`job_last_success_timestamp` only moves on success, so a job that starts
+failing goes stale instead of looking healthy. Duration is observed for
+success and failure alike — a run that fails fast and a run that fails after
+ten minutes are different problems. `job_rows_deleted_total` is recorded per
+batch inside each retention prune loop, so a run that fails part-way still
+reports the rows it already deleted. The pre-existing
+`price_points_pruned_total` stays as-is for the price-points retention job;
+`job_rows_deleted_total` is the uniform counter, so one query covers every
+retention job.
+
+## Where a run is recorded
+
+The recording lives in the shared function both paths call, so the queue
+worker and the in-process fallback timer report the same run exactly once:
+
+- The retention jobs record one run per network inside `pruneAllNetworks()`,
+  `pruneAllRateNetworks()`, `pruneAllNetworksOracleComparisons()` and the
+  price-points `pruneAllNetworks()`. A failure on one network does not stop
+  the others, and each network gets its own success or failure.
+- Partition maintenance records one run inside `runPricePointsMaintenance()`.
+  It is a single global run, not one per network — partitions are cut by
+  timestamp across all networks — so it is labelled with the active network
+  its queue is pinned to.
+- The aggregate-refresh and venue-reconciliation workers are per network
+  already, so their handlers record the run directly; the in-process
+  reconciliation timer (`startInProcessVenueReconciliation`) records its
+  runs the same way.
+
+Two deliberate boundaries:
+
+- Venue reconciliation isolates per-pair failures: a bad pair is logged and
+  the other pairs are still reconciled, so a run only counts as a failure
+  when the cycle itself throws.
+- `job` is never a pair or a pool id. The aggregate-refresh worker runs
+  once per watched pair, and a pair label would mint a series per pair per
+  network for a question ("is the job failing?") that does not need it.
+
+## Retries
+
+Every job queue pins `defaultJobOptions: { attempts: 1 }` when it is
+created. BullMQ's default is already one attempt, but the pin makes the
+intent explicit: a failed hourly run is stored as failed, not retried
+forever, and the next repeat fires on schedule. A failed run is therefore
+visible in `job_runs_total{outcome="failure"}` and in BullMQ's failed set,
+not hidden behind a retry loop.
+
+## Cardinality
+
+Series count is `jobs x networks`:
+
+- `job_runs_total` — `jobs x networks x outcomes`. Seven jobs, two
+  networks, two outcomes: at most 28 series.
+- `job_duration_seconds`, `job_last_success_timestamp`,
+  `job_rows_deleted_total` — `jobs x networks`: at most 14 series each.
+
+**Do not add `pair` or `pool` to any of these.** Both are unbounded in
+principle — pairs come from configuration and pools are discovered from
+chain data — and neither answers a job-health question. If a per-pair
+failure needs tracking, it is a log line with the pair in it, not a label.
+
+## Queries
+
+```promql
+# Failure rate per job over the last hour
+sum(rate(job_runs_total{outcome="failure"}[1h])) by (job)
+  / sum(rate(job_runs_total[1h])) by (job)
+
+# How stale is each job, per network? (seconds since the last success)
+time() - job_last_success_timestamp
+
+# Jobs that have not succeeded in the last 2 hours
+time() - job_last_success_timestamp > 7200
+
+# p95 run duration per job
+histogram_quantile(0.95, sum(rate(job_duration_seconds_bucket[15m])) by (job, le))
+
+# Rows deleted by the retention jobs, per network
+sum(rate(job_rows_deleted_total[1h])) by (job, network)
+```
+
+## Suggested alerts
+
+```yaml
+groups:
+  - name: lens-jobs
+    rules:
+      - alert: LensJobFailing
+        expr: |
+          sum(rate(job_runs_total{outcome="failure"}[15m])) by (job, network) > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.job }} on {{ $labels.network }} is failing"
+
+      - alert: LensJobStale
+        expr: |
+          (time() - job_last_success_timestamp) > 7200
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.job }} on {{ $labels.network }} has not succeeded in 2 hours"
+```
+
+The staleness threshold is per job, not one global one: an hourly retention
+job legitimately goes an hour between successes, while a per-minute
+aggregate refresh should not. Tune each threshold against the schedule in
+the job's `schedule*` function before paging on it.
