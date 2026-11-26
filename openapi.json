@@ -8352,6 +8352,8 @@
           "currentPrice",
           "currentDeviationBps",
           "worstDeviationBps",
+          "status",
+          "reason",
           "window",
           "provenance"
         ],
@@ -8387,6 +8389,20 @@
           },
           "worstDeviationBps": {
             "type": "number",
+            "nullable": true
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "on_peg",
+              "off_peg",
+              "no_reference",
+              "no_data",
+              "error"
+            ]
+          },
+          "reason": {
+            "type": "string",
             "nullable": true
           },
           "window": {

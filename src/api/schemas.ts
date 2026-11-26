@@ -1020,6 +1020,8 @@ export const pegsResponseSchema = {
           'currentPrice',
           'currentDeviationBps',
           'worstDeviationBps',
+          'status',
+          'reason',
           'window',
           'provenance',
         ],
@@ -1034,6 +1036,11 @@ export const pegsResponseSchema = {
           currentPrice: { type: ['number', 'null'] },
           currentDeviationBps: { type: ['number', 'null'] },
           worstDeviationBps: { type: ['number', 'null'] },
+          status: {
+            type: 'string',
+            enum: ['on_peg', 'off_peg', 'no_reference', 'no_data', 'error'],
+          },
+          reason: { type: ['string', 'null'] },
           window: { type: 'string' },
           provenance: {
             type: 'object',
