@@ -254,6 +254,72 @@ on every step.
 stale flag. An HTTP price can be "as good as we have it"; a price a contract
 settles against cannot.
 
+### 3.1 Publisher metrics
+
+One pass of `startSep40Publisher` produces one `CycleReport`, and the loop
+records it to the same registry as the ingest metrics (label rules in
+[`ingest-metrics.md`](ingest-metrics.md)). The decision logic in
+`runPublicationCycle` is untouched.
+
+| Metric | Type | Labels |
+| --- | --- | --- |
+| `publisher_reports_written_total` | Counter | `network`, `trigger` |
+| `publisher_pairs_blocked_total` | Counter | `network`, `guard` |
+| `publisher_writes_failed_total` | Counter | `network` |
+| `publisher_cycles_failed_total` | Counter | `network` |
+| `publisher_last_success_timestamp` | Gauge | `network` |
+| `publisher_cycle_duration_seconds` | Histogram | `network` |
+
+| Label | Values | Notes |
+| --- | --- | --- |
+| `network` | `testnet`, `mainnet` | The network whose loop produced the sample, not the process-wide `STELLAR_NETWORK`. |
+| `trigger` | `first_report`, `deviation`, `max_interval`, `other` | Only on written reports. `other` is the escape hatch for a future code. |
+| `guard` | `no_venue`, `invalid_price`, `no_observation`, `stale_aggregate`, `aggregate_too_old`, `below_deviation`, `min_write_interval`, `tick_not_advanced`, `asset_identity`, `base_not_in_pair`, `venue_provenance`, `other` | Only on blocked pairs. A failed write is counted separately, not as a blocked pair. |
+
+All six also carry the registry-wide `app="lens"` default label. No pair, asset
+or contract id is ever a label, so series count is bounded by `networks`,
+`triggers` and `guards` — not by the watch list. An unrecognised trigger or
+guard is mapped to `other` rather than used verbatim.
+
+A report counts as written only when the on-chain `report()` succeeded and the
+pair is in `cycle.published`; `publisher_last_success_timestamp` moves on that
+same condition. A pair that decided to publish but failed at `report()` moves
+`publisher_writes_failed_total` instead. A cycle aborted by an unreadable feed
+moves `publisher_cycles_failed_total` and rethrows, so the existing backoff
+still applies; duration is observed for failed cycles too.
+
+```promql
+# Writes in the last hour, by trigger
+sum(increase(publisher_reports_written_total[1h])) by (trigger)
+
+# Which guard is blocking pairs right now
+sum(increase(publisher_pairs_blocked_total[15m])) by (guard, network)
+
+# Failed writes versus failed whole cycles
+sum(increase(publisher_writes_failed_total[1h])) by (network)
+sum(increase(publisher_cycles_failed_total[1h])) by (network)
+
+# p95 cycle duration
+histogram_quantile(0.95, sum(rate(publisher_cycle_duration_seconds_bucket[15m])) by (le, network))
+```
+
+Suggested alert — staleness covers every way a feed can stop landing a write,
+including cycles that keep failing because the feed cannot be read. At the
+defaults `max_interval` forces a write every 15 minutes, so 30 minutes is a
+starting point; tune it against the configured interval before paging.
+
+```yaml
+groups:
+  - name: lens-publisher
+    rules:
+      - alert: LensPublisherStalled
+        expr: (time() - publisher_last_success_timestamp) > 1800
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "No on-chain publication on {{ $labels.network }} in the last 30 minutes"
+```
+
 ---
 
 ## 4. Deploying the feed
