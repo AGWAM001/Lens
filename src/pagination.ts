@@ -25,6 +25,10 @@
 export const SCREENER_DEFAULT_LIMIT = 20
 export const SCREENER_MAX_LIMIT = 100
 
+/** Default page size and hard maximum for GET /movers (per list). */
+export const MOVERS_DEFAULT_LIMIT = 20
+export const MOVERS_MAX_LIMIT = 100
+
 /** Default page size and hard maximum for GET /pools. */
 export const POOLS_DEFAULT_LIMIT = 50
 export const POOLS_MAX_LIMIT = 200

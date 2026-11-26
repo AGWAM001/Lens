@@ -3,6 +3,7 @@ import { pgPool } from '../db'
 import { activeNetwork, type NetworkName } from '../config'
 import { getEnabledNetworks } from '../network/enabledNetworks'
 import { createLogger } from '../logger'
+import { runJob, recordJobRowsDeleted } from './jobMetrics'
 
 const log = createLogger('job:snapshot-retention')
 
@@ -27,7 +28,13 @@ function redisConnection() {
 }
 
 export function createSnapshotRetentionQueue() {
-  return new Queue(QUEUE_NAME, { connection: redisConnection() })
+  // One attempt, pinned: BullMQ's default is already 1, but a failed hourly
+  // run must be stored as failed, not retried forever — the next repeat
+  // fires on schedule. See src/jobs/jobMetrics.ts.
+  return new Queue(QUEUE_NAME, {
+    connection: redisConnection(),
+    defaultJobOptions: { attempts: 1 },
+  })
 }
 
 /**
@@ -73,6 +80,7 @@ export async function pruneOldSnapshots(
 
     totalPruned += pruned
     batchNumber += 1
+    recordJobRowsDeleted('snapshot-retention', network, pruned)
     log.info(
       { network, batch: batchNumber, rows: pruned, total: totalPruned },
       'pruned retention batch'
@@ -98,7 +106,12 @@ export async function pruneAllNetworks(
   const errors: Error[] = []
   for (const network of getEnabledNetworks()) {
     try {
-      counts[network] = await pruneOldSnapshots(retentionDays, network)
+      // Recorded per network, here, so both the queue worker below and the
+      // in-process fallback timer in src/index.ts (safePrune) report the
+      // same run — wrapping in either caller would double-count it.
+      counts[network] = await runJob('snapshot-retention', network, () =>
+        pruneOldSnapshots(retentionDays, network)
+      )
     } catch (err) {
       errors.push(new Error(`${network}: ${(err as Error).message}`))
     }
@@ -113,18 +126,18 @@ export function startSnapshotRetentionWorker() {
   const worker = new Worker(
     QUEUE_NAME,
     async () => {
-      try {
-        const counts = await pruneAllNetworks()
-        for (const [network, pruned] of Object.entries(counts)) {
-          if (pruned > 0) {
-            log.info(
-              { network, pruned, retentionDays: SNAPSHOT_RETENTION_DAYS },
-              'pruned snapshots older than retention window'
-            )
-          }
+      // No try/catch: runJob() inside pruneAllNetworks() already records
+      // the failure per network, and this handler must reject so BullMQ
+      // stores the job as failed (worker.on('failed') below can then fire).
+      // Swallowing the error here is what made failed runs look successful.
+      const counts = await pruneAllNetworks()
+      for (const [network, pruned] of Object.entries(counts)) {
+        if (pruned > 0) {
+          log.info(
+            { network, pruned, retentionDays: SNAPSHOT_RETENTION_DAYS },
+            'pruned snapshots older than retention window'
+          )
         }
-      } catch (err) {
-        log.error({ err }, 'snapshot prune failed')
       }
     },
     { connection: redisConnection(), concurrency: 1 }
