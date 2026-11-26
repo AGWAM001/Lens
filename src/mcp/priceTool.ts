@@ -95,8 +95,11 @@ const VALID_NETWORKS: readonly NetworkName[] = ['testnet', 'mainnet']
  * issuer. Codes are matched case-sensitively because that is how Stellar stores
  * them — "usdc" and "USDC" are different strings on the ledger — so a lowercase
  * code is refused rather than quietly folded.
+ *
+ * Exported because every Lens market tool declares the same asset grammar in its
+ * input schema; a second copy of the pattern is a second thing to keep in sync.
  */
-const ASSET_PATTERN = '^(?:native|[A-Z][A-Z0-9]{0,11}(?::G[A-Z2-7]{55})?)$'
+export const ASSET_PATTERN = '^(?:native|[A-Z][A-Z0-9]{0,11}(?::G[A-Z2-7]{55})?)$'
 const ASSET_RE = new RegExp(ASSET_PATTERN)
 const ISSUER_RE = /^G[A-Z2-7]{55}$/
 
