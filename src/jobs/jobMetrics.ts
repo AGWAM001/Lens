@@ -21,6 +21,7 @@ export const JOB_NAMES = [
   'oracle-retention',
   'price-points-retention',
   'price-points-partition',
+  'pool-snapshot-retention',
 ] as const
 
 export type JobName = (typeof JOB_NAMES)[number]
