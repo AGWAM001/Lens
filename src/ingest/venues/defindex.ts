@@ -422,6 +422,7 @@ export const defindexAdapter: VenueAdapter<string, DeFindexVaultSnapshot> = {
   type: 'Vault',
   description: 'DeFindex yield vaults on Soroban, priced per share',
   source: DEFINDEX_SOURCE,
+  onChain: true,
   sourceTimeCapability: { status: 'unavailable' },
   classification: 'aggregator',
 

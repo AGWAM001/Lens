@@ -1,6 +1,7 @@
 import type { NetworkName } from '../config'
 import type { OracleAdapter } from '../ingest/oracles/adapter'
 import { pgPool } from '../db'
+import { parseAssetRef, usdPriceOf } from '../pricing/usdPrice'
 
 export type OracleSourceStatus = 'not_configured' | 'available' | 'unreachable' | 'empty'
 export type DeviationStatus = 'aligned' | 'minor_deviation' | 'major_deviation' | 'partial'
@@ -111,34 +112,18 @@ export function deviationStatus(deviation: number | null): DeviationStatus {
 }
 
 async function fetchLensPrice(assetCode: string, network: NetworkName): Promise<LensPriceResult> {
-  const result = await pgPool.query(
-    `SELECT
-       COALESCE(SUM(price::numeric * base_volume::numeric), 0)
-         / NULLIF(SUM(base_volume::numeric), 0) AS vwap,
-       array_remove(array_agg(DISTINCT source), NULL) AS venues,
-       COUNT(*)::int AS sample_count,
-       MAX(timestamp) AS last_seen
-     FROM price_points
-     WHERE (asset_a = $1 OR asset_b = $1)
-       AND network = $2
-       AND COALESCE(observed_at, timestamp) > NOW() - INTERVAL '5 minutes'
-     GROUP BY pair_key
-     LIMIT 1`,
-    [assetCode, network]
-  )
-  const row = result.rows[0]
-  if (!row) {
-    return { price: null, venues: [], sampleCount: 0, lastSeen: null }
-  }
-  const vwap = row.vwap !== null && row.vwap !== undefined ? parseFloat(row.vwap) : null
-  const venues = Array.isArray(row.venues) ? row.venues : []
-  const sampleCount = Number(row.sample_count) || 0
-  const lastSeen = row.last_seen ? new Date(row.last_seen).toISOString() : null
+  const ref = parseAssetRef(assetCode) ?? { code: assetCode.toUpperCase() }
+  const usd = await usdPriceOf(ref, network, 5)
+
+  // usdPriceOf keeps the exact Postgres numeric as a decimal string. This
+  // response shape (and the oracle deviation maths) is numeric, so narrow once
+  // here at the serialization edge.
+  const price = usd.price === null ? null : parseFloat(usd.price)
   return {
-    price: Number.isFinite(vwap) ? vwap : null,
-    venues,
-    sampleCount,
-    lastSeen,
+    price: price !== null && Number.isFinite(price) ? price : null,
+    venues: usd.venues,
+    sampleCount: usd.sampleCount,
+    lastSeen: usd.lastSeen,
   }
 }
 

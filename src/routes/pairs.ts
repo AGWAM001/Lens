@@ -65,7 +65,7 @@ export type ListPairsOutcome =
 export async function listPairs(
   network: NetworkName,
   page: ListPairsPage = {},
-  watched: readonly WatchedPair[] = getActivePairs()
+  watched: readonly WatchedPair[] = getActivePairs(network)
 ): Promise<ListPairsOutcome> {
   const activePairs = watched
   const limit = Math.min(Math.max(page.limit ?? PAIRS_DEFAULT_LIMIT, 1), PAIRS_MAX_LIMIT)
@@ -186,17 +186,18 @@ export async function registerPairsRoutes(app: FastifyInstance) {
       })
     }
 
+    const network = req.network ?? activeNetwork
     const pairKey = makePairKey(assetA, assetB)
 
-    if (hasPair(pairKey)) {
+    if (hasPair(pairKey, network)) {
       return reply.status(409).send(apiError('pair_already_watched', `Pair ${pairKey} is already being watched`))
     }
 
     const pair = { assetA, assetB, pairKey }
-    registerPair(pair)
-    await persistPair(pair)
+    registerPair(pair, network)
+    await persistPair(pair, network)
 
-    log.info({ pair: pairKey }, 'added runtime pair')
+    log.info({ network, pair: pairKey }, 'added runtime pair')
     return reply.status(201).send({ pairKey, assetA, assetB })
   })
 }

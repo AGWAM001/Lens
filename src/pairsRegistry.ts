@@ -1,41 +1,36 @@
-import { config, activeNetwork, getNetworkConfig, type NetworkName } from './config'
+import { getNetworkConfig, type NetworkName } from './config'
 import { prisma } from './db'
+import { getEnabledNetworks } from './network/enabledNetworks'
 import type { WatchedPair, AssetId } from './types'
 
-// ─── Mutable runtime pairs store ─────────────────────────────────────────────
-const activePairs: WatchedPair[] = [...config.pairs]
+// ─── Per-network runtime pairs store ──────────────────────────────────────────
+// One list per network, seeded from that network's declared config so
+// dual-network ingesters, persistence, and runtime POST /pairs registrations
+// stay isolated. A list is seeded the first time it is used, not at import, so
+// importing this module reads no network config (as before the split).
+const pairsByNetwork: Partial<Record<NetworkName, WatchedPair[]>> = {}
 
-export function getActivePairs(): readonly WatchedPair[] {
-  return activePairs
-}
-
-/**
- * Returns the watched pairs for `network`. On this process's own active network,
- * runtime-registered pairs added via POST /pairs are included alongside configured pairs;
- * other networks use their declared static config so a pair watched on one network never leaks to another.
- */
-export function getPairsForNetwork(network: NetworkName = activeNetwork): readonly WatchedPair[] {
-  const configured = getNetworkConfig(network).pairs
-  if (network !== activeNetwork) return configured
-  const seen = new Set(configured.map(p => p.pairKey))
-  const merged = [...configured]
-  for (const pair of activePairs) {
-    if (!seen.has(pair.pairKey)) {
-      seen.add(pair.pairKey)
-      merged.push(pair)
-    }
+function pairsFor(network: NetworkName): WatchedPair[] {
+  let pairs = pairsByNetwork[network]
+  if (!pairs) {
+    pairs = [...getNetworkConfig(network).pairs]
+    pairsByNetwork[network] = pairs
   }
-  return merged
+  return pairs
 }
 
-export function hasPair(pairKey: string): boolean {
-  return activePairs.some(p => p.pairKey === pairKey)
+export function getActivePairs(network: NetworkName): readonly WatchedPair[] {
+  return pairsFor(network)
 }
 
-/** Add a new pair to the in-memory registry. Returns false if already present. */
-export function registerPair(pair: WatchedPair): boolean {
-  if (hasPair(pair.pairKey)) return false
-  activePairs.push(pair)
+export function hasPair(pairKey: string, network: NetworkName): boolean {
+  return pairsFor(network).some(p => p.pairKey === pairKey)
+}
+
+/** Add a new pair to the in-memory registry for `network`. Returns false if already present. */
+export function registerPair(pair: WatchedPair, network: NetworkName): boolean {
+  if (hasPair(pair.pairKey, network)) return false
+  pairsFor(network).push(pair)
   return true
 }
 
@@ -57,12 +52,12 @@ export function makePairKey(a: AssetId, b: AssetId): string {
 }
 
 // ─── Persistence ──────────────────────────────────────────────────────────────
-/** Persist a new pair to DB so it survives restarts. */
-export async function persistPair(pair: WatchedPair): Promise<void> {
+/** Persist a new pair to DB for `network` so it survives restarts. */
+export async function persistPair(pair: WatchedPair, network: NetworkName): Promise<void> {
   await prisma.pairConfig.upsert({
-    where: { network_pairKey: { network: activeNetwork, pairKey: pair.pairKey } },
+    where: { network_pairKey: { network, pairKey: pair.pairKey } },
     create: {
-      network: activeNetwork,
+      network,
       pairKey: pair.pairKey,
       assetACode: pair.assetA.code,
       assetAIssuer: pair.assetA.issuer,
@@ -73,15 +68,22 @@ export async function persistPair(pair: WatchedPair): Promise<void> {
   })
 }
 
-/** Load persisted pairs from DB and merge into the active registry. */
-export async function loadPersistedPairs(): Promise<void> {
-  const rows = await prisma.pairConfig.findMany({ where: { network: activeNetwork } })
+/** Load persisted pairs from DB for every enabled network and merge into each network's registry. */
+export async function loadPersistedPairs(
+  networks: readonly NetworkName[] = getEnabledNetworks()
+): Promise<void> {
+  if (networks.length === 0) return
+  const rows = await prisma.pairConfig.findMany({
+    where: { network: { in: [...networks] } },
+  })
   for (const row of rows) {
+    const net = row.network as NetworkName
+    if (!networks.includes(net)) continue
     const pair: WatchedPair = {
       assetA: { code: row.assetACode, issuer: row.assetAIssuer },
       assetB: { code: row.assetBCode, issuer: row.assetBIssuer },
       pairKey: row.pairKey,
     }
-    registerPair(pair)
+    registerPair(pair, net)
   }
 }

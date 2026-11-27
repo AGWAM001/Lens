@@ -782,11 +782,11 @@ export const resolvers = {
     }),
 
     listPairs: withScope('read:prices', function () {
-      return getActivePairs().map(p => p.pairKey)
+      return getActivePairs(activeNetwork).map(p => p.pairKey)
     }),
 
     pairs: withScope('read:prices', async function () {
-      const activePairs = getActivePairs()
+      const activePairs = getActivePairs(activeNetwork)
       if (activePairs.length === 0) {
         return []
       }

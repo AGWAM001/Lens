@@ -35,7 +35,7 @@ export async function appendSnapshots(
   now: Date = new Date(),
   network: NetworkName = activeNetwork,
 ): Promise<number> {
-  const pairs = getActivePairs()
+  const pairs = getActivePairs(network)
   if (pairs.length === 0) return 0
 
   const ts = floorToMinute(now)
@@ -82,7 +82,7 @@ function sleep(ms: number) {
  * volume window cleanly covers the minute that just elapsed.
  */
 export async function startSnapshotIngester(network: NetworkName = activeNetwork): Promise<void> {
-  log.info({ network, pairs: getActivePairs().length }, 'starting 1-minute snapshot ingester')
+  log.info({ network, pairs: getActivePairs(network).length }, 'starting 1-minute snapshot ingester')
 
   while (true) {
     // Sleep until the next minute boundary.
