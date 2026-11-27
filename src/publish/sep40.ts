@@ -19,6 +19,15 @@
 import { Asset as StellarAsset, Address, StrKey, xdr } from '@stellar/stellar-sdk'
 import { getNetworkConfig, type NetworkName } from '../config'
 import type { AssetId } from '../types'
+import { resolveVenueSymbol } from '../ingest/venues/symbols'
+import { createLogger } from '../logger'
+
+const log = createLogger('sep40-encoding')
+const warnedSources = new Set<string>()
+
+export function _resetWarnedSources(): void {
+  warnedSources.clear()
+}
 
 /**
  * Soroban's `ScSymbol` is capped at 32 bytes on the wire, and a symbol over the
@@ -271,7 +280,30 @@ export function venuesToSpecArg(venues: string[]): string[] {
   // and the same set of markets must not produce two different on-chain values
   // because rows came back in a different order. `[...venues]` first, so the
   // caller's array is not sorted in place under them.
-  return [...new Set([...venues].sort())].map(venue => assertSymbol(venue, `venue ${venue}`))
+  const resolvedVenues: string[] = []
+  for (const venue of venues) {
+    // Preserve existing boundary assertion for names exceeding max symbol length
+    if (venue.length > MAX_SYMBOL_LENGTH) {
+      assertSymbol(venue, `venue ${venue}`)
+    }
+    const resolved = resolveVenueSymbol(venue)
+    if (resolved) {
+      resolvedVenues.push(assertSymbol(resolved, `venue ${resolved}`))
+    } else {
+      if (!warnedSources.has(venue)) {
+        warnedSources.add(venue)
+        log.warn(`Skipping unresolvable venue '${venue}' from published provenance list`)
+      }
+    }
+  }
+
+  if (resolvedVenues.length === 0) {
+    throw new Sep40EncodingError(
+      'an aggregate with no named venue is not publishable; a price you cannot source is worse than no price'
+    )
+  }
+
+  return [...new Set(resolvedVenues.sort())]
 }
 
 export function venuesToScVal(venues: string[]): xdr.ScVal {

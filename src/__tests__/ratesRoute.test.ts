@@ -23,13 +23,14 @@ const mockRates = [
   },
 ]
 
-const { mockGetLatestLendingRates } = vi.hoisted(() => ({
+const { mockGetLatestLendingRates, mockQuery } = vi.hoisted(() => ({
   mockGetLatestLendingRates: vi.fn(),
+  mockQuery: vi.fn(),
 }))
 
 vi.mock('../db', () => ({
   getLatestLendingRates: mockGetLatestLendingRates,
-  pgPool: { query: vi.fn() },
+  pgPool: { query: mockQuery },
 }))
 
 import { registerRateRoutes } from '../routes/rates'
@@ -107,5 +108,32 @@ describe('Rates list route (GET /rates)', () => {
 
     expect(res.statusCode).toBe(400)
     await app.close()
+  })
+})
+
+describe('Best-rate route network selection (GET /rates/:asset, #668)', () => {
+  beforeEach(() => {
+    mockQuery.mockReset()
+    mockQuery.mockResolvedValue({ rows: [] })
+  })
+
+  async function networkFor(url: string, headers: Record<string, string> = {}) {
+    const app = await buildTestApp()
+    const res = await app.inject({ method: 'GET', url, headers })
+    await app.close()
+    expect(res.statusCode).toBe(200)
+    return { body: res.json().network, db: mockQuery.mock.calls[0][1][1] }
+  }
+
+  it('honours the x-network header when no query parameter is sent', async () => {
+    expect(await networkFor('/rates/USDC', { 'x-network': 'mainnet' })).toEqual({ body: 'mainnet', db: 'mainnet' })
+  })
+
+  it('honours the query parameter when no header is sent', async () => {
+    expect(await networkFor('/rates/USDC?network=mainnet')).toEqual({ body: 'mainnet', db: 'mainnet' })
+  })
+
+  it('lets the query parameter win when both are sent', async () => {
+    expect(await networkFor('/rates/USDC?network=testnet', { 'x-network': 'mainnet' })).toEqual({ body: 'testnet', db: 'testnet' })
   })
 })

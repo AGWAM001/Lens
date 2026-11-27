@@ -43,11 +43,13 @@ export interface AlertBotConfig {
 interface PriceUpdateMessage {
   type: string
   message?: string
-  assetA: string
-  assetB: string
-  previousPrice: number
-  currentPrice: number
-  timestamp: string
+  /** pairKey, e.g. "USDC:ISSUER/XLM" */
+  pair: string
+  network: string
+  price: number
+  /** null until this process has seen an earlier price for the same pair+network. */
+  previousPrice: number | null
+  ts: string
 }
 
 function parseDirection(raw: string | undefined): ThresholdDirection {
@@ -78,11 +80,15 @@ export function readConfig(): AlertBotConfig {
   }
 }
 
+/** Asset codes from a pairKey, ignoring issuers, in stable order. */
+function pairCodes(pair: string): string[] {
+  return pair.split('/').map(side => side.split(':')[0].toUpperCase()).sort()
+}
+
 /** True when a price update is for the pair we are watching (either order). */
-export function matchesPair(config: AlertBotConfig, msg: Pick<PriceUpdateMessage, 'assetA' | 'assetB'>): boolean {
+export function matchesPair(config: AlertBotConfig, msg: Pick<PriceUpdateMessage, 'pair'>): boolean {
   const want = [config.assetA, config.assetB].sort().join('/')
-  const got = [msg.assetA.toUpperCase(), msg.assetB.toUpperCase()].sort().join('/')
-  return want === got
+  return pairCodes(msg.pair).join('/') === want
 }
 
 async function fireAlert(config: AlertBotConfig, currentPrice: number, timestamp: string): Promise<void> {
@@ -127,9 +133,11 @@ export async function runAlertBot(config = readConfig(), once = false): Promise<
         return
       }
       if (msg.type !== 'price_update' || !matchesPair(config, msg)) return
+      // The first event for a pair has no previous price to cross from.
+      if (msg.previousPrice === null || msg.previousPrice === undefined) return
 
-      if (crossesThreshold(config, msg.previousPrice, msg.currentPrice)) {
-        void fireAlert(config, msg.currentPrice, msg.timestamp)
+      if (crossesThreshold(config, msg.previousPrice, msg.price)) {
+        void fireAlert(config, msg.price, msg.ts)
         if (once) {
           ws.close()
           resolve()

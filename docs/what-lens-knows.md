@@ -64,7 +64,7 @@ A developer arriving at Lens does not browse by HTTP verb or path parameter. The
 | 25 | What is the weighted price of a custom portfolio basket of assets? | `GET /v1/basket` | `GET /basket?asset=XLM&asset=USDC&weight=0.6&weight=0.4&network=testnet` | Comparative Analytics & Market Quality |
 | 26 | Do these assets move together, or are they genuinely diversified? | `GET /v1/correlation` | `GET /correlation?asset=XLM&asset=USDC&window=30d&network=testnet` | Comparative Analytics & Market Quality |
 | 27 | Which pairs disagree most across venues right now? | `GET /v1/dispersion` | `GET /dispersion?network=testnet` | Comparative Analytics & Market Quality |
-| 28 | The venues disagree on this pair — which one is the outlier? | `GET /v1/dispersion/:assetA/:assetB` | `GET /dispersion/XLM/USDC?network=testnet` | Comparative Analytics & Market Quality |
+| 28 | The venues disagree on this pair — which one is the outlier? | `GET /v1/dispersion/:assetA/:assetB` | `GET /dispersion/XLM/USDC?network=mainnet` | Comparative Analytics & Market Quality |
 | 29 | Is this pair trading above or below the centralised exchanges? | `GET /v1/premium/:assetA/:assetB` | `GET /premium/XLM/USDC?network=testnet` | Comparative Analytics & Market Quality |
 | 30 | Is this stablecoin still holding its peg? | `GET /v1/pegs` | `GET /pegs?network=testnet` | Comparative Analytics & Market Quality |
 | 31 | How much of the market can Lens actually see? | `GET /v1/coverage` | `GET /coverage?network=testnet` | Comparative Analytics & Market Quality |
@@ -135,7 +135,7 @@ A developer arriving at Lens does not browse by HTTP verb or path parameter. The
 | **What is the weighted price of a custom portfolio basket of assets?** | `GET /v1/basket` | `GET /basket?asset=XLM&asset=USDC&weight=0.6&weight=0.4&network=testnet` | Compute the weighted price of a basket of assets |
 | **Do these assets move together, or are they genuinely diversified?** | `GET /v1/correlation` | `GET /correlation?asset=XLM&asset=USDC&window=30d&network=testnet` | Compute price correlation matrix across a basket of assets over a window |
 | **Which pairs disagree most across venues right now?** | `GET /v1/dispersion` | `GET /dispersion?network=testnet` | List cross-venue dispersion across watched pairs |
-| **The venues disagree on this pair — which one is the outlier?** | `GET /v1/dispersion/:assetA/:assetB` | `GET /dispersion/XLM/USDC?network=testnet` | Get venue price dispersion and outlier attribution for a pair |
+| **The venues disagree on this pair — which one is the outlier?** | `GET /v1/dispersion/:assetA/:assetB` | `GET /dispersion/XLM/USDC?network=mainnet` | Get venue price dispersion and outlier attribution for a pair |
 | **Is this pair trading above or below the centralised exchanges?** | `GET /v1/premium/:assetA/:assetB` | `GET /premium/XLM/USDC?network=testnet` | Get on-chain vs CEX price premium and spread |
 | **Is this stablecoin still holding its peg?** | `GET /v1/pegs` | `GET /pegs?network=testnet` | Get peg deviation and window statistics for all configured pegged assets |
 | **How much of the market can Lens actually see?** | `GET /v1/coverage` | `GET /coverage?network=testnet` | Get overall market coverage ratio and cross-venue activity |

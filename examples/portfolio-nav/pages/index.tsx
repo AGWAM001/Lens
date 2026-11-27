@@ -11,6 +11,7 @@ interface NavRow {
   balance: number
   price: number | null
   value: number | null
+  error?: string
 }
 
 export default function PortfolioNav() {
@@ -20,8 +21,19 @@ export default function PortfolioNav() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const LENS_URL = process.env.NEXT_PUBLIC_LENS_URL ?? 'http://localhost:3000'
+  /** Lens base URL — must match your running instance (default port 3002). */
+  const LENS_URL = (process.env.NEXT_PUBLIC_LENS_URL ?? 'http://localhost:3002').replace(/\/+$/, '')
   const HORIZON_URL = process.env.NEXT_PUBLIC_HORIZON_URL ?? 'https://horizon.stellar.org'
+  /** Optional API key for authenticated Lens instances. See README for security note. */
+  const LENS_KEY = process.env.NEXT_PUBLIC_LENS_KEY ?? ''
+  /** Network passed to Lens so it matches the Horizon network being queried. */
+  const NETWORK = process.env.NEXT_PUBLIC_NETWORK ?? 'mainnet'
+
+  function lensHeaders(): HeadersInit {
+    const h: Record<string, string> = { 'x-decimal-format': 'string' }
+    if (LENS_KEY) h['Authorization'] = `Bearer ${LENS_KEY}`
+    return h
+  }
 
   async function fetchNav() {
     if (!address.trim()) return
@@ -32,7 +44,7 @@ export default function PortfolioNav() {
 
     try {
       const horizonResp = await fetch(`${HORIZON_URL}/accounts/${address.trim()}`)
-      if (!horizonResp.ok) throw new Error('Account not found on Horizon')
+      if (!horizonResp.ok) throw new Error(`Account not found on Horizon (HTTP ${horizonResp.status})`)
       const account = await horizonResp.json()
 
       const balances: AssetBalance[] = (account.balances ?? []).filter(
@@ -46,100 +58,74 @@ export default function PortfolioNav() {
       const navRows: NavRow[] = await Promise.all(
         balances.map(async (b) => {
           const bal = parseFloat(b.balance)
-          if (b.asset_code === 'XLM') {
-            // Fetch XLM/USDC price from Lens with full decimal precision
-            try {
-              const priceResp = await fetch(`${LENS_URL}/price/XLM/USDC`, {
-                headers: { 'x-decimal-format': 'string' },
-              })
-              if (priceResp.ok) {
-                const data = await priceResp.json()
-                const price = parseFloat(data.price)
-                return { asset: 'XLM', balance: bal, price, value: bal * price }
-              }
-            } catch {}
-            return { asset: 'XLM', balance: bal, price: null, value: null }
-          }
-
+          const pair = `${b.asset_code}/USDC`
           try {
-            const priceResp = await fetch(`${LENS_URL}/price/${b.asset_code}/USDC`, {
-              headers: { 'x-decimal-format': 'string' },
-            })
-            if (priceResp.ok) {
-              const data = await priceResp.json()
-              const price = parseFloat(data.price)
-              return { asset: b.asset_code, balance: bal, price, value: bal * price }
+            const priceResp = await fetch(
+              `${LENS_URL}/v1/price/${pair}?network=${NETWORK}`,
+              { headers: lensHeaders() }
+            )
+            if (!priceResp.ok) {
+              return { asset: b.asset_code, balance: bal, price: null, value: null, error: `HTTP ${priceResp.status}` }
             }
-          } catch {}
-          return { asset: b.asset_code, balance: bal, price: null, value: null }
+            const data = await priceResp.json()
+            const price = parseFloat(data.price)
+            if (isNaN(price)) {
+              return { asset: b.asset_code, balance: bal, price: null, value: null, error: 'Invalid price in response' }
+            }
+            return { asset: b.asset_code, balance: bal, price, value: bal * price }
+          } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : 'Network error'
+            return { asset: b.asset_code, balance: bal, price: null, value: null, error: msg }
+          }
         })
       )
 
       setRows(navRows)
       const total = navRows.reduce((sum, r) => sum + (r.value ?? 0), 0)
       setTotalNav(total)
-    } catch (e: any) {
-      setError(e.message ?? 'Unknown error')
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Unknown error')
     } finally {
       setLoading(false)
     }
   }
 
   return (
-    <main style={{ fontFamily: 'monospace', maxWidth: 700, margin: '40px auto', padding: '0 16px' }}>
-      <h1>Stellar Portfolio NAV</h1>
-      <p style={{ color: '#555' }}>Enter a Stellar address to compute its net asset value using Lens prices.</p>
-      <div style={{ display: 'flex', gap: 8, marginBottom: 24 }}>
+    <main style={{ maxWidth: 640, margin: '2rem auto', fontFamily: 'system-ui' }}>
+      <h1>Portfolio NAV</h1>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
         <input
-          style={{ flex: 1, padding: '8px 12px', fontFamily: 'monospace', fontSize: 13 }}
-          placeholder="G... Stellar address"
           value={address}
-          onChange={e => setAddress(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && fetchNav()}
+          onChange={(e) => setAddress(e.target.value)}
+          placeholder="Paste your Stellar public key (G…)"
+          style={{ flex: 1, padding: '8px 12px' }}
         />
-        <button
-          onClick={fetchNav}
-          disabled={loading}
-          style={{ padding: '8px 16px', cursor: loading ? 'wait' : 'pointer' }}
-        >
-          {loading ? 'Loading…' : 'Fetch NAV'}
+        <button onClick={fetchNav} disabled={loading}>
+          {loading ? 'Loading…' : 'Value'}
         </button>
       </div>
-
-      {error && <p style={{ color: 'red' }}>{error}</p>}
-
+      {error && <p style={{ color: 'crimson' }}>{error}</p>}
       {rows.length > 0 && (
-        <>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-            <thead>
-              <tr style={{ borderBottom: '2px solid #ccc', textAlign: 'left' }}>
-                <th style={{ padding: '6px 8px' }}>Asset</th>
-                <th style={{ padding: '6px 8px', textAlign: 'right' }}>Balance</th>
-                <th style={{ padding: '6px 8px', textAlign: 'right' }}>Price (USDC)</th>
-                <th style={{ padding: '6px 8px', textAlign: 'right' }}>Value (USDC)</th>
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead>
+            <tr>
+              <th align="left">Asset</th><th align="right">Balance</th>
+              <th align="right">Price</th><th align="right">Value</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.asset}>
+                <td>{r.asset}</td>
+                <td align="right">{r.balance.toFixed(4)}</td>
+                <td align="right">{r.price != null ? `$${r.price.toFixed(6)}` : <span title={r.error}>—</span>}</td>
+                <td align="right">{r.value != null ? `$${r.value.toFixed(2)}` : <span style={{ color: '#999' }}>{r.error ?? 'N/A'}</span>}</td>
               </tr>
-            </thead>
-            <tbody>
-              {rows.map(r => (
-                <tr key={r.asset} style={{ borderBottom: '1px solid #eee' }}>
-                  <td style={{ padding: '6px 8px' }}>{r.asset}</td>
-                  <td style={{ padding: '6px 8px', textAlign: 'right' }}>{r.balance.toFixed(7)}</td>
-                  <td style={{ padding: '6px 8px', textAlign: 'right' }}>
-                    {r.price !== null ? r.price.toFixed(6) : '—'}
-                  </td>
-                  <td style={{ padding: '6px 8px', textAlign: 'right' }}>
-                    {r.value !== null ? r.value.toFixed(2) : '—'}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          <p style={{ marginTop: 16, fontSize: 14 }}>
-            <strong>Total NAV:</strong>{' '}
-            {totalNav !== null ? `$${totalNav.toFixed(2)} USDC` : 'Partial (some prices unavailable)'}
-          </p>
-        </>
+            ))}
+          </tbody>
+        </table>
       )}
+      {totalNav != null && <h2>Total NAV: ${totalNav.toFixed(2)}</h2>}
     </main>
   )
 }

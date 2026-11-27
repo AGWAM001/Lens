@@ -3,9 +3,9 @@ import Fastify from 'fastify'
 import WebSocket from 'ws'
 
 import { registerWebSocket } from '../../src/api/websocket'
-import { priceEmitter, PRICE_UPDATE } from '../../src/events'
+import { priceEmitter, PRICE_PUBLISHED, publishPriceUpdate } from '../../src/events'
 import { fanOutManager } from '../../src/ws/fanout'
-import { config } from '../../src/config'
+import { activeNetwork, config } from '../../src/config'
 
 describe('WebSocket subscription full cycle', () => {
   let app: ReturnType<typeof Fastify>
@@ -32,7 +32,7 @@ describe('WebSocket subscription full cycle', () => {
   })
 
   it('connects → subscribes → receives updates → disconnects', async () => {
-    const before = priceEmitter.listenerCount(PRICE_UPDATE)
+    const before = priceEmitter.listenerCount(PRICE_PUBLISHED)
 
     const messages: string[] = []
     const waiters: Array<(msg: string) => void> = []
@@ -65,27 +65,28 @@ describe('WebSocket subscription full cycle', () => {
     const first = JSON.parse(await nextMessage())
     expect(first.type).toBe('status')
     expect(first.message).toBe('Streaming active')
+    expect(first.network).toBe(activeNetwork)
 
     // 3. Fan-out manager should have registered a listener on the price emitter.
     //    The listener count should be >= 1 (the fan-out listener registered during initialize).
-    expect(priceEmitter.listenerCount(PRICE_UPDATE)).toBeGreaterThanOrEqual(1)
+    expect(priceEmitter.listenerCount(PRICE_PUBLISHED)).toBeGreaterThanOrEqual(1)
 
-    // 4. Emit a price update and verify it's received
+    // 4. Publish the way an ingester does and verify the client receives it.
     const event = {
-      assetA: 'XLM',
-      assetB: 'USDC',
-      previousPrice: 1.0,
-      currentPrice: 1.2345,
-      timestamp: new Date(),
+      pair: 'USDC/XLM',
+      price: 1.2345,
+      ts: new Date().toISOString(),
+      network: activeNetwork,
     }
-    priceEmitter.emit(PRICE_UPDATE, event)
+    publishPriceUpdate(event)
 
     const next = JSON.parse(await nextMessage())
     expect(next.type).toBe('price_update')
-    expect(next.assetA).toBe(event.assetA)
-    expect(next.assetB).toBe(event.assetB)
-    expect(next.currentPrice).toBe(event.currentPrice)
-    expect(new Date(next.timestamp).toISOString()).toBe(event.timestamp.toISOString())
+    expect(next.pair).toBe(event.pair)
+    expect(next.network).toBe(event.network)
+    expect(next.price).toBe(event.price)
+    expect(next.previousPrice).toBeNull()
+    expect(next.ts).toBe(event.ts)
 
     // 5. Verify client was registered in internal maps
     expect(fanOutManager.getClientCount()).toBe(1)
@@ -100,6 +101,68 @@ describe('WebSocket subscription full cycle', () => {
 
     expect(fanOutManager.getClientCount()).toBe(0)
     expect(fanOutManager.getPairClientCount('*')).toBe(0)
+  })
+
+  it('delivers a price only to clients that asked for its network', async () => {
+    async function connect(url: string) {
+      const ws = new WebSocket(url)
+      const messages: string[] = []
+      const waiters: Array<(msg: string) => void> = []
+      ws.on('message', (data) => {
+        const msg = data.toString()
+        const waiter = waiters.shift()
+        if (waiter) waiter(msg)
+        else messages.push(msg)
+      })
+      await new Promise<void>((resolve, reject) => {
+        ws.on('open', () => resolve())
+        ws.on('error', reject)
+      })
+      const nextMessage = () =>
+        new Promise<string>((resolve) => {
+          const buffered = messages.shift()
+          if (buffered !== undefined) resolve(buffered)
+          else waiters.push(resolve)
+        })
+      // Consume the status frame and return the client's cached status network.
+      const status = JSON.parse(await nextMessage())
+      return { ws, nextMessage, status }
+    }
+
+    const testnet = await connect(`ws://127.0.0.1:${port}/ws?network=testnet`)
+    const mainnet = await connect(`ws://127.0.0.1:${port}/ws?network=mainnet`)
+
+    expect(testnet.status.network).toBe('testnet')
+    expect(mainnet.status.network).toBe('mainnet')
+
+    // Same pair, two networks: each client must see exactly its own event.
+    publishPriceUpdate({
+      pair: 'USDC/XLM',
+      price: 1.1111,
+      ts: new Date().toISOString(),
+      network: 'testnet',
+    })
+    publishPriceUpdate({
+      pair: 'USDC/XLM',
+      price: 2.2222,
+      ts: new Date().toISOString(),
+      network: 'mainnet',
+    })
+
+    const testnetMsg = JSON.parse(await testnet.nextMessage())
+    const mainnetMsg = JSON.parse(await mainnet.nextMessage())
+
+    expect(testnetMsg).toMatchObject({ type: 'price_update', pair: 'USDC/XLM', network: 'testnet', price: 1.1111 })
+    expect(mainnetMsg).toMatchObject({ type: 'price_update', pair: 'USDC/XLM', network: 'mainnet', price: 2.2222 })
+
+    testnet.ws.close()
+    mainnet.ws.close()
+    await Promise.all([
+      new Promise<void>((resolve) => testnet.ws.on('close', () => resolve())),
+      new Promise<void>((resolve) => mainnet.ws.on('close', () => resolve())),
+    ])
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(fanOutManager.getClientCount()).toBe(0)
   })
 
   it('keeps normal client with slow but live connection connected', async () => {
