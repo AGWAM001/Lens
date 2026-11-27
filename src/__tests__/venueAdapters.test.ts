@@ -18,6 +18,8 @@ import {
   isPrimaryVenue,
   isAggregatorVenue,
   getVenueReasoning,
+  allVenueAdapters,
+  resolveVenueSymbol,
   type VenueAdapter,
 } from '../ingest/venues'
 
@@ -188,5 +190,19 @@ describe('venue classification has one source of truth (#244)', () => {
     // ingested at all.
     expect(getVenueClassification('some_cex_feed')).toBe('primary')
     expect(isAggregatorVenue('some_cex_feed')).toBe(false)
+  })
+
+  it('ensures every adapter in allVenueAdapters maps to a unique, legal Soroban symbol (#755)', () => {
+    expect(allVenueAdapters.length).toBeGreaterThanOrEqual(9)
+    const seenSymbols = new Set<string>()
+    for (const adapter of allVenueAdapters) {
+      const sym = resolveVenueSymbol(adapter.source)
+      expect(sym).not.toBeNull()
+      expect(sym!.length).toBeGreaterThan(0)
+      expect(sym!.length).toBeLessThanOrEqual(32)
+      expect(/^[A-Za-z0-9_]+$/.test(sym!)).toBe(true)
+      expect(seenSymbols.has(sym!)).toBe(false)
+      seenSymbols.add(sym!)
+    }
   })
 })

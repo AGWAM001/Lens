@@ -212,6 +212,17 @@ describe('runPublicationCycle', () => {
     expect(cycle.outcomes[0].decision.guard).toBe('venue_provenance')
   })
 
+  it('successfully publishes a pair when Gate.io is among the venues behind the price (#755)', async () => {
+    const { feed, calls } = fakeFeed({
+      published: { [`stellar:${USDC_SAC_ID}`]: { price: 1_000_000_000_000_000n, timestamp: TICK - 300 } },
+    })
+    const { deps } = fakeDeps(feed, { price: 0.06 }, ['Gate.io', 'SDEX'])
+    const cycle = await runPublicationCycle('testnet', deps, NOW_MS)
+    expect(calls.report).toHaveLength(1)
+    expect(calls.report[0].venues).toEqual(['Gate_io', 'SDEX'])
+    expect(cycle.outcomes[0].decision.publish).toBe(true)
+  })
+
   it('asks for the aggregate and the venues on the network it is publishing to', async () => {
     const { feed } = fakeFeed()
     const { deps, seen } = fakeDeps(feed)
