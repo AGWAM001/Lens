@@ -10,10 +10,21 @@ vi.mock('../redis', () => ({ getCachedPrice: vi.fn() }))
 vi.mock('../db', () => ({ pgPool: { query: vi.fn() } }))
 vi.mock('../aggregator/vwap', () => ({ getAggregatedPrice: vi.fn() }))
 vi.mock('../aggregator/bestRoute', () => ({ getBestRoute: vi.fn() }))
-vi.mock('../config', () => ({ config: { pairs: [] } }))
+vi.mock('../config', () => {
+  const pairs = [
+    { assetA: { code: 'XLM', issuer: null }, assetB: { code: 'USDC', issuer: null }, pairKey: 'XLM/USDC' },
+    { assetA: { code: 'BTC', issuer: null }, assetB: { code: 'USDC', issuer: null }, pairKey: 'BTC/USDC' },
+  ]
+  return {
+    config: { pairs },
+    activeNetwork: 'testnet',
+    getNetworkConfig: () => ({ pairs }),
+  }
+})
 
 import { registerGraphQL, resolveGraphQLUiOptions } from '../api/graphql'
 import { publishPriceUpdate, priceEmitter } from '../events'
+import { registerPair } from '../pairsRegistry'
 
 const SUBPROTOCOL = 'graphql-transport-ws'
 
@@ -88,7 +99,9 @@ describe('GraphQL production UI configuration', () => {
         payload: { query: '{ listPairs }' },
       })
       expect(response.statusCode).toBe(200)
-      expect(response.json()).toEqual({ data: { listPairs: [] } })
+      // listPairs serves the pairs registry, which the config mock above
+      // seeds with the two configured pairs.
+      expect(response.json()).toEqual({ data: { listPairs: ['XLM/USDC', 'BTC/USDC'] } })
     } finally {
       await app.close()
     }
@@ -224,6 +237,111 @@ describe('GraphQL priceUpdated subscription', () => {
     await new Promise(r => setTimeout(r, 200))
 
     expect(received).toBe(false)
+    ws.close()
+  })
+
+  it('ends the subscription with PAIR_NOT_FOUND for a pair that is not watched', async () => {
+    const ws = await connect(url)
+    ws.send(JSON.stringify(SUBSCRIBE('FOO/BAR')))
+
+    const error = await waitFor(ws, 'error')
+    expect(error.id).toBe('1')
+    const errors = Array.isArray(error.payload) ? error.payload : [error.payload]
+    expect(errors[0].extensions.code).toBe('PAIR_NOT_FOUND')
+
+    ws.close()
+  })
+
+  it('ends the subscription with INVALID_INPUT for an unknown network', async () => {
+    const ws = await connect(url)
+    ws.send(JSON.stringify(SUBSCRIBE('XLM/USDC', 'mainet')))
+
+    const error = await waitFor(ws, 'error')
+    expect(error.id).toBe('1')
+    const errors = Array.isArray(error.payload) ? error.payload : [error.payload]
+    expect(errors[0].extensions.code).toBe('INVALID_INPUT')
+
+    ws.close()
+  })
+
+  it('accepts a watched pair in the reverse asset order and streams its updates', async () => {
+    const ws = await connect(url)
+    ws.send(JSON.stringify(SUBSCRIBE('USDC/XLM')))
+    await new Promise(r => setTimeout(r, 100))
+
+    publishPriceUpdate({ pair: 'XLM/USDC', price: 0.77, ts: '2026-06-02T00:00:00.000Z', network: 'testnet' })
+
+    const next = await waitFor(ws, 'next')
+    expect(next.payload.data.priceUpdated.pair).toBe('XLM/USDC')
+    expect(next.payload.data.priceUpdated.price).toBe(0.77)
+
+    ws.close()
+  })
+
+  it('accepts a watched pair in a different case and streams its updates', async () => {
+    const ws = await connect(url)
+    ws.send(JSON.stringify(SUBSCRIBE('xlm/usdc')))
+    await new Promise(r => setTimeout(r, 100))
+
+    publishPriceUpdate({ pair: 'XLM/USDC', price: 0.88, ts: '2026-06-02T00:00:00.000Z', network: 'mainnet' })
+
+    const next = await waitFor(ws, 'next')
+    expect(next.payload.data.priceUpdated.pair).toBe('XLM/USDC')
+    expect(next.payload.data.priceUpdated.price).toBe(0.88)
+
+    ws.close()
+  })
+
+  it('streams updates for a pair registered at runtime on the active network', async () => {
+    // Pairs added at runtime (registerPair / persistPair, e.g. via
+    // POST /pairs) live only in the pairs registry: the venue runner
+    // ingests them, publishes their price events, and the pairs query
+    // lists them — but they never appear in the static network config
+    // this test mocks. Resolution must consult the registry for the
+    // active network (testnet here) or the subscription is refused with
+    // PAIR_NOT_FOUND for a pair that is in fact being watched.
+    expect(registerPair({
+      assetA: { code: 'ETH', issuer: null },
+      assetB: { code: 'USDC', issuer: null },
+      pairKey: 'ETH/USDC',
+    })).toBe(true)
+
+    const ws = await connect(url)
+    ws.send(JSON.stringify(SUBSCRIBE('ETH/USDC', 'testnet')))
+    await new Promise(r => setTimeout(r, 100))
+
+    publishPriceUpdate({ pair: 'ETH/USDC', price: 3.21, ts: '2026-06-02T00:00:00.000Z', network: 'testnet' })
+
+    const next = await waitFor(ws, 'next')
+    expect(next.payload.data.priceUpdated).toEqual({
+      pair: 'ETH/USDC',
+      price: 3.21,
+      ts: '2026-06-02T00:00:00.000Z',
+      network: 'testnet',
+    })
+
+    ws.close()
+  })
+
+  it('still ends with PAIR_NOT_FOUND for a runtime-registered pair on the other network', async () => {
+    // Runtime pairs belong to this process's active network only; the
+    // other network keeps resolving against its static config, where
+    // ETH/USDC is not declared (the config mock above serves the same
+    // two pairs for every network, and ETH/USDC is not one of them).
+    registerPair({
+      assetA: { code: 'ETH', issuer: null },
+      assetB: { code: 'USDC', issuer: null },
+      pairKey: 'ETH/USDC',
+    })
+
+    const ws = await connect(url)
+    ws.send(JSON.stringify(SUBSCRIBE('ETH/USDC', 'mainnet')))
+
+    const error = await waitFor(ws, 'error')
+    expect(error.id).toBe('1')
+    const errors = Array.isArray(error.payload) ? error.payload : [error.payload]
+    expect(errors[0].extensions.code).toBe('PAIR_NOT_FOUND')
+
     ws.close()
   })
 })

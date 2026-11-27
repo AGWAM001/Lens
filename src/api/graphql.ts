@@ -17,7 +17,7 @@ import { getCachedPrice } from '../redis'
 import { getAggregatedPrice } from '../aggregator/vwap'
 import { getBestRoute } from '../aggregator/bestRoute'
 import { pgPool } from '../db'
-import { config, activeNetwork, type NetworkName } from '../config'
+import { config, activeNetwork, getNetworkConfig, type NetworkName } from '../config'
 import { parseAssetStr, getActivePairs } from '../pairsRegistry'
 import { reflectorOracleAdapter } from '../ingest/oracles/reflector'
 import type { OracleAdapter } from '../ingest/oracles/adapter'
@@ -441,10 +441,17 @@ export const schema = `
     Streams a PriceUpdate every time an ingester records a new price for the
     given pair.
 
-    The network argument narrows the stream to one chain. It is optional, and
-    omitting it delivers every enabled network — the right default only if you
-    read the network field on each message, since a dual-network deployment
-    otherwise interleaves two chains prices on one stream.
+    The pair must name a pair watched on the requested network. Either asset
+    order is accepted and is normalised to the stored pair key. A pair that
+    is not watched fails the subscription with PAIR_NOT_FOUND instead of
+    waiting forever for data that can never arrive.
+
+    The network argument narrows the stream to one chain. It must be
+    "testnet" or "mainnet"; any other value fails the subscription with
+    INVALID_INPUT. It is optional, and omitting it delivers every enabled
+    network — the right default only if you read the network field on each
+    message, since a dual-network deployment otherwise interleaves two
+    chains prices on one stream.
     """
     priceUpdated(pair: String!, network: String): PriceUpdate!
   }
@@ -508,6 +515,70 @@ function findPair(assetA: string, assetB: string) {
     const pB = p.assetB.code.toUpperCase()
     return (cA === pA && cB === pB) || (cA === pB && cB === pA)
   })
+}
+
+/**
+ * Watched pairs for one network. The active network resolves against the
+ * runtime pairs registry — the same list the `pairs` query serves — so a
+ * pair registered at runtime (registerPair / persistPair) is subscribable
+ * even though it never appears in the static config. Other networks use
+ * their declared config block, so a runtime pair on this process's network
+ * never leaks into another network's subscriptions. Mirrors pairsFor() in
+ * src/mcp/lensDataQueries.ts. The fallback to `config.pairs` keeps the
+ * resolver working for callers that only carry the active network's list.
+ */
+function watchedPairsFor(network: NetworkName) {
+  if (network === activeNetwork) return getActivePairs()
+  if (typeof getNetworkConfig === 'function') {
+    const pairs = getNetworkConfig(network)?.pairs
+    if (Array.isArray(pairs)) return pairs
+  }
+  return config.pairs ?? []
+}
+
+interface PairSideQuery {
+  code: string
+  issuer: string | null
+}
+
+/** Parse one side of a "CODE[:ISSUER]" pair string, the way REST parses pair assets. */
+function parsePairSide(raw: string): PairSideQuery | null {
+  const trimmed = raw.trim()
+  if (!trimmed) return null
+  if (trimmed.toLowerCase() === 'native') return { code: 'XLM', issuer: null }
+  const [codeRaw, issuerRaw] = trimmed.split(':')
+  const code = (codeRaw ?? '').toUpperCase()
+  if (!code) return null
+  return { code, issuer: issuerRaw ? issuerRaw : null }
+}
+
+function pairSideMatches(
+  query: PairSideQuery,
+  side: { code: string; issuer?: string | null },
+): boolean {
+  if (query.code !== side.code.toUpperCase()) return false
+  // Only enforce the issuer when both sides name one; XLM has none, and a
+  // caller passing a bare code is not asserting which issuer they meant.
+  if (!query.issuer || !side.issuer) return true
+  return query.issuer === side.issuer
+}
+
+/**
+ * Resolve a subscriber-supplied pair string to the stored pair key watched
+ * on `network`, accepting either asset order and any code casing. Returns
+ * null when the pair is malformed or not watched on that network.
+ */
+function resolveWatchedPairKey(pair: string, network: NetworkName): string | null {
+  const parts = pair.split('/')
+  if (parts.length !== 2) return null
+  const queryA = parsePairSide(parts[0])
+  const queryB = parsePairSide(parts[1])
+  if (!queryA || !queryB) return null
+  const found = watchedPairsFor(network).find(p =>
+    (pairSideMatches(queryA, p.assetA) && pairSideMatches(queryB, p.assetB)) ||
+    (pairSideMatches(queryA, p.assetB) && pairSideMatches(queryB, p.assetA)),
+  )
+  return found ? found.pairKey : null
 }
 
 const oracleAdapters: OracleAdapter[] = [reflectorOracleAdapter]
@@ -955,20 +1026,53 @@ export const resolvers = {
         { pair, network }: { pair: string; network?: string | null },
         { pubsub }: MercuriusContext,
       ): Promise<AsyncIterableIterator<{ priceUpdated: PricePublishedEvent }>> => {
+        // Validate the arguments before touching pub/sub or the gauge.
+        // Every other field that takes a network rejects a bad value; a
+        // subscription that silently accepted one (or an unwatched pair)
+        // left the client waiting forever for data that could never arrive.
+        const requestedNetwork = network == null ? '' : network.trim().toLowerCase()
+        if (requestedNetwork !== '' && requestedNetwork !== 'testnet' && requestedNetwork !== 'mainnet') {
+          throw new ErrorWithProps(
+            'network must be one of: testnet, mainnet',
+            { code: 'INVALID_INPUT', field: 'network' },
+          )
+        }
+        const targetNetworks: readonly NetworkName[] = requestedNetwork === ''
+          ? KNOWN_NETWORKS
+          : [requestedNetwork as NetworkName]
+
+        // Resolve the pair per network: the same assets can be watched
+        // under different keys (different issuers) on different chains, so
+        // each topic uses its own network's stored key.
+        const resolved: Array<{ network: NetworkName; pairKey: string }> = []
+        for (const target of targetNetworks) {
+          const pairKey = resolveWatchedPairKey(pair, target)
+          if (pairKey) resolved.push({ network: target, pairKey })
+        }
+        if (resolved.length === 0) {
+          throw new ErrorWithProps(
+            requestedNetwork === ''
+              ? `Pair ${pair} is not tracked on any network`
+              : `Pair ${pair} is not tracked on ${requestedNetwork}`,
+            { code: 'PAIR_NOT_FOUND' },
+          )
+        }
+        // The gauge is labelled only with a stored pair key, never with the
+        // raw client string, so its series are bounded by configuration.
+        const pairKey = resolved[0].pairKey
+
         // Mercurius's subscription queue is a Readable with a `close` list it
         // runs on disconnect/complete; our release callback rides there so
         // the gauge follows the real lifetime of the subscription, not the
         // resolver call.
-        const topics = network == null
-          ? KNOWN_NETWORKS.map(n => priceTopic(pair, n))
-          : [priceTopic(pair, network)]
+        const topics = resolved.map(({ network: n, pairKey: key }) => priceTopic(key, n))
         let released = false
         const release = () => {
           if (released) return
           released = true
-          active_subscriptions.dec({ pair })
+          active_subscriptions.dec({ pair: pairKey })
         }
-        active_subscriptions.inc({ pair })
+        active_subscriptions.inc({ pair: pairKey })
         // Mercurius's runtime SubscriptionContext.subscribe accepts a topic
         // *array*; its public type only shows the single-topic shape, and a
         // plain property call keeps its `this` correct.

@@ -330,10 +330,17 @@ type Subscription {
   Streams a PriceUpdate every time an ingester records a new price for the
   given pair.
   
-  The network argument narrows the stream to one chain. It is optional, and
-  omitting it delivers every enabled network — the right default only if you
-  read the network field on each message, since a dual-network deployment
-  otherwise interleaves two chains prices on one stream.
+  The pair must name a pair watched on the requested network. Either asset
+  order is accepted and is normalised to the stored pair key. A pair that
+  is not watched fails the subscription with PAIR_NOT_FOUND instead of
+  waiting forever for data that can never arrive.
+  
+  The network argument narrows the stream to one chain. It must be
+  "testnet" or "mainnet"; any other value fails the subscription with
+  INVALID_INPUT. It is optional, and omitting it delivers every enabled
+  network — the right default only if you read the network field on each
+  message, since a dual-network deployment otherwise interleaves two
+  chains prices on one stream.
   """
   priceUpdated(pair: String!, network: String): PriceUpdate!
 }
