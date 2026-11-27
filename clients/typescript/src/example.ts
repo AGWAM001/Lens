@@ -18,7 +18,16 @@ import { createLensClient, type paths } from "./client.js";
 /** A price response, derived from the spec — never written by hand. */
 type AggregatedPrice = paths["/v1/price/{assetA}/{assetB}"]["get"]["responses"][200]["content"]["application/json"];
 
-const client = createLensClient({ baseUrl: "http://localhost:3002" });
+// `apiKey` sends `Authorization: Bearer <key>` on every call that does not set
+// its own `Authorization` header; `payment` sends the x402 proof in
+// `X-PAYMENT`. Both are optional — anonymous calls stay as they were. `network`
+// is the default `?network=` for calls that do not pass one per-call.
+const client = createLensClient({
+  baseUrl: "http://localhost:3002",
+  apiKey: process.env.LENS_API_KEY,
+  payment: process.env.LENS_X402_PAYMENT,
+  network: "testnet",
+});
 
 async function main(): Promise<void> {
   const status = await client.GET("/v1/status");

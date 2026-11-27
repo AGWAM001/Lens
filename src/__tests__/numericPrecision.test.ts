@@ -175,7 +175,10 @@ describe('Issue #230: numeric precision across aggregations and edge serializati
       })
 
       const app = await buildApp()
-      const res = await app.inject({ method: 'GET', url: '/price/XLM/USDC/history?window=1h' })
+      const res = await app.inject({
+        method: 'GET',
+        url: '/price/XLM/USDC/history?window=1h&network=mainnet',
+      })
 
       expect(res.statusCode).toBe(200)
       const body = res.json()

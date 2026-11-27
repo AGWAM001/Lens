@@ -230,7 +230,7 @@ describe('HTTP status code standardization (#262)', () => {
       mockPgQuery.mockResolvedValue({ rows: [] })
       const res = await app.inject({
         method: 'GET',
-        url: '/price/XLM/USDC/history?window=1m&limit=1',
+        url: '/price/XLM/USDC/history?window=1m&limit=1&network=mainnet',
       })
       expect(res.statusCode).toBe(200)
       const body = JSON.parse(res.body)
