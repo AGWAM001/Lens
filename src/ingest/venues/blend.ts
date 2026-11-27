@@ -714,6 +714,7 @@ export const blendAdapter: VenueAdapter<BlendPoolData[], BlendReserveEntry[]> = 
   type: 'Lending Pool',
   description: 'Blend lending pools on Soroban, supply and borrow rates',
   source: 'blend',
+  onChain: true,
   sourceTimeCapability: { status: 'unavailable' },
   // Informational here rather than load-bearing: `derive` returns no price
   // points, so Blend contributes nothing to `/volumes` and never reaches the

@@ -25,7 +25,7 @@ function toAsset(asset: { code: string; issuer: string | null }): Asset {
 function resolvePair(pairStr: string, network: NetworkName): WatchedPair {
   const active = getNetworkConfig(network).pairs.find(
     p => p.pairKey.toUpperCase() === pairStr.toUpperCase()
-  ) ?? getActivePairs().find(
+  ) ?? getActivePairs(network).find(
     p => p.pairKey.toUpperCase() === pairStr.toUpperCase()
   )
 

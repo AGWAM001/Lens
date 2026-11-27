@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify'
 import { activeNetwork } from '../config'
-import { pgPool } from '../db'
+import { parseAssetRef, usdPriceOf } from '../pricing/usdPrice'
 import { apiError } from '../errors'
 import { createLogger } from '../logger'
 
@@ -152,31 +152,22 @@ export async function registerFiatRoutes(app: FastifyInstance) {
     }
     const network = req.network ?? activeNetwork
 
-    // Fetch base USD price for asset
+    // Fetch base USD price for asset through a configured USD-pegged pair.
+    const ref = parseAssetRef(asset) ?? { code: asset }
     let baseUsdPrice: number | null = null
 
     try {
-      const dbRes = await pgPool.query(
-        `SELECT
-           COALESCE(SUM(price::numeric * base_volume::numeric), 0)
-             / NULLIF(SUM(base_volume::numeric), 0) AS vwap
-         FROM price_points
-         WHERE (asset_a = $1 OR asset_b = $1)
-           AND network = $2
-           AND timestamp > NOW() - INTERVAL '24 hours'
-         GROUP BY pair_key
-         LIMIT 1`,
-        [asset, network]
-      )
-      if (dbRes.rows[0]?.vwap) {
-        baseUsdPrice = parseFloat(dbRes.rows[0].vwap)
+      const usd = await usdPriceOf(ref, network, 24 * 60)
+      if (usd.price !== null) {
+        const parsed = parseFloat(usd.price)
+        if (!isNaN(parsed) && parsed > 0) baseUsdPrice = parsed
       }
     } catch {
       // DB offline or query failure — use fallback
     }
 
     if (baseUsdPrice === null || isNaN(baseUsdPrice) || baseUsdPrice <= 0) {
-      baseUsdPrice = FALLBACK_USD_PRICES[asset] ?? 0.125
+      baseUsdPrice = FALLBACK_USD_PRICES[ref.code.toUpperCase()] ?? 0.125
     }
 
     const fiatPerUsd = rateTable.rates[currencyStr]

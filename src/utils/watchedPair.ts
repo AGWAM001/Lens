@@ -1,5 +1,5 @@
 import { type NetworkName } from '../config'
-import { getPairsForNetwork } from '../pairsRegistry'
+import { getActivePairs } from '../pairsRegistry'
 
 /**
  * Resolve a requested pair against the ones this network watches.
@@ -16,7 +16,8 @@ import { getPairsForNetwork } from '../pairsRegistry'
  * quoting XLM or a single-issuer asset rely on that.
  *
  * `native` means XLM and codes are case-insensitive. Runtime-registered pairs
- * (POST /pairs) are included on the active network via getPairsForNetwork.
+ * (POST /pairs) are included for the network they were added on, via the
+ * per-network registry (getActivePairs).
  */
 export function findWatchedPair(assetA: string, assetB: string, network: NetworkName) {
   const parse = (a: string) => {
@@ -38,7 +39,7 @@ export function findWatchedPair(assetA: string, assetB: string, network: Network
     return q.issuer === side.issuer
   }
 
-  return getPairsForNetwork(network).find(
+  return getActivePairs(network).find(
     p =>
       (matches(qA, p.assetA) && matches(qB, p.assetB)) ||
       (matches(qA, p.assetB) && matches(qB, p.assetA)),

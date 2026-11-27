@@ -369,14 +369,12 @@ export async function getTrackedAssets(network: NetworkName = activeNetwork): Pr
     log.debug({ network, err }, 'could not load pairs from DB')
   }
 
-  // 3. Active runtime pairs if matching active network
-  if (network === activeNetwork) {
-    for (const p of getActivePairs()) {
-      const a = normalizeAsset(p.assetA.code, p.assetA.issuer)
-      const b = normalizeAsset(p.assetB.code, p.assetB.issuer)
-      assetMap.set(`${a.code}:${a.issuer ?? 'native'}`, a)
-      assetMap.set(`${b.code}:${b.issuer ?? 'native'}`, b)
-    }
+  // 3. Active runtime pairs for the requested network
+  for (const p of getActivePairs(network)) {
+    const a = normalizeAsset(p.assetA.code, p.assetA.issuer)
+    const b = normalizeAsset(p.assetB.code, p.assetB.issuer)
+    assetMap.set(`${a.code}:${a.issuer ?? 'native'}`, a)
+    assetMap.set(`${b.code}:${b.issuer ?? 'native'}`, b)
   }
 
   return Array.from(assetMap.values())

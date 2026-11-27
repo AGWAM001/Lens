@@ -502,6 +502,7 @@ export const soroswapAdapter: VenueAdapter<PoolEntry, [bigint, bigint]> = {
   name: 'Soroswap',
   kind: 'amm',
   source: 'soroswap_amm',
+  onChain: true,
   sourceTimeCapability: { status: 'unavailable' },
   classification: 'primary',
   type: 'AMM DEX',

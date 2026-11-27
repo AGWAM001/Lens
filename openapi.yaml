@@ -184,7 +184,11 @@ paths:
         - name: window
           in: query
           required: false
-          description: Historical lookback window in hours (default 24)
+          description: >-
+            Historical lookback window in hours (default 24). When the server
+            prunes old pool snapshots, the window is capped at that retention
+            period; the response's `window` field reports the window actually
+            used.
           schema:
             type: string
             default: 24
@@ -567,8 +571,13 @@ paths:
         - name: amount
           in: query
           required: false
+          description: >-
+            Positive finite decimal trade size (e.g. `1000` or `250.5`). Trailing
+            junk (`100abc`), non-finite values (`Infinity`, `1e999`), zero, and
+            negatives are rejected with `400 invalid_parameter`.
           schema:
             type: number
+            exclusiveMinimum: 0
             default: 1000
         - $ref: '#/components/parameters/NetworkQuery'
         - $ref: '#/components/parameters/DecimalFormatHeader'
@@ -582,8 +591,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RouteInfo'
+        '400':
+          description: Invalid amount parameter
         '402':
           $ref: '#/components/responses/PaymentRequired'
+        '404':
+          description: Pair not watched
         '429':
           $ref: '#/components/responses/TooManyRequests'
 
@@ -1283,8 +1296,13 @@ paths:
         - name: amount
           in: query
           required: false
+          description: >-
+            Positive finite decimal trade size (e.g. `1000` or `250.5`). Trailing
+            junk (`100abc`), non-finite values (`Infinity`, `1e999`), zero, and
+            negatives are rejected with `400 invalid_parameter`.
           schema:
             type: number
+            exclusiveMinimum: 0
             default: 1000
         - $ref: '#/components/parameters/NetworkQuery'
         - $ref: '#/components/parameters/DecimalFormatHeader'

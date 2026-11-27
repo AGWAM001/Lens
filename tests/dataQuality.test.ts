@@ -11,6 +11,7 @@ import { LIVE_WINDOW_MS } from '../src/routes/venues'
 import {
   MIN_OUTLIER_SAMPLES,
   IQR_MULTIPLIER,
+  IQR_MIN_BAND_RATIO,
   MODIFIED_Z_SCORE_THRESHOLD,
   MODIFIED_Z_SCORE_FACTOR,
 } from '../src/pricing/twap'
@@ -154,6 +155,7 @@ describe('Data Quality Documentation & Drift Guard (#249)', () => {
     // 2. Completeness
     expect(bounds['min_outlier_samples'].value).toBe(MIN_OUTLIER_SAMPLES)
     expect(bounds['iqr_multiplier'].value).toBe(IQR_MULTIPLIER)
+    expect(bounds['iqr_min_band_ratio'].value).toBe(IQR_MIN_BAND_RATIO)
     expect(bounds['modified_z_score_threshold'].value).toBe(MODIFIED_Z_SCORE_THRESHOLD)
     expect(bounds['modified_z_score_factor'].value).toBe(MODIFIED_Z_SCORE_FACTOR)
     expect(bounds['twap_window_min'].value).toBe(TWAP_WINDOW_MIN_MINUTES)

@@ -1,5 +1,5 @@
 import { getActivePairs } from '../pairsRegistry'
-import { activeNetwork, getNetworkConfig } from '../config'
+import { activeNetwork } from '../config'
 import type { NetworkName } from '../config'
 import { listPairs } from '../routes/pairs'
 import { listPools } from '../routes/pools'
@@ -78,5 +78,5 @@ export function createLensDataQueries(): LensDataQueries {
 }
 
 function pairsFor(network: NetworkName) {
-  return network === activeNetwork ? getActivePairs() : getNetworkConfig(network).pairs
+  return getActivePairs(network)
 }
