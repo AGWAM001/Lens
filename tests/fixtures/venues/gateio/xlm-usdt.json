@@ -1,0 +1,34 @@
+{
+  "venue": "gateio",
+  "network": "mainnet",
+  "capturedAt": "2026-11-25T22:53:20.265Z",
+  "sourceUrl": "https://api.gateio.ws/api/v4/spot/tickers?currency_pair=XLM_USDT",
+  "description": "Gate.io public spot ticker for XLM_USDT.",
+  "exchanges": [
+    {
+      "key": "GET https://api.gateio.ws/api/v4/spot/tickers?currency_pair=XLM_USDT",
+      "request": {
+        "method": "GET",
+        "url": "https://api.gateio.ws/api/v4/spot/tickers?currency_pair=XLM_USDT"
+      },
+      "response": {
+        "status": 200,
+        "body": [
+          {
+            "currency_pair": "XLM_USDT",
+            "last": "0.12777",
+            "lowest_ask": "0.1278",
+            "lowest_size": "293.02",
+            "highest_bid": "0.12779",
+            "highest_size": "496.35",
+            "change_percentage": "2.36",
+            "base_volume": "16264513.3",
+            "quote_volume": "2016812.0231024",
+            "high_24h": "0.12895",
+            "low_24h": "0.1197"
+          }
+        ]
+      }
+    }
+  ]
+}

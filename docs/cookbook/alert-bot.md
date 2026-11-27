@@ -15,11 +15,11 @@ how it works so you can adapt it.
 ## How it works
 
 ```
-Lens indexer ──price:update──▶ /ws stream ──▶ alert bot ──crosses?──▶ notify
+Lens indexer ──price:published──▶ /ws stream ──▶ alert bot ──crosses?──▶ notify
 ```
 
-1. Lens ingests SDEX + AMM trades and emits a `price:update` whenever a
-   watched pair moves.
+1. Lens ingests SDEX + AMM trades and publishes `price:published` whenever
+   a watched pair moves.
 2. The `/ws` endpoint fans those updates out to connected clients as
    `price_update` messages, with backpressure-aware coalescing.
 3. The bot keeps the last price per pair and checks whether the move
@@ -40,13 +40,19 @@ Each frame from `/ws` looks like:
 ```json
 {
   "type": "price_update",
-  "assetA": "XLM",
-  "assetB": "USDC",
+  "pair": "USDC:ISSUER/XLM",
+  "network": "mainnet",
+  "price": 0.1502,
   "previousPrice": 0.1487,
-  "currentPrice": 0.1502,
-  "timestamp": "2026-06-28T18:46:02.114Z"
+  "ts": "2026-06-28T18:46:02.114Z"
 }
 ```
+
+`pair` is the stored pairKey; a side without an issuer is the native asset
+(`XLM`). A client only receives prices for the network it connected with
+(`?network=mainnet`), defaulting to the instance's active network; every
+message carries that `network`. The first event for a pair on a connection
+has `previousPrice: null`.
 
 The first frame on connect is a `{ "type": "status" }` message; if the
 stream is x402-gated and you didn't pay, you'll get
@@ -80,12 +86,13 @@ ws.on('message', (data) => {
   const msg = JSON.parse(data.toString())
   if (msg.type !== 'price_update') return
 
-  // Match the pair regardless of asset order.
-  const got = [msg.assetA, msg.assetB].sort().join('/')
+  // Match the pair regardless of asset order or issuer suffix.
+  const got = msg.pair.split('/').map((side: string) => side.split(':')[0].toUpperCase()).sort().join('/')
   if (got !== pair) return
+  if (msg.previousPrice === null) return
 
-  if (crossesThreshold(config, msg.previousPrice, msg.currentPrice)) {
-    console.log(`ALERT: ${pair} is ${config.direction} ${config.threshold} — now ${msg.currentPrice}`)
+  if (crossesThreshold(config, msg.previousPrice, msg.price)) {
+    console.log(`ALERT: ${pair} is ${config.direction} ${config.threshold} — now ${msg.price}`)
     // → POST to Slack/Discord, send a push, page yourself, etc.
   }
 })

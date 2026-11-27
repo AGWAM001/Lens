@@ -7,6 +7,7 @@ import {
   recordPoolExhaustion,
   updatePoolMetrics,
   pgPool,
+  checkDatabaseReachable,
 } from '../src/db'
 import {
   register,
@@ -150,6 +151,49 @@ describe('Database Connection Pool (Issue #339)', () => {
       expect(metric.values[0].value).toBe(1)
 
       await app.close()
+    })
+  })
+
+  describe('checkDatabaseReachable (#687)', () => {
+    function fakePool(opts: { connectError?: Error; queryError?: Error } = {}) {
+      const state = { checkouts: 0, releases: 0, queries: [] as string[] }
+      const pool = {
+        connect: async () => {
+          if (opts.connectError) throw opts.connectError
+          state.checkouts++
+          return {
+            query: async (sql: string) => {
+              state.queries.push(sql)
+              if (opts.queryError) throw opts.queryError
+              return { rows: [{ '?column?': 1 }] }
+            },
+            release: () => {
+              state.releases++
+            },
+          }
+        },
+      }
+      return { pool: pool as any, state }
+    }
+
+    it('returns the client it checks out, leaving nothing held', async () => {
+      const { pool, state } = fakePool()
+      await checkDatabaseReachable(pool)
+      expect(state.checkouts).toBe(1)
+      expect(state.checkouts - state.releases).toBe(0)
+      expect(state.queries).toEqual(['SELECT 1'])
+    })
+
+    it('releases the client even when the probe query fails', async () => {
+      const { pool, state } = fakePool({ queryError: new Error('boom') })
+      await expect(checkDatabaseReachable(pool)).rejects.toThrow('boom')
+      expect(state.checkouts - state.releases).toBe(0)
+    })
+
+    it('propagates a rejected connect so start-up still fails', async () => {
+      const { pool, state } = fakePool({ connectError: new Error('ECONNREFUSED') })
+      await expect(checkDatabaseReachable(pool)).rejects.toThrow('ECONNREFUSED')
+      expect(state.checkouts).toBe(0)
     })
   })
 })

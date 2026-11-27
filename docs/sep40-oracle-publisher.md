@@ -107,6 +107,12 @@ the list says which markets produced it, exactly as `/price/:a/:b` reports
 staleness bar the HTTP API does: `lastprice.timestamp` says when the *market*
 tick happened, `last_report.reported_at` says when the feed *learned* it.
 
+### 1.4.1 Off-Chain Venues and Symbol Normalization (#755)
+
+When off-chain centralized exchanges (e.g. Gate.io, KuCoin) write price points that contribute to an aggregate, their source identifiers are mapped to legal Soroban symbols via the venue symbol registry (`src/ingest/venues/symbols.ts`).
+
+Soroban symbols are strictly alphanumeric plus underscore (`^[A-Za-z0-9_]+$`) and up to 32 characters in length. For instance, the Gate.io source identifier `'Gate.io'` is normalized to `'Gate_io'` on chain. Off-chain venues are included in `venues: Vec<Symbol>` when configured so downstream contracts retain full visibility into all constituent liquidity venues without failing symbol validation. Unregistered sources with invalid symbol characters are skipped with a warning logged once per source (noting that the resulting published provenance list may be incomplete) rather than permanently blocking publication of the pair. If an aggregate has no resolvable venues at all, publication blocks because a price that cannot be sourced is worse than no price.
+
 ### 1.5 Errors
 
 | Code | Name | Raised when |
