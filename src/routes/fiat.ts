@@ -1,9 +1,6 @@
 import type { FastifyInstance } from 'fastify'
-import { activeNetwork, type NetworkName } from '../config'
-import { parseAssetRef, usdPriceOf } from '../pricing/usdPrice'
-
 import { activeNetwork } from '../config'
-import { pgPool } from '../db'
+import { parseAssetRef, usdPriceOf } from '../pricing/usdPrice'
 import { apiError } from '../errors'
 import { createLogger } from '../logger'
 
