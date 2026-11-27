@@ -21,6 +21,12 @@ vi.mock('../config', () => {
     getNetworkConfig: () => ({ pairs }),
   }
 })
+// The pairs registry seeds each network's list from getNetworkConfig (#646).
+vi.mock('../config', () => ({
+  config: { pairs: [] },
+  activeNetwork: 'testnet',
+  getNetworkConfig: () => ({ pairs: [] }),
+}))
 
 import { registerGraphQL, resolveGraphQLUiOptions } from '../api/graphql'
 import { publishPriceUpdate, priceEmitter } from '../events'

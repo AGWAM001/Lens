@@ -242,7 +242,9 @@ describe('lens_list_pairs vs GET /pairs', () => {
   })
 
   it('scopes a named network to that network and to that network\'s pairs', async () => {
-    mockGetActivePairs.mockReturnValue(makePairs(1))
+    mockGetActivePairs.mockImplementation((network?: 'testnet' | 'mainnet') =>
+      network === 'mainnet' ? getNetworkConfig('mainnet').pairs : makePairs(1)
+    )
     mockLatestPrices()
     const server = buildServer()
     const app = await buildRestApp()

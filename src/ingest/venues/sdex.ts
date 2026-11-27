@@ -208,6 +208,7 @@ export const sdexAdapter: VenueAdapter<WatchedPair, SdexRawTrades> = {
   name: 'SDEX',
   kind: 'orderbook',
   source: 'SDEX',
+  onChain: true,
   sourceTimeCapability: { status: 'provided', semantic: 'ledger_close' },
   classification: 'primary',
   type: 'Order Book',

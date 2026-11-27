@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import { pgPool } from '../db'
 import { activeNetwork, type NetworkName } from '../config'
 import '../middleware/network'
+import { poolSnapshotHistoryLimitHours } from '../jobs/poolSnapshotRetention'
 
 import { apiError } from '../errors'
 export interface ValuationPriceSource {
@@ -346,6 +347,15 @@ export async function computeTvlHistory(
   windowHours: number = 24,
   intervalMinutes: number = 60
 ): Promise<TvlHistoryResponse> {
+  // With pool snapshot retention on, rows older than the retention period are
+  // pruned (except each pool's newest), so a longer window would come back
+  // silently cut off. Cap it instead; `window` in the response reports the
+  // window actually used.
+  const historyLimitHours = poolSnapshotHistoryLimitHours()
+  if (historyLimitHours !== null && windowHours > historyLimitHours) {
+    windowHours = historyLimitHours
+  }
+
   const prices = await getAssetUsdPrices(network)
 
   const { rows } = await pgPool.query<{

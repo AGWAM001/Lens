@@ -304,6 +304,63 @@ export const job_rows_deleted_total = new Counter({
   registers: [register],
 })
 
+// SEP-40 publisher metrics (#772). The publisher is the only path in Lens that
+// signs a transaction and spends a fee; before this it exported nothing, so a
+// feed that stopped writing and a feed that was blocked on every pair looked
+// identical from /metrics.
+//
+// As with the ingest and job metrics above, only bounded labels are allowed:
+// `network` is the network of the publisher loop, `trigger` is one of the three
+// codes in src/publish/trigger.ts, and `guard` is the closed set of guard codes
+// there plus the publisher's own orientation/provenance codes. Unknown codes
+// collapse to `other`. Never add a pair, asset or contract id: a cycle decides
+// once per pair, so those labels would grow with configuration.
+export const publisher_reports_written_total = new Counter({
+  name: 'publisher_reports_written_total',
+  help: 'On-chain reports written by the SEP-40 publisher, by network and trigger',
+  labelNames: ['network', 'trigger'],
+  registers: [register],
+})
+
+export const publisher_pairs_blocked_total = new Counter({
+  name: 'publisher_pairs_blocked_total',
+  help: 'Pairs blocked by a publication guard, by network and bounded guard code',
+  labelNames: ['network', 'guard'],
+  registers: [register],
+})
+
+export const publisher_writes_failed_total = new Counter({
+  name: 'publisher_writes_failed_total',
+  help: 'Failed SEP-40 publication attempts, by network',
+  labelNames: ['network'],
+  registers: [register],
+})
+
+export const publisher_cycles_failed_total = new Counter({
+  name: 'publisher_cycles_failed_total',
+  help: 'SEP-40 publication cycles that aborted before completing, by network',
+  labelNames: ['network'],
+  registers: [register],
+})
+
+export const publisher_last_success_timestamp = new Gauge({
+  name: 'publisher_last_success_timestamp',
+  help: 'Unix timestamp of the last successful on-chain publication, by network',
+  labelNames: ['network'],
+  registers: [register],
+})
+
+export const publisher_cycle_duration_seconds = new Histogram({
+  name: 'publisher_cycle_duration_seconds',
+  help: 'Duration of a SEP-40 publication cycle in seconds, by network',
+  labelNames: ['network'],
+  // A cycle can be a sub-millisecond no-op or an RPC call plus a signed
+  // transaction. Failed cycles are observed too: failing fast and failing
+  // after a timeout are different problems.
+  buckets: [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60],
+  registers: [register],
+})
+
 export const http_requests_total = new Counter({
   name: 'http_requests_total',
   help: 'Total number of HTTP requests served, by method, route template and status class',
