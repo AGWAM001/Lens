@@ -536,6 +536,7 @@ export const phoenixAdapter: VenueAdapter<PhoenixPool, PhoenixReserves> = {
   type: 'Liquidity Pool',
   description: 'Phoenix AMM pools on Soroban',
   source: 'phoenix_amm',
+  onChain: true,
   sourceTimeCapability: { status: 'unavailable' },
   classification: 'primary',
 

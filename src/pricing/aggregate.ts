@@ -1,6 +1,7 @@
 import { pgPool } from '../db'
 import { activeNetwork, type NetworkName } from '../config'
 import { getFailedSources } from '../ingest/sourceFailures'
+import { getOnChainSources } from '../ingest/venues'
 
 export interface AggregateSource {
   source: string
@@ -25,9 +26,10 @@ export interface AggregateResult {
 }
 
 /**
- * Aggregate price for a pair across sources (SDEX, AMM) weighted by volume.
- * Sources that deviate from the weighted average by more than the provided
- * threshold are excluded from the final composite price.
+ * Aggregate price for a pair across on-chain sources weighted by volume.
+ * Uses the shared on-chain venue registry (`getOnChainSources()`) and excludes
+ * sources that deviate from the weighted average by more than the provided
+ * threshold from the final composite price.
  *
  * @param pairKey The pair identifier (e.g., "XLM/USDC").
  * @param deviationThreshold Fractional threshold (e.g., 0.05 for 5%).
@@ -44,7 +46,9 @@ export async function aggregatePrice(
   network: NetworkName = activeNetwork,
   failedSources: string[] = [],
 ): Promise<AggregateResult> {
-  const failed = new Set([...getFailedSources(network, pairKey), ...failedSources])
+  const onChainSources = new Set(getOnChainSources())
+  const allFailed = [...new Set([...getFailedSources(network, pairKey), ...failedSources])].sort()
+  const failed = new Set(allFailed)
 
   // Fetch VWAP and volume per source for the last hour.
   const result = await pgPool.query(
@@ -60,10 +64,15 @@ export async function aggregatePrice(
     [pairKey, network]
   )
 
-  const sources: AggregateSource[] = result.rows.map((row: any) => {
+  const sources: AggregateSource[] = []
+  for (const row of result.rows) {
     const source = row.source as string
+    // Exclude off-chain / CEX sources from on-chain aggregate (#652)
+    if (onChainSources.size > 0 && !onChainSources.has(source)) {
+      continue
+    }
     const isFailed = failed.has(source)
-    return {
+    sources.push({
       source,
       price: parseFloat(row.vwap ?? '0'),
       volume: parseFloat(row.volume ?? '0'),
@@ -72,10 +81,10 @@ export async function aggregatePrice(
       // absence) weigh in would publish a price that looks normal and is not.
       excluded: isFailed,
       reason: isFailed ? 'source failed to fetch' : undefined,
-    }
-  })
+    })
+  }
 
-  // Initial weighted average using every source that answered.
+  // Initial weighted average using every answered non-failed source.
   const answered = sources.filter(s => !failed.has(s.source))
   const totalVolume = answered.reduce((sum, s) => sum + s.volume, 0)
   const initialWeightedAvg = totalVolume === 0 ? 0 : answered.reduce((sum, s) => sum + s.price * s.volume, 0) / totalVolume
@@ -98,5 +107,5 @@ export async function aggregatePrice(
   const includedVolume = included.reduce((sum, s) => sum + s.volume, 0)
   const composite = includedVolume === 0 ? 0 : included.reduce((sum, s) => sum + s.price * s.volume, 0) / includedVolume
 
-  return { composite, breakdown: sources, failedSources: [...failed].sort() }
+  return { composite, breakdown: sources, failedSources: allFailed }
 }
