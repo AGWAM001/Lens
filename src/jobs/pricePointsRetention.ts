@@ -8,6 +8,7 @@ import {
 } from '../metrics'
 import { createLogger } from '../logger'
 import { runJob, recordJobRowsDeleted } from './jobMetrics'
+import { scheduleRetentionJob } from './scheduleRetentionJob'
 
 const log = createLogger('job:price-points-retention')
 
@@ -297,10 +298,5 @@ export function startPricePointsRetentionWorker() {
 
 /** Schedules the retention prune to run hourly (and once on startup). */
 export async function schedulePricePointsRetention(queue: Queue) {
-  await queue.add(
-    'prune',
-    {},
-    { repeat: { every: 60 * 60 * 1000 }, jobId: 'price-points-retention:prune' }
-  )
-  await queue.add('prune', {})
+  await scheduleRetentionJob(queue, { jobName: 'prune', jobId: 'price-points-retention:prune' })
 }

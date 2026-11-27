@@ -11,6 +11,7 @@ import {
 } from '../partitioning/pricePoints'
 import { createLogger } from '../logger'
 import { runJob } from './jobMetrics'
+import { scheduleRetentionJob } from './scheduleRetentionJob'
 
 const log = createLogger('job:price-points-partition')
 
@@ -119,10 +120,5 @@ export function startPricePointsPartitionWorker() {
 
 /** Schedules partition maintenance to run every hour and once immediately on startup */
 export async function schedulePricePointsPartitionMaintenance(queue: Queue) {
-  await queue.add(
-    'maintain',
-    {},
-    { repeat: { every: 60 * 60 * 1000 }, jobId: 'price-points-partition:maintain' }
-  )
-  await queue.add('maintain', {})
+  await scheduleRetentionJob(queue, { jobName: 'maintain', jobId: 'price-points-partition:maintain' })
 }

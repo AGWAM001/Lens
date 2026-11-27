@@ -4,6 +4,7 @@ import { activeNetwork, type NetworkName } from '../config'
 import { getEnabledNetworks } from '../network/enabledNetworks'
 import { createLogger } from '../logger'
 import { runJob, recordJobRowsDeleted } from './jobMetrics'
+import { scheduleRetentionJob } from './scheduleRetentionJob'
 
 const log = createLogger('job:rate-retention')
 
@@ -137,10 +138,5 @@ export function startRateRetentionWorker() {
 
 /** Schedules the rate retention prune to run hourly (and once on startup). */
 export async function scheduleRateRetention(queue: Queue) {
-  await queue.add(
-    'prune',
-    {},
-    { repeat: { every: 60 * 60 * 1000 }, jobId: 'rate-retention:prune' }
-  )
-  await queue.add('prune', {})
+  await scheduleRetentionJob(queue, { jobName: 'prune', jobId: 'rate-retention:prune' })
 }
