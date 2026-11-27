@@ -29,7 +29,7 @@ vi.mock('../db', () => ({
   },
 }))
 
-import { calculateVWAPDetailed, calculateVWAP, calculateOHLCV } from '../aggregator/vwap'
+import { calculateVWAPDetailed, calculateVWAP, calculateOHLCV, getAggregatedPrice } from '../aggregator/vwap'
 import {
   getOnChainSources,
   isOnChainVenue,
@@ -156,7 +156,6 @@ describe('Issue #652: VWAP on-chain source filters & failure handling', () => {
     expect(detailed.raw).toBe('0.142500')
     expect(detailed.stale).toBe(true)
     expect(detailed.status).toBe('stale')
-    expect(detailed.excludedSources?.length).toBe(allOnChain.length)
 
     // Confirms fallback query was executed against price_points
     const [sql, params] = mocks.query.mock.calls[0]
@@ -226,5 +225,145 @@ describe('Issue #652: VWAP on-chain source filters & failure handling', () => {
     const aquarius = result.breakdown.find(b => b.source === 'aquarius_amm')!
     expect(aquarius.excluded).toBe(true)
     expect(aquarius.reason).toBe('source failed to fetch')
+  })
+
+  it('8. An adapter with no onChain flag defaults to not on-chain', () => {
+    const adapterWithoutFlag: VenueAdapter = {
+      name: 'NewExchange',
+      kind: 'cex',
+      source: 'NewExchange',
+      sourceTimeCapability: { status: 'unavailable' },
+      classification: 'secondary',
+      type: 'CEX',
+      description: 'Adapter without explicit onChain flag',
+      fetch: async () => [],
+      derive: () => [],
+      persist: async () => {},
+    }
+    expect(isOnChainVenue(adapterWithoutFlag)).toBe(false)
+  })
+
+  it('9. Fallback lookup is bounded to at least 24 hours and returns unknown when empty', async () => {
+    const allOnChain = getOnChainSources()
+    for (const s of allOnChain) {
+      recordSourceFailure(s, NETWORK, PAIR, new Error(`${s} down`))
+    }
+
+    mocks.query.mockResolvedValueOnce({ rows: [] })
+
+    const detailed = await calculateVWAPDetailed(PAIR, 60, NETWORK)
+    expect(detailed.num).toBe(0)
+    expect(detailed.raw).toBe('0')
+    expect(detailed.stale).toBe(true)
+    expect(detailed.status).toBe('unknown')
+
+    const [sql, params] = mocks.query.mock.calls[0]
+    expect(sql).toContain("COALESCE(observed_at, timestamp) > NOW() - ($4 || ' minutes')::interval")
+    expect(params[3]).toBe(1440)
+  })
+
+  it('10. calculateOHLCV returns zeros when all on-chain venues fail', async () => {
+    const allOnChain = getOnChainSources()
+    for (const s of allOnChain) {
+      recordSourceFailure(s, NETWORK, PAIR, new Error(`${s} down`))
+    }
+
+    const ohlcv = await calculateOHLCV(PAIR, 60, NETWORK)
+    expect(ohlcv).toEqual({
+      open: 0,
+      high: 0,
+      low: 0,
+      close: 0,
+      volume: 0,
+      tradeCount: 0,
+    })
+    expect(mocks.query).not.toHaveBeenCalled()
+  })
+
+  it('11. getAggregatedPrice returns guarded zero and stale=true in both numeric and string formats when all venues fail', async () => {
+    const allOnChain = getOnChainSources()
+    for (const s of allOnChain) {
+      recordSourceFailure(s, NETWORK, PAIR, new Error(`${s} down`))
+    }
+
+    mocks.query.mockImplementation(async (sql: string) => {
+      if (sql.includes('SELECT price::numeric AS last_price')) {
+        return { rows: [{ last_price: '0.142500' }] }
+      }
+      if (sql.includes('price_24h_ago')) {
+        return { rows: [{ price_24h_ago: '0.14', price_now: '0.1425' }] }
+      }
+      return { rows: [] }
+    })
+
+    const numAgg = await getAggregatedPrice(PAIR, NETWORK)
+    expect(numAgg.price).toBe(0)
+    expect(numAgg.sdexPrice).toBe(0)
+    expect(numAgg.vwap1m).toBe(0)
+    expect(numAgg.vwap5m).toBe(0)
+    expect(numAgg.vwap1h).toBe(0)
+    expect(numAgg.vwap24h).toBe(0)
+    expect(numAgg.stale).toBe(true)
+    expect(numAgg.confidence).toBe('unknown')
+    expect(numAgg.sources).toBe(0)
+
+    const strAgg = await getAggregatedPrice(PAIR, NETWORK, { decimalFormat: 'string' })
+    expect(strAgg.price).toBe('0')
+    expect(strAgg.sdexPrice).toBe('0')
+    expect(strAgg.vwap1m).toBe('0')
+    expect(strAgg.vwap5m).toBe('0')
+    expect(strAgg.vwap1h).toBe('0')
+    expect(strAgg.vwap24h).toBe('0')
+    expect(strAgg.stale).toBe(true)
+    expect(strAgg.confidence).toBe('unknown')
+    expect(strAgg.sources).toBe(0)
+  })
+
+  it('12. getAggregatedPrice computes staleness, volume, and sources only from healthy on-chain venues', async () => {
+    recordSourceFailure('AMM', NETWORK, PAIR, new Error('AMM failed'))
+    const fiftyMinAgo = new Date(Date.now() - 50 * 60 * 1000).toISOString()
+
+    mocks.query.mockImplementation(async (sql: string, params?: any[]) => {
+      if (sql.includes('MAX(timestamp) as last_trade')) {
+        expect(params?.[2]).not.toContain('AMM')
+        expect(params?.[2]).toContain('SDEX')
+        return { rows: [{ last_trade: fiftyMinAgo, input_count: '3' }] }
+      }
+      if (sql.includes('GROUP BY source')) {
+        expect(params?.[2]).not.toContain('AMM')
+        return { rows: [{ source: 'SDEX', vol: '100' }, { source: 'TOTAL', vol: '100' }] }
+      }
+      if (sql.includes('COUNT(DISTINCT COALESCE(pool_id')) {
+        expect(params?.[2]).not.toContain('AMM')
+        return { rows: [{ sources: '1' }] }
+      }
+      if (sql.includes('SUM(price::numeric * base_volume::numeric)')) {
+        return { rows: [{ vwap: '0.12' }] }
+      }
+      return { rows: [] }
+    })
+
+    const agg = await getAggregatedPrice(PAIR, NETWORK)
+    expect(agg.price).toBe(0.12)
+    expect(agg.stale).toBe(true)
+    expect(agg.confidence).toBe('low')
+  })
+
+  it('13. aggregatePrice returns composite=0 without falling back when every on-chain source failed', async () => {
+    const allOnChain = getOnChainSources()
+    for (const s of allOnChain) {
+      recordSourceFailure(s, NETWORK, PAIR, new Error(`${s} failed`))
+    }
+
+    mocks.query.mockResolvedValueOnce({
+      rows: [
+        { source: 'SDEX', vwap: '0.10', volume: '1000' },
+        { source: 'AMM', vwap: '0.11', volume: '1000' },
+      ],
+    })
+
+    const result = await aggregatePrice(PAIR, 0.05, NETWORK)
+    expect(result.composite).toBe(0)
+    expect(result.breakdown.every(b => b.excluded)).toBe(true)
   })
 })

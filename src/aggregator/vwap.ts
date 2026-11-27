@@ -13,7 +13,6 @@ export interface VwapDetailedResult {
   raw: string
   stale?: boolean
   status?: 'ok' | 'stale' | 'unknown'
-  excludedSources?: Array<{ source: string; reason: string }>
 }
 
 /**
@@ -49,22 +48,12 @@ export async function calculateVWAPDetailed(
   const failedSources = getFailedSources(network, pairKey)
   const failedSet = new Set(failedSources)
 
-  const excludedSources: Array<{ source: string; reason: string }> = []
-  for (const s of failedSources) {
-    if (onChainSources.includes(s)) {
-      excludedSources.push({ source: s, reason: 'source failed to fetch' })
-    }
-  }
-
   let allowedSources: string[]
   let sourceClause: string
   const params: (string | number | string[])[] = [pairKey, network, windowMinutes]
 
   if (source) {
-    if (!onChainSources.includes(source)) {
-      allowedSources = []
-      excludedSources.push({ source, reason: 'off-chain or unrecognized source' })
-    } else if (failedSet.has(source)) {
+    if (!onChainSources.includes(source) || failedSet.has(source)) {
       allowedSources = []
     } else {
       allowedSources = [source]
@@ -101,7 +90,6 @@ export async function calculateVWAPDetailed(
         raw,
         stale: true,
         status: 'stale',
-        excludedSources,
       }
     }
 
@@ -110,7 +98,6 @@ export async function calculateVWAPDetailed(
       raw: '0',
       stale: true,
       status: 'unknown',
-      excludedSources,
     }
   }
 
@@ -134,7 +121,6 @@ export async function calculateVWAPDetailed(
     raw,
     stale: false,
     status: num > 0 ? 'ok' : 'unknown',
-    excludedSources,
   }
 }
 
@@ -371,6 +357,7 @@ export async function getAggregatedPrice(
   const onChainSources = getOnChainSources()
   const failedSources = getFailedSources(network, pairKey)
   const failedSet = new Set(failedSources)
+  const healthyOnChainSources = onChainSources.filter(s => !failedSet.has(s))
 
   const [vwap1m, vwap5m, vwap1h, vwap24h, sdexVwap24h, priceChange24h, ammSpotResult, lastTradeResult] = await Promise.all([
     calculateVWAPDetailed(pairKey, 1, network),
@@ -400,31 +387,35 @@ export async function getAggregatedPrice(
            ) latest`,
           [pairKey, network]
         ),
-    // Last trade timestamp and input count from on-chain execution venues
-    pgPool.query(
-      `SELECT MAX(timestamp) as last_trade, COUNT(*) as input_count FROM price_points
-       WHERE pair_key = $1 AND network = $2 AND source = ANY($3)`,
-      [pairKey, network, onChainSources]
-    ),
+    // Last trade timestamp and input count from healthy on-chain execution venues
+    healthyOnChainSources.length === 0
+      ? Promise.resolve({ rows: [{ last_trade: null, input_count: '0' }] })
+      : pgPool.query(
+          `SELECT MAX(timestamp) as last_trade, COUNT(*) as input_count FROM price_points
+           WHERE pair_key = $1 AND network = $2 AND source = ANY($3)`,
+          [pairKey, network, healthyOnChainSources]
+        ),
   ])
 
-  const volResult = await pgPool.query(
-    `WITH per_source AS (
-       SELECT
-         source,
-         SUM(base_volume::numeric) AS vol
-       FROM price_points
-       WHERE pair_key = $1
-         AND network = $2
-         AND source = ANY($3)
-         AND COALESCE(observed_at, timestamp) > NOW() - INTERVAL '24 hours'
-       GROUP BY source
-     )
-     SELECT source, vol FROM per_source
-     UNION ALL
-     SELECT 'TOTAL' AS source, COALESCE(SUM(vol)::numeric, 0) AS vol FROM per_source`,
-    [pairKey, network, onChainSources]
-  )
+  const volResult = healthyOnChainSources.length === 0
+    ? { rows: [] }
+    : await pgPool.query(
+        `WITH per_source AS (
+           SELECT
+             source,
+             SUM(base_volume::numeric) AS vol
+           FROM price_points
+           WHERE pair_key = $1
+             AND network = $2
+             AND source = ANY($3)
+             AND COALESCE(observed_at, timestamp) > NOW() - INTERVAL '24 hours'
+           GROUP BY source
+         )
+         SELECT source, vol FROM per_source
+         UNION ALL
+         SELECT 'TOTAL' AS source, COALESCE(SUM(vol)::numeric, 0) AS vol FROM per_source`,
+        [pairKey, network, healthyOnChainSources]
+      )
 
   let sdexVolume24hRaw = '0'
   let ammVolume24hRaw = '0'
@@ -448,15 +439,17 @@ export async function getAggregatedPrice(
   }
   const volume24h = parseFloat(totalVolume24hRaw)
 
-  const sourcesResult = await pgPool.query(
-    `SELECT COUNT(DISTINCT COALESCE(pool_id, 'sdex')) AS sources
-     FROM price_points
-     WHERE pair_key = $1
-       AND network = $2
-       AND source = ANY($3)
-       AND COALESCE(observed_at, timestamp) > NOW() - INTERVAL '1 hour'`,
-    [pairKey, network, onChainSources]
-  )
+  const sourcesResult = healthyOnChainSources.length === 0
+    ? { rows: [{ sources: '0' }] }
+    : await pgPool.query(
+        `SELECT COUNT(DISTINCT COALESCE(pool_id, 'sdex')) AS sources
+         FROM price_points
+         WHERE pair_key = $1
+           AND network = $2
+           AND source = ANY($3)
+           AND COALESCE(observed_at, timestamp) > NOW() - INTERVAL '1 hour'`,
+        [pairKey, network, healthyOnChainSources]
+      )
 
   const ammPriceRaw = String(ammSpotResult.rows[0]?.amm_price ?? '0')
   const ammPrice = parseFloat(ammPriceRaw)
@@ -475,6 +468,9 @@ export async function getAggregatedPrice(
     ?? parseInt(process.env.PRICE_STALE_THRESHOLD_SECONDS ?? process.env.STALENESS_BOUND_SECONDS ?? '300', 10)
 
   const isString = options?.decimalFormat === 'string'
+  const guardStr = (r: VwapDetailedResult) => (r.num > 0 && !r.stale ? r.raw : '0')
+  const guardNum = (r: VwapDetailedResult) => (r.num > 0 && !r.stale ? r.num : 0)
+
   const stringPrice = (vwap1h.num > 0 && !vwap1h.stale ? vwap1h.raw : null)
     ?? (vwap24h.num > 0 && !vwap24h.stale ? vwap24h.raw : null)
     ?? (ammPrice > 0 ? ammPriceRaw : null)
@@ -484,9 +480,6 @@ export async function getAggregatedPrice(
     || (vwap24h.num > 0 && !vwap24h.stale ? vwap24h.num : 0)
     || ammPrice
     || 0
-
-  const effectivePrice = isString ? parseFloat(stringPrice) : numericPrice
-  const isZeroPrice = effectivePrice === 0 || !Number.isFinite(effectivePrice)
 
   let confidence: 'high' | 'medium' | 'low' | 'unknown' = 'unknown'
   if (lastTradeAgeSeconds === null) {
@@ -505,15 +498,15 @@ export async function getAggregatedPrice(
   if (isString) {
     return {
       price: stringPrice,
-      sdexPrice: sdexVwap24h.raw,
+      sdexPrice: guardStr(sdexVwap24h),
       ammPrice: ammPriceRaw,
       volume24h: totalVolume24hRaw,
       sdexVolume24h: sdexVolume24hRaw,
       ammVolume24h: ammVolume24hRaw,
-      vwap1m: vwap1m.raw,
-      vwap5m: vwap5m.raw,
-      vwap1h: vwap1h.raw,
-      vwap24h: vwap24h.raw,
+      vwap1m: guardStr(vwap1m),
+      vwap5m: guardStr(vwap5m),
+      vwap1h: guardStr(vwap1h),
+      vwap24h: guardStr(vwap24h),
       priceChange24h: priceChange24h.raw,
       sources,
       confidence,
@@ -526,16 +519,16 @@ export async function getAggregatedPrice(
   }
 
   return {
-    price: vwap1h.num || vwap24h.num || ammPrice || 0,
-    sdexPrice: sdexVwap24h.num,
+    price: numericPrice,
+    sdexPrice: guardNum(sdexVwap24h),
     ammPrice,
     volume24h,
     sdexVolume24h,
     ammVolume24h,
-    vwap1m: vwap1m.num,
-    vwap5m: vwap5m.num,
-    vwap1h: vwap1h.num,
-    vwap24h: vwap24h.num,
+    vwap1m: guardNum(vwap1m),
+    vwap5m: guardNum(vwap5m),
+    vwap1h: guardNum(vwap1h),
+    vwap24h: guardNum(vwap24h),
     priceChange24h: priceChange24h.num,
     sources,
     confidence,

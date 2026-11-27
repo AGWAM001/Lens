@@ -27,15 +27,15 @@ export interface AggregateResult {
 
 /**
  * Aggregate price for a pair across on-chain sources weighted by volume.
- * Sources that deviate from the weighted average by more than the provided
- * threshold are excluded from the final composite price.
- *
- * Retired into a thin wrapper around unified on-chain venue source definition
- * and SQL numeric VWAP (#652).
+ * Uses the shared on-chain venue registry (`getOnChainSources()`) and excludes
+ * sources that deviate from the weighted average by more than the provided
+ * threshold from the final composite price.
  *
  * @param pairKey The pair identifier (e.g., "XLM/USDC").
  * @param deviationThreshold Fractional threshold (e.g., 0.05 for 5%).
- * @param network The chain to read.
+ * @param network The chain to read. `price_points` indexes `network` as the
+ *   leading column of (network, pair_key, timestamp), and the same pair key
+ *   exists on both chains — an unfiltered read blends two separate markets.
  * @param failedSources Extra sources the caller knows failed. Merged with the
  *   failures recorded by the ingesters for this (network, pair) (#329).
  * @returns Composite price, per‑source breakdown, and the failed sources.
@@ -76,6 +76,9 @@ export async function aggregatePrice(
       source,
       price: parseFloat(row.vwap ?? '0'),
       volume: parseFloat(row.volume ?? '0'),
+      // #329: a source whose latest fetch failed is excluded outright. Its
+      // rows in the window are from before it failed; letting them (or its
+      // absence) weigh in would publish a price that looks normal and is not.
       excluded: isFailed,
       reason: isFailed ? 'source failed to fetch' : undefined,
     })
@@ -102,13 +105,7 @@ export async function aggregatePrice(
   // Re‑calculate composite using only non‑excluded sources.
   const included = sources.filter(s => !s.excluded)
   const includedVolume = included.reduce((sum, s) => sum + s.volume, 0)
-  let composite = includedVolume === 0 ? 0 : included.reduce((sum, s) => sum + s.price * s.volume, 0) / includedVolume
-
-  // When every on-chain venue failed, do not silently become 0: fallback to last valid price
-  if (composite === 0 && answered.length === 0 && sources.length > 0) {
-    const fallback = sources.find(s => s.price > 0)
-    if (fallback) composite = fallback.price
-  }
+  const composite = includedVolume === 0 ? 0 : included.reduce((sum, s) => sum + s.price * s.volume, 0) / includedVolume
 
   return { composite, breakdown: sources, failedSources: allFailed }
 }

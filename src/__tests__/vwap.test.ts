@@ -133,7 +133,6 @@ describe('aggregator/vwap.ts', () => {
       expect(detailed.raw).toBe('0.119000')
       expect(detailed.stale).toBe(true)
       expect(detailed.status).toBe('stale')
-      expect(detailed.excludedSources?.length).toBe(allOnChain.length)
 
       const [sql] = mockQuery.mock.calls[0]
       expect(sql).toContain('ORDER BY COALESCE(observed_at, timestamp) DESC')
