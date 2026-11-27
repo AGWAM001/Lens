@@ -214,6 +214,19 @@ export function varyFor(cacheControl: string): string | null {
   return null
 }
 
+/**
+ * Adds `token` to the reply's existing `Vary` header instead of replacing it,
+ * so values set by other plugins (e.g. `Vary: Origin` from CORS) survive.
+ * A token already present (case-insensitive) is not duplicated.
+ */
+export function appendVary(reply: FastifyReply, token: string): void {
+  const existing = reply.getHeader('Vary')
+  const current = existing == null ? '' : String(existing)
+  const tokens = current.split(',').map(t => t.trim().toLowerCase()).filter(Boolean)
+  if (tokens.includes('*') || tokens.includes(token.toLowerCase())) return
+  reply.header('Vary', current ? `${current}, ${token}` : token)
+}
+
 async function cachePolicyPlugin(app: FastifyInstance) {
   // x402 gating is configured via env, not per-request — read once.
   const x402Active = isX402Active()
@@ -229,10 +242,7 @@ async function cachePolicyPlugin(app: FastifyInstance) {
     reply.header('Cache-Control', policy)
 
     const vary = varyFor(policy)
-    if (vary) {
-      const existing = reply.getHeader('Vary')
-      reply.header('Vary', existing ? `${existing}, ${vary}` : vary)
-    }
+    if (vary) appendVary(reply, vary)
     return payload
   })
 }

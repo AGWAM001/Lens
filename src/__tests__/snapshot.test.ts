@@ -32,6 +32,8 @@ vi.mock('../config', () => ({
 
 import { registerSnapshotRoutes } from '../routes/snapshot'
 import { registerNetworkSelector } from '../middleware/network'
+import cors from '@fastify/cors'
+import { createCorsDelegator } from '../cors'
 import { snapshotResponseSchema } from '../api/schemas'
 
 const USDC_ISSUER = 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN'
@@ -564,7 +566,7 @@ describe('GET /snapshot', () => {
       const app = await buildAppWithNetworkSelector()
       const res = await app.inject({ method: 'GET', url: '/snapshot' })
       expect(res.headers['x-cache']).toBe('MISS')
-      expect(res.headers['vary']).toBe('x-network')
+      expect(res.headers['vary']).toContain('x-network')
     })
 
     it('sends Vary: x-network on a cache hit', async () => {
@@ -574,7 +576,23 @@ describe('GET /snapshot', () => {
       mockGetCachedSnapshot.mockResolvedValue(JSON.stringify(first.json()))
       const res = await app.inject({ method: 'GET', url: '/snapshot' })
       expect(res.headers['x-cache']).toBe('HIT')
-      expect(res.headers['vary']).toBe('x-network')
+      expect(res.headers['vary']).toContain('x-network')
+    })
+
+    it('keeps Vary: Origin from CORS alongside x-network', async () => {
+      mockQuery.mockResolvedValue(dbRow(populated))
+      const app = Fastify({ logger: false })
+      await app.register(cors, { delegator: createCorsDelegator() })
+      await app.register(registerNetworkSelector)
+      await registerSnapshotRoutes(app)
+      await app.ready()
+      const origin = 'https://example.com'
+      const res = await app.inject({ method: 'GET', url: '/snapshot', headers: { origin } })
+      expect(res.headers['access-control-allow-origin']).toBe(origin)
+      const vary = String(res.headers['vary']).split(',').map(t => t.trim().toLowerCase())
+      expect(vary).toContain('origin')
+      expect(vary).toContain('x-network')
+      expect(vary.filter(t => t === 'x-network')).toHaveLength(1)
     })
   })
 })

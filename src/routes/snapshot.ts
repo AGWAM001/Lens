@@ -4,6 +4,7 @@ import { getCachedSnapshot, setCachedSnapshot } from '../redis'
 import { config, getNetworkConfig, activeNetwork, DEFAULT_PEG_TOLERANCE_BPS, type NetworkName } from '../config'
 import { snapshotResponseSchema } from '../api/schemas'
 import { sendInternalError, apiError } from '../errors'
+import { appendVary } from '../middleware/cachePolicy'
 import type { AssetId, WatchedPair } from '../types'
 import {
   PEGGED_ASSETS,
@@ -240,7 +241,7 @@ export async function registerSnapshotRoutes(app: FastifyInstance) {
           }
           reply.header('X-Cache', 'HIT')
           reply.header('Cache-Control', `public, max-age=${ttl}`)
-          reply.header('Vary', 'x-network')
+          appendVary(reply, 'x-network')
           return parsed
         } catch {
           // Corrupt cache entry — fall through and recompute.
@@ -669,7 +670,7 @@ export async function registerSnapshotRoutes(app: FastifyInstance) {
       await setCachedSnapshot(network, result, ttl)
       reply.header('X-Cache', 'MISS')
       reply.header('Cache-Control', `public, max-age=${ttl}`)
-      reply.header('Vary', 'x-network')
+      appendVary(reply, 'x-network')
       return result
     },
   )
