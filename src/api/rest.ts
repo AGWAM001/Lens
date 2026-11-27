@@ -9,7 +9,6 @@ import { getAggregatedPrice } from '../aggregator/vwap'
 import { getBestRoute } from '../aggregator/bestRoute'
 import { pgPool } from '../db'
 import { config, getNetworkConfig, activeNetwork, type NetworkName } from '../config'
-import { getPairsForNetwork } from '../pairsRegistry'
 import { isAdminConfigured } from './auth'
 import '../middleware/network' // declares req.network on the FastifyRequest type
 import {

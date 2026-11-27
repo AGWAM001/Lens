@@ -67,7 +67,7 @@ vi.mock('../src/config', async importOriginal => {
   }
 })
 
-import { registerPair, getPairsForNetwork } from '../src/pairsRegistry'
+import { registerPair, getActivePairs } from '../src/pairsRegistry'
 import { createLensPriceQueries } from '../src/mcp/priceQueries'
 import { registerNetworkSelector } from '../src/middleware/network'
 import { registerRESTRoutes } from '../src/api/rest'
@@ -124,10 +124,10 @@ describe('runtime pair resolution (#669)', () => {
       assetA: { code: 'AQUA', issuer: RUNTIME_ISSUER },
       assetB: { code: 'XLM', issuer: null },
     }
-    expect(registerPair(runtimePair)).toBe(true)
+    expect(registerPair(runtimePair, 'testnet')).toBe(true)
 
-    expect(getPairsForNetwork('testnet').some(p => p.pairKey === runtimePair.pairKey)).toBe(true)
-    expect(getPairsForNetwork('mainnet').some(p => p.pairKey === runtimePair.pairKey)).toBe(false)
+    expect(getActivePairs('testnet').some(p => p.pairKey === runtimePair.pairKey)).toBe(true)
+    expect(getActivePairs('mainnet').some(p => p.pairKey === runtimePair.pairKey)).toBe(false)
 
     const priceQueries = createLensPriceQueries()
     expect(priceQueries.watchedPairs('testnet').some(p => p.pairKey === runtimePair.pairKey)).toBe(true)
