@@ -7,6 +7,7 @@ import {
   price_points_rolled_up_total,
 } from '../metrics'
 import { createLogger } from '../logger'
+import { runJob, recordJobRowsDeleted } from './jobMetrics'
 
 const log = createLogger('job:price-points-retention')
 
@@ -58,7 +59,13 @@ function redisConnection() {
 }
 
 export function createPricePointsRetentionQueue() {
-  return new Queue(QUEUE_NAME, { connection: redisConnection() })
+  // One attempt, pinned: BullMQ's default is already 1, but a failed hourly
+  // run must be stored as failed, not retried forever — the next repeat
+  // fires on schedule. See src/jobs/jobMetrics.ts.
+  return new Queue(QUEUE_NAME, {
+    connection: redisConnection(),
+    defaultJobOptions: { attempts: 1 },
+  })
 }
 
 /**
@@ -204,6 +211,7 @@ export async function pruneOldPricePoints(
     totalPruned += pruned
     batchNumber += 1
     price_points_pruned_total.inc({ network }, pruned)
+    recordJobRowsDeleted('price-points-retention', network, pruned)
 
     log.info(
       { network, batch: batchNumber, batchRows: pruned, totalPruned },
@@ -242,7 +250,12 @@ export async function pruneAllNetworks(
 
   for (const network of getEnabledNetworks()) {
     try {
-      results[network] = await pruneOldPricePoints(retentionDays, network)
+      // Recorded per network, here, so both the queue worker below and any
+      // in-process caller report the same run — wrapping in a caller would
+      // double-count it.
+      results[network] = await runJob('price-points-retention', network, () =>
+        pruneOldPricePoints(retentionDays, network)
+      )
     } catch (err) {
       errors.push(new Error(`${network}: ${(err as Error).message}`))
     }
@@ -259,18 +272,17 @@ export function startPricePointsRetentionWorker() {
   const worker = new Worker(
     QUEUE_NAME,
     async () => {
-      try {
-        const results = await pruneAllNetworks()
-        for (const [network, res] of Object.entries(results)) {
-          if (res && (res.pruned > 0 || res.rolledUp > 0)) {
-            log.info(
-              { network, rolledUp: res.rolledUp, pruned: res.pruned, retentionDays: PRICE_POINTS_RETENTION_DAYS },
-              'retention run complete'
-            )
-          }
+      // No try/catch: runJob() inside pruneAllNetworks() already records
+      // the failure per network, and this handler must reject so BullMQ
+      // stores the job as failed (worker.on('failed') below can then fire).
+      const results = await pruneAllNetworks()
+      for (const [network, res] of Object.entries(results)) {
+        if (res && (res.pruned > 0 || res.rolledUp > 0)) {
+          log.info(
+            { network, rolledUp: res.rolledUp, pruned: res.pruned, retentionDays: PRICE_POINTS_RETENTION_DAYS },
+            'retention run complete'
+          )
         }
-      } catch (err) {
-        log.error({ err }, 'prune failed')
       }
     },
     { connection: redisConnection(), concurrency: 1 }

@@ -16,7 +16,7 @@ jobs:
         with:
           node-version: '22'
           cache: npm
-      - run: npm ci || npm install
+      - run: npm ci
       - run: node node_modules/prisma/build/index.js generate
       - name: Generate TypeScript client from openapi.yaml
         run: npm run client:gen
@@ -24,6 +24,34 @@ jobs:
         run: git diff --exit-code -- clients/typescript
       - name: Typecheck the generated TypeScript client
         run: npm run client:typecheck
+      - name: Build, pack, and verify TypeScript client package
+        run: |
+          npm run client:build
+          REPO_ROOT="$(pwd)"
+          TMP_DIR="$(mktemp -d)"
+          trap 'rm -rf "$TMP_DIR"' EXIT
+          PACK_DIR="$TMP_DIR/pack"
+          APP_DIR="$TMP_DIR/app"
+          mkdir -p "$PACK_DIR" "$APP_DIR"
+          TARBALL="$(cd clients/typescript && npm pack --pack-destination "$PACK_DIR" | tail -n1)"
+          tar -tzf "$PACK_DIR/$TARBALL" | grep -q "^package/dist/index.js$"
+          tar -tzf "$PACK_DIR/$TARBALL" | grep -q "^package/dist/index.d.ts$"
+          tar -tzf "$PACK_DIR/$TARBALL" | grep -q "^package/README.md$"
+          if tar -tzf "$PACK_DIR/$TARBALL" | grep -q "example"; then
+            echo "Unexpected example file in tarball"
+            exit 1
+          fi
+          cd "$APP_DIR"
+          npm init -y >/dev/null
+          npm pkg set type=module
+          npm install --no-audit --no-fund "$PACK_DIR/$TARBALL"
+          cat <<'EOF' > index.ts
+          import { createLensClient } from "@divinity-labs/lens-client";
+          const client = createLensClient({ baseUrl: "http://localhost:3002" });
+          export const call = () => client.GET("/v1/price/{assetA}/{assetB}", { params: { path: { assetA: "XLM", assetB: "USDC" } } });
+          EOF
+          "$REPO_ROOT/node_modules/.bin/tsc" --noEmit --strict --skipLibCheck --module NodeNext --moduleResolution NodeNext --target ES2022 index.ts
+          node -e "import('@divinity-labs/lens-client').then((m) => { if (typeof m.createLensClient !== 'function') process.exit(1); })"
       - name: Fail if the committed README tables are out of date with openapi.yaml
         run: npm run readme:check
       - run: npx tsc --noEmit
@@ -63,7 +91,7 @@ jobs:
         with:
           node-version: '22'
           cache: npm
-      - run: npm ci || npm install
+      - run: npm ci
       - run: node node_modules/prisma/build/index.js generate
 
       - name: Create empty shadow database

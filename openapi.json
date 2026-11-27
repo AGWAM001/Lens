@@ -799,6 +799,7 @@
         "x-category": "Core Pricing & Trade Execution",
         "operationId": "getFiatPrice",
         "summary": "Convert asset price to fiat currency with NGN support (#290)",
+        "description": "Converts the asset USD price to a supported fiat currency using a dated static reference rate table (overridable via FIAT_RATES_JSON). Exposes rateTimestamp, rateAgeSeconds, stale, supportedCurrencies, and fiatRatesAsOf so callers can inspect rate freshness.",
         "security": [],
         "parameters": [
           {
@@ -829,7 +830,88 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object"
+                  "type": "object",
+                  "required": [
+                    "asset",
+                    "currency",
+                    "priceInFiat",
+                    "baseUsdPrice",
+                    "fiatPerUsd",
+                    "crossLegs",
+                    "supportedCurrencies",
+                    "fiatRatesAsOf",
+                    "rateSource",
+                    "rateTimestamp",
+                    "rateAgeSeconds",
+                    "stale"
+                  ],
+                  "properties": {
+                    "asset": {
+                      "type": "string"
+                    },
+                    "currency": {
+                      "type": "string"
+                    },
+                    "priceInFiat": {
+                      "type": "number"
+                    },
+                    "baseUsdPrice": {
+                      "type": "number"
+                    },
+                    "fiatPerUsd": {
+                      "type": "number"
+                    },
+                    "crossLegs": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "from": {
+                            "type": "string"
+                          },
+                          "to": {
+                            "type": "string"
+                          },
+                          "rate": {
+                            "type": "number"
+                          },
+                          "source": {
+                            "type": "string"
+                          },
+                          "asOf": {
+                            "type": "string",
+                            "format": "date-time"
+                          }
+                        }
+                      }
+                    },
+                    "supportedCurrencies": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "fiatRatesAsOf": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "rateSource": {
+                      "type": "string",
+                      "enum": [
+                        "static_reference"
+                      ]
+                    },
+                    "rateTimestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "rateAgeSeconds": {
+                      "type": "integer"
+                    },
+                    "stale": {
+                      "type": "boolean"
+                    }
+                  }
                 }
               }
             }
@@ -894,6 +976,7 @@
             "schema": {
               "type": "integer",
               "default": 100,
+              "minimum": 1,
               "maximum": 1000
             }
           },
@@ -951,7 +1034,10 @@
             }
           },
           "400": {
-            "description": "Invalid parameters"
+            "description": "Invalid window or limit parameter"
+          },
+          "404": {
+            "description": "Asset pair is not watched on this network"
           },
           "429": {
             "$ref": "#/components/responses/TooManyRequests"
@@ -2445,12 +2531,12 @@
     "/v1/dispersion/{assetA}/{assetB}": {
       "get": {
         "x-question": "The venues disagree on this pair — which one is the outlier?",
-        "x-example": "GET /dispersion/XLM/USDC?network=testnet",
+        "x-example": "GET /dispersion/XLM/USDC?network=mainnet",
         "x-order": 28,
         "x-category": "Comparative Analytics & Market Quality",
         "operationId": "getPairDispersion",
         "summary": "Get venue price dispersion and outlier attribution for a pair",
-        "description": "Returns cross-venue price dispersion history and outlier attribution for a pair over time, including median, max absolute percentage deviation, spread in basis points, and outlying venue.",
+        "description": "Returns cross-venue price dispersion history and outlier attribution for a pair over time, including median, max absolute percentage deviation, spread in basis points, and outlying venue. The two assets are resolved against the pairs watched on the requested network (`native` means XLM, codes are case-insensitive, an issuer is honoured when given), and `pairKey` in the response is the watched pair's stored key, e.g. `USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN/XLM`. A pair that is not watched is a 404.",
         "security": [],
         "parameters": [
           {
@@ -2506,7 +2592,7 @@
               "minimum": 1,
               "maximum": 500
             },
-            "description": "Max number of history records to return"
+            "description": "Max number of history records to return. Values above 500 are rejected with 400."
           }
         ],
         "responses": {
@@ -2542,7 +2628,10 @@
             }
           },
           "400": {
-            "description": "Invalid request parameters"
+            "description": "Invalid request parameters (including `from` later than `to`, or `limit` above 500)"
+          },
+          "404": {
+            "description": "Pair is not watched on the requested network (`unwatched_pair`)"
           },
           "429": {
             "$ref": "#/components/responses/TooManyRequests"
@@ -2571,7 +2660,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Optional pair key filter (e.g. XLM/USDC)"
+            "description": "Optional pair filter as `assetA/assetB` (e.g. XLM/USDC; each side a code, `native` or CODE:ISSUER), resolved to the watched pair's key. A pair that is not watched is a 404."
           },
           {
             "$ref": "#/components/parameters/NetworkQuery"
@@ -2600,8 +2689,11 @@
             "required": false,
             "schema": {
               "type": "integer",
-              "default": 50
-            }
+              "default": 50,
+              "minimum": 1,
+              "maximum": 500
+            },
+            "description": "Max number of records to return. Values above 500 are rejected with 400."
           }
         ],
         "responses": {
@@ -2634,7 +2726,10 @@
             }
           },
           "400": {
-            "description": "Invalid request parameters"
+            "description": "Invalid request parameters (including `from` later than `to`, or `limit` above 500)"
+          },
+          "404": {
+            "description": "Pair is not watched on the requested network (`unwatched_pair`)"
           },
           "429": {
             "$ref": "#/components/responses/TooManyRequests"
@@ -3071,7 +3166,7 @@
         "x-category": "Comparative Analytics & Market Quality",
         "operationId": "getMovers",
         "summary": "Get biggest gainers, biggest losers, and volume movers",
-        "description": "Returns the top gainers, losers, and volume movers for the specified lookback window, annotated with venue provenance, sample counts, and single-venue move labelling.",
+        "description": "Returns the top gainers, losers, and volume movers for the specified lookback window, annotated with venue provenance, sample counts, and single-venue move labelling. Each list is cut to `limit` entries. A pair with no volume in the earlier window reports `volumeChangePct: null` and `hasPreviousVolume: false` (never a fabricated 100), and sorts after pairs with a computable volume change, by current volume descending.",
         "security": [],
         "parameters": [
           {
@@ -3089,6 +3184,21 @@
             }
           },
           {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Maximum number of entries in each list. Clamped to a maximum of 100. A non-numeric value is a 400.",
+            "schema": {
+              "type": "integer",
+              "default": 20,
+              "minimum": 1,
+              "maximum": 100
+            }
+          },
+          {
+            "$ref": "#/components/parameters/DecimalFormatHeader"
+          },
+          {
             "$ref": "#/components/parameters/NetworkQuery"
           }
         ],
@@ -3104,7 +3214,7 @@
             }
           },
           "400": {
-            "description": "Invalid window or network"
+            "description": "Invalid window, network or limit"
           },
           "429": {
             "$ref": "#/components/responses/TooManyRequests"
@@ -3464,11 +3574,13 @@
         "x-category": "Automation, Discovery & Payments",
         "operationId": "searchDiscoveryResources",
         "summary": "Natural language search with ranking and quality evaluation for discoverable resources",
+        "description": "Matches the catalogue in the database (one term at a time, against `serviceName`, `description`, `url`, and any tag equal to a term) and then ranks what it found: 70% text relevance, 30% metadata quality.\nRanking is bounded, and the bound is part of the contract. One request scores at most the newest 500 matching rows. When the query matches more than that, `truncated` is true, `totalMatched` still reports the full count, and `rankedCount` reports how many rows this search actually put in an order — so an older match is never silently dropped without saying so. Narrow the query (or filter by `network`/`type`) to rank a smaller set.\nPaging walks the ranking, not the table: `cursor` is an opaque encoding of the last result's score and id, `nextCursor` is null on the last page, and a cursor that is malformed or does not name a position in this result is a 400. Following `nextCursor` reaches every ranked row exactly once.",
         "parameters": [
           {
             "name": "q",
             "in": "query",
             "required": true,
+            "description": "Free-text query. Each whitespace-separated term is matched on its own; an empty query ranks everything in scope by metadata quality.",
             "schema": {
               "type": "string",
               "example": "USDC"
@@ -3478,8 +3590,11 @@
             "name": "limit",
             "in": "query",
             "required": false,
+            "description": "Results per page. Clamped into [1, 100]; a value that is not an integer is a 400.",
             "schema": {
               "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
               "default": 20
             }
           },
@@ -3487,9 +3602,26 @@
             "name": "cursor",
             "in": "query",
             "required": false,
+            "description": "Opaque position in the ranking, from the previous page's `nextCursor`. Not a row id and not an offset.",
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "type",
+            "in": "query",
+            "required": false,
+            "description": "Restrict to one resource type.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "http",
+                "mcp"
+              ]
+            }
+          },
+          {
+            "$ref": "#/components/parameters/NetworkQuery"
           }
         ],
         "responses": {
@@ -3498,13 +3630,33 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object"
+                  "$ref": "#/components/schemas/DiscoverySearchResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A `limit` that is not an integer, or a `cursor` that is malformed or does not name a position in this result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             }
           },
           "429": {
             "$ref": "#/components/responses/TooManyRequests"
+          },
+          "503": {
+            "description": "The catalogue could not be queried.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         }
       }
@@ -6522,15 +6674,14 @@
               "totalNetworkTrades",
               "assetsTracked",
               "assetsWithActivity",
+              "excludedAssetCount",
+              "excludedAssets",
               "status",
+              "reason",
               "venues"
             ],
             "properties": {
               "tradeCoverageRatio": {
-                "type": "number",
-                "nullable": true
-              },
-              "volumeCoverageRatio": {
                 "type": "number",
                 "nullable": true
               },
@@ -6545,6 +6696,29 @@
               },
               "assetsWithActivity": {
                 "type": "integer"
+              },
+              "excludedAssetCount": {
+                "type": "integer",
+                "description": "Number of assets omitted from overall totals because Horizon data was incomplete."
+              },
+              "excludedAssets": {
+                "type": "array",
+                "description": "Assets omitted from overall totals, with the Horizon failure reason.",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "asset",
+                    "reason"
+                  ],
+                  "properties": {
+                    "asset": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  }
+                }
               },
               "status": {
                 "type": "string",
@@ -7439,6 +7613,7 @@
           "currentVolume",
           "previousVolume",
           "volumeChangePct",
+          "hasPreviousVolume",
           "venues",
           "isSingleVenue",
           "sampleCount",
@@ -7460,22 +7635,55 @@
             "nullable": true
           },
           "startPrice": {
-            "type": "number",
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ],
             "nullable": true
           },
           "endPrice": {
-            "type": "number",
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ],
             "nullable": true
           },
           "currentVolume": {
-            "type": "number"
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ]
           },
           "previousVolume": {
-            "type": "number"
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ]
           },
           "volumeChangePct": {
             "type": "number",
-            "nullable": true
+            "nullable": true,
+            "description": "Null when the earlier window had no volume (see hasPreviousVolume); there is no honest percentage for growing from nothing."
+          },
+          "hasPreviousVolume": {
+            "type": "boolean",
+            "description": "Whether the earlier window had any volume for this pair. False means volumeChangePct is null rather than a fabricated figure."
           },
           "venues": {
             "type": "array",
@@ -7888,6 +8096,133 @@
           }
         }
       },
+      "DiscoverySearchItem": {
+        "type": "object",
+        "required": [
+          "id",
+          "type",
+          "network",
+          "url",
+          "tags",
+          "payTo",
+          "score",
+          "relevanceScore",
+          "qualityScore",
+          "matchReasons"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Catalogue row id. Not a cursor — see the response's `nextCursor`."
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "http",
+              "mcp"
+            ]
+          },
+          "network": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "serviceName": {
+            "type": "string",
+            "nullable": true
+          },
+          "description": {
+            "type": "string",
+            "nullable": true
+          },
+          "mimeType": {
+            "type": "string",
+            "nullable": true
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "iconUrl": {
+            "type": "string",
+            "nullable": true
+          },
+          "payTo": {
+            "type": "string",
+            "description": "The seller this resource is paid to."
+          },
+          "score": {
+            "type": "number",
+            "description": "Composite ranking score, 70% relevance plus 30% quality, quantised to four decimals. This is the value the cursor carries."
+          },
+          "relevanceScore": {
+            "type": "number",
+            "description": "Text relevance of the row to the query, 0 to 1."
+          },
+          "qualityScore": {
+            "type": "number",
+            "description": "Metadata completeness of the row, 0 to 1."
+          },
+          "matchReasons": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Which fields matched which terms."
+          }
+        }
+      },
+      "DiscoverySearchResponse": {
+        "type": "object",
+        "required": [
+          "query",
+          "network",
+          "totalMatched",
+          "rankedCount",
+          "truncated",
+          "limit",
+          "nextCursor",
+          "items"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "query": {
+            "type": "string"
+          },
+          "network": {
+            "type": "string"
+          },
+          "totalMatched": {
+            "type": "integer",
+            "description": "Every row the database matched for this query, whether or not this request ranked it. Counted, not inferred from the page."
+          },
+          "rankedCount": {
+            "type": "integer",
+            "description": "Rows this search scored and ordered; the cursor walk covers exactly these."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "True when `totalMatched` exceeds the 500-row ranking bound, so the older matches are counted but not ranked."
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "nextCursor": {
+            "type": "string",
+            "nullable": true,
+            "description": "Opaque position in the ranking to continue from. Null on the last page — including when that page is exactly `limit` rows long."
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DiscoverySearchItem"
+            }
+          }
+        }
+      },
       "WebhookCreatedResponse": {
         "type": "object",
         "required": [
@@ -8221,6 +8556,8 @@
           "currentPrice",
           "currentDeviationBps",
           "worstDeviationBps",
+          "status",
+          "reason",
           "window",
           "provenance"
         ],
@@ -8256,6 +8593,20 @@
           },
           "worstDeviationBps": {
             "type": "number",
+            "nullable": true
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "on_peg",
+              "off_peg",
+              "no_reference",
+              "no_data",
+              "error"
+            ]
+          },
+          "reason": {
+            "type": "string",
             "nullable": true
           },
           "window": {

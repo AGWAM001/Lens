@@ -9,18 +9,28 @@ const FROZEN_NOW = new Date('2026-10-19T11:00:00.000Z')
 beforeEach(() => {
   vi.useFakeTimers()
   vi.setSystemTime(FROZEN_NOW)
+  mockPairs.length = 0
 })
 afterEach(() => {
   vi.useRealTimers()
 })
 
-const { mockQuery, mockHorizonCall } = vi.hoisted(() => ({
+const { mockQuery, mockHorizonCall, mockPairs } = vi.hoisted(() => ({
   mockQuery: vi.fn(),
   mockHorizonCall: vi.fn(),
+  mockPairs: [] as {
+    assetA: { code: string; issuer: string | null }
+    assetB: { code: string; issuer: string | null }
+    pairKey: string
+  }[],
 }))
 
 vi.mock('../db', () => ({
   pgPool: { query: mockQuery },
+}))
+
+vi.mock('../pairsRegistry', () => ({
+  getActivePairs: () => mockPairs,
 }))
 
 vi.mock('@stellar/stellar-sdk', async (importOriginal) => {
@@ -53,6 +63,7 @@ vi.mock('@stellar/stellar-sdk', async (importOriginal) => {
 import { activeNetwork } from '../config'
 import { registerCoverageRoutes } from '../routes/coverage'
 import {
+  CANONICAL_USDC,
   computeCoverageRatio,
   computeTradeCoverageRatio,
   parseAssetString,
@@ -153,6 +164,15 @@ describe('parseAssetString', () => {
     expect(parsed.canonical).toBe(VALID_MAINNET_USDC)
   })
 
+  it('resolves bare USDC using the requested network issuer', () => {
+    expect(parseAssetString('USDC', [], 'testnet').canonical).toBe(
+      `USDC:${CANONICAL_USDC.testnet.issuer}`
+    )
+    expect(parseAssetString('USDC', [], 'mainnet').canonical).toBe(
+      `USDC:${CANONICAL_USDC.mainnet.issuer}`
+    )
+  })
+
   it('rejects an invalid issuer key', () => {
     expect(() => parseAssetString('USDC:INVALIDKEY')).toThrow(/expected 56-character/)
   })
@@ -220,6 +240,89 @@ describe('GET /coverage/:asset', () => {
     expect(body.provenance.lastIndexedTrade).toBe('2026-10-19T10:35:00.000Z')
     expect(body.provenance.hasGap).toBe(false)
     expect(body.methodology).toBeTypeOf('string')
+
+    await app.close()
+  })
+
+  it('resolves bare USDC on the requested route network', async () => {
+    mockQuery.mockResolvedValue({ rows: [] })
+    mockHorizonCall.mockResolvedValue({ records: [] })
+
+    const app = await buildApp()
+    const res = await app.inject({ method: 'GET', url: '/coverage/USDC?network=testnet' })
+
+    expect(res.statusCode).toBe(200)
+    expect(res.json().asset).toBe(`USDC:${CANONICAL_USDC.testnet.issuer}`)
+    await app.close()
+  })
+
+  it('excludes all totals for an asset with a partially failed Horizon fetch', async () => {
+    const incompleteAsset = `TEST:${VALID_MAINNET_USDC.split(':')[1]}`
+    mockPairs.push(
+      {
+        assetA: { code: 'TEST', issuer: VALID_MAINNET_USDC.split(':')[1] },
+        assetB: { code: 'XLM', issuer: null },
+        pairKey: `${incompleteAsset}/XLM`,
+      },
+      {
+        assetA: { code: 'TEST', issuer: VALID_MAINNET_USDC.split(':')[1] },
+        assetB: { code: 'USDC', issuer: CANONICAL_USDC.testnet.issuer },
+        pairKey: `${incompleteAsset}/USDC:${CANONICAL_USDC.testnet.issuer}`,
+      }
+    )
+    mockQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes('SELECT DISTINCT asset_a, asset_b, pair_key')) {
+        return { rows: [] }
+      }
+      if (sql.includes('SELECT DISTINCT asset_a, asset_b FROM')) {
+        return { rows: [{ asset_a: incompleteAsset, asset_b: 'XLM' }] }
+      }
+      return {
+        rows: [{ source: 'SDEX', volume: '100', trade_count: 10, last_seen: '2026-10-19T10:00:00Z' }],
+      }
+    })
+    mockHorizonCall
+      .mockResolvedValueOnce({
+        records: [{ base_volume: '50', counter_volume: '5', trade_count: '5' }],
+      })
+      .mockRejectedValueOnce(new Error('Horizon pair failure'))
+      .mockResolvedValue({
+        records: [{ base_volume: '200', counter_volume: '20', trade_count: '20' }],
+      })
+
+    const app = await buildApp()
+    const res = await app.inject({ method: 'GET', url: '/coverage?network=testnet' })
+    const body = res.json()
+
+    expect(res.statusCode).toBe(200)
+    expect(body.overall.totalIndexedTrades).toBe(20)
+    expect(body.overall.totalNetworkTrades).toBe(40)
+    expect(body.overall.excludedAssetCount).toBe(1)
+    expect(body.overall.excludedAssets).toEqual([
+      { asset: incompleteAsset, reason: 'Horizon API unreachable: Horizon pair failure' },
+    ])
+    expect(body.overall.status).toBe('computed')
+    expect(body.provenance.indexedSampleCount).toBe(20)
+    expect(body.provenance.networkSampleCount).toBe(2)
+    expect(body.assets.find((asset: { asset: string }) => asset.asset === incompleteAsset).status).toBe(
+      'unanswerable'
+    )
+
+    await app.close()
+  })
+
+  it('marks overall status unanswerable with a reason when the returned trade ratio is null', async () => {
+    mockQuery.mockResolvedValue({ rows: [] })
+    mockHorizonCall.mockResolvedValue({ records: [] })
+
+    const app = await buildApp()
+    const res = await app.inject({ method: 'GET', url: '/coverage?network=testnet' })
+    const body = res.json()
+
+    expect(res.statusCode).toBe(200)
+    expect(body.overall.tradeCoverageRatio).toBeNull()
+    expect(body.overall.status).toBe('unanswerable')
+    expect(body.overall.reason).toMatch(/No network trades observed/)
 
     await app.close()
   })
@@ -373,6 +476,7 @@ describe('GET /coverage', () => {
     expect(body.overall).toBeDefined()
     expect(body.overall.tradeCoverageRatio).toBeTypeOf('number')
     expect(body.overall.totalIndexedTrades).toBeGreaterThanOrEqual(10)
+    expect(body.overall).not.toHaveProperty('volumeCoverageRatio')
     expect(body.overall.venues).toContain('SDEX')
 
     expect(Array.isArray(body.assets)).toBe(true)

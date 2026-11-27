@@ -1,6 +1,7 @@
+import { randomUUID } from 'node:crypto'
 import { redis } from '../redis'
-import { activeNetwork, config } from '../config'
-import { priceEmitter, PRICE_UPDATE, PriceUpdateEvent } from '../events'
+import { activeNetwork, config, type NetworkName } from '../config'
+import { priceEmitter, PRICE_PUBLISHED, type PricePublishedEvent } from '../events'
 import { Gauge, Counter } from 'prom-client'
 import { register } from '../metrics'
 import { createLogger } from '../logger'
@@ -49,7 +50,24 @@ export const ws_buffered_bytes = new Gauge({
 })
 
 // ─── Configuration ─────────────────────────────────────────────────────────────
-const REDIS_CHANNEL = `lens:${activeNetwork}:price:updates`
+/**
+ * Prices are published per network. Every enabled network runs its own ingester
+ * loop, so an instance sees local events for `activeNetwork` and relays the
+ * other network's prices through Redis. Subscribing to both channels is what
+ * lets a client on this instance receive a network another instance ingests.
+ */
+const REDIS_CHANNELS: Record<NetworkName, string> = {
+  testnet: 'lens:testnet:price:updates',
+  mainnet: 'lens:mainnet:price:updates',
+}
+const REDIS_CHANNEL_LIST = Object.values(REDIS_CHANNELS)
+
+/** Tags Redis messages so a node ignores the echo of its own publish. */
+const INSTANCE_ID = randomUUID()
+
+interface RedisPriceEnvelope extends PricePublishedEvent {
+  sourceInstanceId?: string
+}
 
 function envInt(name: string, fallback: number): number {
   const raw = Number(process.env[name])
@@ -117,6 +135,7 @@ interface InternalClient {
   id: string
   socket: FanOutClient
   pairKey: string
+  network: NetworkName
   lastSent: number
   pendingUpdate: string | null
   timer: ReturnType<typeof setTimeout> | null
@@ -136,14 +155,26 @@ class FanOutManager {
   private subscriber: typeof redis | null = null
   private publisher: typeof redis = redis
   private redisConnected = false
+  private priceListener: ((event: PricePublishedEvent) => void) | null = null
+
+  /**
+   * Last published price per `network|pair`, used to report `previousPrice`
+   * on each `price_update`. Scoped by network so a testnet tick never becomes
+   * the "previous" price of a mainnet one for the same pair.
+   */
+  private lastPrices = new Map<string, number>()
 
   private bufferSweep: ReturnType<typeof setInterval> | null = null
 
   async initialize(): Promise<void> {
-    // Subscribe to local price emitter (always works)
-    priceEmitter.on(PRICE_UPDATE, (event: PriceUpdateEvent) => {
+    // Repeated register/close cycles (tests, hot reload) must not stack listeners.
+    if (this.priceListener) {
+      priceEmitter.off(PRICE_PUBLISHED, this.priceListener)
+    }
+    this.priceListener = (event: PricePublishedEvent) => {
       this.onPriceUpdate(event)
-    })
+    }
+    priceEmitter.on(PRICE_PUBLISHED, this.priceListener)
 
     // Aggregate queued-bytes gauge. Sampled on a timer rather than per broadcast
     // because the number of clients is unbounded and a per-send set() would
@@ -158,12 +189,17 @@ class FanOutManager {
         { maxRetriesPerRequest: 1, lazyConnect: true, enableOfflineQueue: false }
       )
       await this.subscriber.connect()
-      await this.subscriber.subscribe(REDIS_CHANNEL)
+      await this.subscriber.subscribe(...REDIS_CHANNEL_LIST)
       this.redisConnected = true
 
       this.subscriber.on('message', (_channel: string, message: string) => {
         try {
-          const event: PriceUpdateEvent = JSON.parse(message)
+          const event: RedisPriceEnvelope = JSON.parse(message)
+          // Our own publish comes back on the subscriber connection. Local
+          // clients already received it before the round trip, so delivering
+          // it again would duplicate every update in a multi-instance deploy.
+          if (event.sourceInstanceId === INSTANCE_ID) return
+          if (!(event.network in REDIS_CHANNELS)) return
           this.broadcastToLocalClients(event)
         } catch {
           // ignore malformed messages
@@ -177,14 +213,16 @@ class FanOutManager {
   }
 
   /**
-   * Register a new client for a given pair.
+   * Register a new client for a given pair and network. Omitting the network
+   * means the active one, matching `/ws`'s default when the client asks for none.
    */
-  register(pairKey: string, socket: FanOutClient): () => void {
+  register(pairKey: string, socket: FanOutClient, network: NetworkName = activeNetwork): () => void {
     const id = socket.id
     const client: InternalClient = {
       id,
       socket,
       pairKey,
+      network,
       lastSent: 0,
       pendingUpdate: null,
       timer: null,
@@ -250,20 +288,21 @@ class FanOutManager {
   }
 
   /**
-   * Called when a price update is received from the local emitter.
-   * Publishes to Redis for cross-instance broadcasting.
+   * Called when a price is published by an ingester. Publishes to that
+   * network's Redis channel for cross-instance broadcasting.
    */
-  private async onPriceUpdate(event: PriceUpdateEvent): Promise<void> {
+  private async onPriceUpdate(event: PricePublishedEvent): Promise<void> {
     // Local clients first. Publishing to Redis is a network round trip, and
     // waiting on it before delivering locally meant a slow (or stalled) Redis
     // delayed every subscriber on this instance — the one dependency that can
     // be added to the critical path without improving the result.
     this.broadcastToLocalClients(event)
 
-    // Publish to Redis for cross-instance fan-out
+    // Publish to the event's own network channel for cross-instance fan-out.
     if (this.redisConnected) {
       try {
-        await this.publisher.publish(REDIS_CHANNEL, JSON.stringify(event))
+        const envelope: RedisPriceEnvelope = { ...event, sourceInstanceId: INSTANCE_ID }
+        await this.publisher.publish(REDIS_CHANNELS[event.network], JSON.stringify(envelope))
       } catch {
         // non-fatal
       }
@@ -271,14 +310,15 @@ class FanOutManager {
   }
 
   /**
-   * Broadcast a price update to local clients subscribed to this pair.
+   * Broadcast a price to local clients subscribed to its pair AND network.
    * Applies per-client backpressure and coalescing for slow consumers.
    * Also sends to wildcard ('*') subscribers that receive all pairs.
    */
-  private broadcastToLocalClients(event: PriceUpdateEvent): void {
-    // Derive pairKey from event
-    const assets = [event.assetA, event.assetB].sort()
-    const pairKey = assets.join('/')
+  private broadcastToLocalClients(event: PricePublishedEvent): void {
+    const pairKey = event.pair
+    const lastKey = `${event.network}|${pairKey}`
+    const previousPrice = this.lastPrices.get(lastKey) ?? null
+    this.lastPrices.set(lastKey, event.price)
 
     // Collect client IDs from both the specific pair and wildcard subscriptions
     const matchedIds = new Set<string>()
@@ -294,11 +334,21 @@ class FanOutManager {
     if (matchedIds.size === 0) return
 
     const now = Date.now()
-    const payload = JSON.stringify({ type: 'price_update', ...event })
+    const payload = JSON.stringify({
+      type: 'price_update',
+      pair: event.pair,
+      network: event.network,
+      price: event.price,
+      previousPrice,
+      ts: event.ts,
+    })
 
     for (const clientId of matchedIds) {
       const client = this.clients.get(clientId)
       if (!client || client.destroyed) continue
+      // A mainnet event must never reach a client that asked for testnet, even
+      // though both networks publish into this one process's emitter.
+      if (client.network !== event.network) continue
 
       // Each client is handled independently: a dropped, congested or throwing
       // client must never stop the next one on this list from being served.
@@ -484,13 +534,17 @@ class FanOutManager {
     if (this.isDestroyed || this.isDestroying) return
     this.isDestroying = true
 
+    if (this.priceListener) {
+      priceEmitter.off(PRICE_PUBLISHED, this.priceListener)
+      this.priceListener = null
+    }
     if (this.bufferSweep) {
       clearInterval(this.bufferSweep)
       this.bufferSweep = null
     }
     if (this.subscriber) {
       try {
-        await this.subscriber.unsubscribe(REDIS_CHANNEL)
+        await this.subscriber.unsubscribe(...REDIS_CHANNEL_LIST)
       } catch {
         // subscriber may not have connected — ignore
       }
@@ -520,6 +574,7 @@ class FanOutManager {
 
     this.clients.clear()
     this.pairClients.clear()
+    this.lastPrices.clear()
     this.isDestroying = false
     this.isDestroyed = true
   }
@@ -527,6 +582,7 @@ class FanOutManager {
   resetForTesting(): void {
     this.clients.clear()
     this.pairClients.clear()
+    this.lastPrices.clear()
     this.isDestroyed = false
     this.isDestroying = false
   }

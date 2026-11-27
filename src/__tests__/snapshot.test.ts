@@ -27,9 +27,13 @@ vi.mock('../config', () => ({
     aquarius: { enabled: network === 'mainnet' },
   }),
   config: { cache: { snapshotTtl: 15 } },
+  DEFAULT_PEG_TOLERANCE_BPS: 100,
 }))
 
 import { registerSnapshotRoutes } from '../routes/snapshot'
+import { registerNetworkSelector } from '../middleware/network'
+import cors from '@fastify/cors'
+import { createCorsDelegator } from '../cors'
 import { snapshotResponseSchema } from '../api/schemas'
 
 const USDC_ISSUER = 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN'
@@ -92,6 +96,15 @@ const populated = {
 
 async function buildApp() {
   const app = Fastify({ logger: false })
+  await registerSnapshotRoutes(app)
+  await app.ready()
+  return app
+}
+
+/** As wired in src/app.ts: the selector resolves `req.network` before the route runs. */
+async function buildAppWithNetworkSelector() {
+  const app = Fastify({ logger: false })
+  await app.register(registerNetworkSelector)
   await registerSnapshotRoutes(app)
   await app.ready()
   return app
@@ -514,5 +527,72 @@ describe('GET /snapshot', () => {
     })
     expect(res.body).not.toMatch(/db down/)
     await app.close()
+  })
+
+  describe('network selection (#668)', () => {
+    async function snapshotFor(url: string, headers: Record<string, string> = {}) {
+      mockQuery.mockResolvedValue(dbRow(populated))
+      const app = await buildAppWithNetworkSelector()
+      const res = await app.inject({ method: 'GET', url, headers })
+      expect(res.statusCode).toBe(200)
+      return {
+        body: res.json().network,
+        db: mockQuery.mock.calls[0][1][0],
+        cacheKey: mockGetCachedSnapshot.mock.calls[0][0],
+        stored: mockSetCachedSnapshot.mock.calls[0][0],
+      }
+    }
+
+    it('honours the x-network header when no query parameter is sent', async () => {
+      expect(await snapshotFor('/snapshot', { 'x-network': 'mainnet' })).toEqual({
+        body: 'mainnet', db: 'mainnet', cacheKey: 'mainnet', stored: 'mainnet',
+      })
+    })
+
+    it('honours the query parameter when no header is sent', async () => {
+      expect(await snapshotFor('/snapshot?network=mainnet')).toEqual({
+        body: 'mainnet', db: 'mainnet', cacheKey: 'mainnet', stored: 'mainnet',
+      })
+    })
+
+    it('lets the query parameter win when both are sent', async () => {
+      expect(await snapshotFor('/snapshot?network=testnet', { 'x-network': 'mainnet' })).toEqual({
+        body: 'testnet', db: 'testnet', cacheKey: 'testnet', stored: 'testnet',
+      })
+    })
+
+    it('sends Vary: x-network on a cache miss', async () => {
+      mockQuery.mockResolvedValue(dbRow(populated))
+      const app = await buildAppWithNetworkSelector()
+      const res = await app.inject({ method: 'GET', url: '/snapshot' })
+      expect(res.headers['x-cache']).toBe('MISS')
+      expect(res.headers['vary']).toContain('x-network')
+    })
+
+    it('sends Vary: x-network on a cache hit', async () => {
+      mockQuery.mockResolvedValue(dbRow(populated))
+      const app = await buildAppWithNetworkSelector()
+      const first = await app.inject({ method: 'GET', url: '/snapshot' })
+      mockGetCachedSnapshot.mockResolvedValue(JSON.stringify(first.json()))
+      const res = await app.inject({ method: 'GET', url: '/snapshot' })
+      expect(res.headers['x-cache']).toBe('HIT')
+      expect(res.headers['vary']).toContain('x-network')
+    })
+
+    it('keeps Vary: Origin from CORS alongside x-network', async () => {
+      mockQuery.mockResolvedValue(dbRow(populated))
+      const app = Fastify({ logger: false })
+      await app.register(cors, { delegator: createCorsDelegator() })
+      await app.register(registerNetworkSelector)
+      await registerSnapshotRoutes(app)
+      await app.ready()
+      const origin = 'https://example.com'
+      const res = await app.inject({ method: 'GET', url: '/snapshot', headers: { origin } })
+      expect(res.headers['access-control-allow-origin']).toBe(origin)
+      const vary = String(res.headers['vary']).split(',').map(t => t.trim().toLowerCase())
+      expect(vary).toContain('origin')
+      expect(vary).toContain('x-network')
+      expect(vary.filter(t => t === 'x-network')).toHaveLength(1)
+    })
   })
 })
