@@ -1,35 +1,15 @@
 import type { FastifyInstance } from 'fastify'
 import { prisma } from '../db'
-import { config, activeNetwork, getNetworkConfig, type NetworkName } from '../config'
+import { config, activeNetwork, type NetworkName } from '../config'
 import { getOnChainSources } from '../ingest/venues'
 import '../middleware/network'
+import { findWatchedPair } from '../utils/watchedPair'
 
 export const ON_CHAIN_SOURCES: readonly string[] = getOnChainSources()
 
-function findWatchedPair(assetA: string, assetB: string, network: NetworkName) {
-  const parse = (a: string) => {
-    if (a.toLowerCase() === 'native') return { code: 'XLM', issuer: null as string | null }
-    const [code, issuer] = a.split(':')
-    return { code: (code ?? '').toUpperCase(), issuer: issuer ?? null }
-  }
-  const qA = parse(assetA)
-  const qB = parse(assetB)
-
-  const matches = (
-    q: { code: string; issuer: string | null },
-    side: { code: string; issuer?: string | null },
-  ) => {
-    if (q.code !== side.code.toUpperCase()) return false
-    if (!q.issuer || !side.issuer) return true
-    return q.issuer === side.issuer
-  }
-
+function tryFindWatchedPair(assetA: string, assetB: string, network: NetworkName) {
   try {
-    return getNetworkConfig(network).pairs.find(
-      p =>
-        (matches(qA, p.assetA) && matches(qB, p.assetB)) ||
-        (matches(qA, p.assetB) && matches(qB, p.assetA)),
-    )
+    return findWatchedPair(assetA, assetB, network)
   } catch {
     return undefined
   }
@@ -42,7 +22,7 @@ function getCandidatePairKeys(assetA: string, assetB: string, network: NetworkNa
   keys.add(`${assetB}/${assetA}`)
   keys.add([assetA.toUpperCase(), assetB.toUpperCase()].sort().join('/'))
 
-  const matched = findWatchedPair(assetA, assetB, network)
+  const matched = tryFindWatchedPair(assetA, assetB, network)
   if (matched?.pairKey) {
     keys.add(matched.pairKey)
   }

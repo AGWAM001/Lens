@@ -179,7 +179,7 @@ the committed table differs from a fresh generation.
 | What is the weighted price of a custom portfolio basket of assets? | `GET /v1/basket` | `GET /basket?asset=XLM&asset=USDC&weight=0.6&weight=0.4&network=testnet` |
 | Do these assets move together, or are they genuinely diversified? | `GET /v1/correlation` | `GET /correlation?asset=XLM&asset=USDC&window=30d&network=testnet` |
 | Which pairs disagree most across venues right now? | `GET /v1/dispersion` | `GET /dispersion?network=testnet` |
-| The venues disagree on this pair — which one is the outlier? | `GET /v1/dispersion/:assetA/:assetB` | `GET /dispersion/XLM/USDC?network=testnet` |
+| The venues disagree on this pair — which one is the outlier? | `GET /v1/dispersion/:assetA/:assetB` | `GET /dispersion/XLM/USDC?network=mainnet` |
 | Is this pair trading above or below the centralised exchanges? | `GET /v1/premium/:assetA/:assetB` | `GET /premium/XLM/USDC?network=testnet` |
 | Is this stablecoin still holding its peg? | `GET /v1/pegs` | `GET /pegs?network=testnet` |
 | How much of the market can Lens actually see? | `GET /v1/coverage` | `GET /coverage?network=testnet` |
@@ -482,6 +482,7 @@ When multiple venues quote the same pair, their prices naturally diverge due to 
 * **Querying Dispersion:**
   * `GET /dispersion/:assetA/:assetB?from=…&to=…&limit=50&network=testnet`
   * `GET /dispersion?pair=XLM/USDC&network=mainnet`
+  * Assets are resolved against the network's watched pairs (`native` = XLM, case-insensitive codes, optional `CODE:ISSUER`); the response's `pairKey` is the stored key (e.g. `USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN/XLM`). An unwatched pair is a 404 `unwatched_pair`; `from` after `to` or `limit` above 500 is a 400 `invalid_parameter`.
 ## MCP server
 
 `npm run mcp:server` starts the Bazaar MCP server ([src/mcp/server.ts](src/mcp/server.ts), wired up in [examples/mcp-server/run.ts](examples/mcp-server/run.ts)). It advertises:
