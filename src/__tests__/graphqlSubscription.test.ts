@@ -10,7 +10,12 @@ vi.mock('../redis', () => ({ getCachedPrice: vi.fn() }))
 vi.mock('../db', () => ({ pgPool: { query: vi.fn() } }))
 vi.mock('../aggregator/vwap', () => ({ getAggregatedPrice: vi.fn() }))
 vi.mock('../aggregator/bestRoute', () => ({ getBestRoute: vi.fn() }))
-vi.mock('../config', () => ({ config: { pairs: [] }, activeNetwork: 'testnet' }))
+// The pairs registry seeds each network's list from getNetworkConfig (#646).
+vi.mock('../config', () => ({
+  config: { pairs: [] },
+  activeNetwork: 'testnet',
+  getNetworkConfig: () => ({ pairs: [] }),
+}))
 
 import { registerGraphQL, resolveGraphQLUiOptions } from '../api/graphql'
 import { publishPriceUpdate, priceEmitter } from '../events'

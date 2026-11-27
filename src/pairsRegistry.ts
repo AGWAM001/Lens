@@ -1,4 +1,4 @@
-import { config, activeNetwork, getNetworkConfig, type NetworkName } from './config'
+import { getNetworkConfig, type NetworkName } from './config'
 import { prisma } from './db'
 import { getEnabledNetworks } from './network/enabledNetworks'
 import type { WatchedPair, AssetId } from './types'
@@ -13,10 +13,7 @@ const pairsByNetwork: Partial<Record<NetworkName, WatchedPair[]>> = {}
 function pairsFor(network: NetworkName): WatchedPair[] {
   let pairs = pairsByNetwork[network]
   if (!pairs) {
-    // config.pairs is the active network's declared list, a view over
-    // getNetworkConfig(activeNetwork).pairs.
-    const declared = network === activeNetwork ? config.pairs : getNetworkConfig(network).pairs
-    pairs = [...declared]
+    pairs = [...getNetworkConfig(network).pairs]
     pairsByNetwork[network] = pairs
   }
   return pairs
