@@ -22,8 +22,9 @@ vi.mock('../config', () => {
   }
 })
 
-import { registerGraphQL } from '../api/graphql'
+import { registerGraphQL, resolveGraphQLUiOptions } from '../api/graphql'
 import { publishPriceUpdate, priceEmitter } from '../events'
+import { registerPair } from '../pairsRegistry'
 
 const SUBPROTOCOL = 'graphql-transport-ws'
 
@@ -79,6 +80,54 @@ const SUBSCRIBE = (pair: string, network?: string) => ({
     }`,
     variables: { pair, network: network ?? null },
   },
+})
+
+describe('GraphQL production UI configuration', () => {
+  it('disables GraphiQL by default in production while leaving POST /graphql available', async () => {
+    const options = resolveGraphQLUiOptions({ NODE_ENV: 'production' })
+    expect(options.graphiqlEnabled).toBe(false)
+    expect(options.introspectionEnabled).toBe(true)
+
+    const app = Fastify({ logger: false })
+    await registerGraphQL(app, { environment: 'production' })
+    await app.ready()
+    try {
+      expect((await app.inject({ method: 'GET', url: '/graphiql' })).statusCode).toBe(404)
+      const response = await app.inject({
+        method: 'POST',
+        url: '/graphql',
+        payload: { query: '{ listPairs }' },
+      })
+      expect(response.statusCode).toBe(200)
+      // listPairs serves the pairs registry, which the config mock above
+      // seeds with the two configured pairs.
+      expect(response.json()).toEqual({ data: { listPairs: ['XLM/USDC', 'BTC/USDC'] } })
+    } finally {
+      await app.close()
+    }
+  })
+
+  it('allows operators to configure the IDE and introspection independently', async () => {
+    expect(resolveGraphQLUiOptions({ NODE_ENV: 'production', GRAPHIQL_ENABLED: 'true' }))
+      .toMatchObject({ graphiqlEnabled: true, introspectionEnabled: true })
+    expect(resolveGraphQLUiOptions({ NODE_ENV: 'production', GRAPHQL_INTROSPECTION_ENABLED: 'false' }))
+      .toMatchObject({ graphiqlEnabled: false, introspectionEnabled: false })
+
+    const app = Fastify({ logger: false })
+    await registerGraphQL(app, { environment: 'production', introspectionEnabled: false })
+    await app.ready()
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/graphql',
+        payload: { query: '{ __schema { queryType { name } } }' },
+      })
+      expect(response.statusCode).toBe(400)
+      expect(response.json().errors?.[0]?.message).toMatch(/introspection/i)
+    } finally {
+      await app.close()
+    }
+  })
 })
 
 describe('GraphQL priceUpdated subscription', () => {
@@ -239,6 +288,59 @@ describe('GraphQL priceUpdated subscription', () => {
     const next = await waitFor(ws, 'next')
     expect(next.payload.data.priceUpdated.pair).toBe('XLM/USDC')
     expect(next.payload.data.priceUpdated.price).toBe(0.88)
+
+    ws.close()
+  })
+
+  it('streams updates for a pair registered at runtime on the active network', async () => {
+    // Pairs added at runtime (registerPair / persistPair, e.g. via
+    // POST /pairs) live only in the pairs registry: the venue runner
+    // ingests them, publishes their price events, and the pairs query
+    // lists them — but they never appear in the static network config
+    // this test mocks. Resolution must consult the registry for the
+    // active network (testnet here) or the subscription is refused with
+    // PAIR_NOT_FOUND for a pair that is in fact being watched.
+    expect(registerPair({
+      assetA: { code: 'ETH', issuer: null },
+      assetB: { code: 'USDC', issuer: null },
+      pairKey: 'ETH/USDC',
+    })).toBe(true)
+
+    const ws = await connect(url)
+    ws.send(JSON.stringify(SUBSCRIBE('ETH/USDC', 'testnet')))
+    await new Promise(r => setTimeout(r, 100))
+
+    publishPriceUpdate({ pair: 'ETH/USDC', price: 3.21, ts: '2026-06-02T00:00:00.000Z', network: 'testnet' })
+
+    const next = await waitFor(ws, 'next')
+    expect(next.payload.data.priceUpdated).toEqual({
+      pair: 'ETH/USDC',
+      price: 3.21,
+      ts: '2026-06-02T00:00:00.000Z',
+      network: 'testnet',
+    })
+
+    ws.close()
+  })
+
+  it('still ends with PAIR_NOT_FOUND for a runtime-registered pair on the other network', async () => {
+    // Runtime pairs belong to this process's active network only; the
+    // other network keeps resolving against its static config, where
+    // ETH/USDC is not declared (the config mock above serves the same
+    // two pairs for every network, and ETH/USDC is not one of them).
+    registerPair({
+      assetA: { code: 'ETH', issuer: null },
+      assetB: { code: 'USDC', issuer: null },
+      pairKey: 'ETH/USDC',
+    })
+
+    const ws = await connect(url)
+    ws.send(JSON.stringify(SUBSCRIBE('ETH/USDC', 'mainnet')))
+
+    const error = await waitFor(ws, 'error')
+    expect(error.id).toBe('1')
+    const errors = Array.isArray(error.payload) ? error.payload : [error.payload]
+    expect(errors[0].extensions.code).toBe('PAIR_NOT_FOUND')
 
     ws.close()
   })
