@@ -7,16 +7,19 @@ vi.mock('../redis', () => ({ getCachedPrice: vi.fn() }))
 vi.mock('../db', () => ({ pgPool: { query: vi.fn() } }))
 vi.mock('../aggregator/vwap', () => ({ getAggregatedPrice: vi.fn() }))
 vi.mock('../aggregator/bestRoute', () => ({ getBestRoute: vi.fn() }))
-vi.mock('../config', () => ({
-  activeNetwork: 'testnet',
-  config: {
-    pairs: [{
-      assetA: { code: 'XLM' },
-      assetB: { code: 'USDC' },
-      pairKey: 'USDC/XLM',
-    }],
-  },
-}))
+vi.mock('../config', () => {
+  const pairs = [{
+    assetA: { code: 'XLM' },
+    assetB: { code: 'USDC' },
+    pairKey: 'USDC/XLM',
+  }]
+  return {
+    activeNetwork: 'testnet',
+    config: { pairs },
+    // The pairs registry seeds each network's list from getNetworkConfig (#646).
+    getNetworkConfig: () => ({ pairs }),
+  }
+})
 vi.mock('../ingest/oracles/reflector', () => ({ reflectorOracleAdapter: {} }))
 vi.mock('../services/oracleComparison', () => ({ compareOracles: vi.fn() }))
 

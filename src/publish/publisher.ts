@@ -34,6 +34,14 @@ import { getAggregatedPrice } from '../aggregator/vwap'
 import { pgPool, prisma } from '../db'
 import { sleep } from '../ingest/venues/runner'
 import { createLogger } from '../logger'
+import {
+  publisher_cycles_failed_total,
+  publisher_cycle_duration_seconds,
+  publisher_last_success_timestamp,
+  publisher_pairs_blocked_total,
+  publisher_reports_written_total,
+  publisher_writes_failed_total,
+} from '../metrics'
 import type { WatchedPair } from '../types'
 import {
   Sep40EncodingError,
@@ -49,6 +57,8 @@ import {
   evaluateGuards,
   feedTimestamp,
   type AggregateSnapshot,
+  type PublicationGuard,
+  type PublicationTrigger,
   type PublishedSnapshot,
   type TriggerDecision,
   type TriggerThresholds,
@@ -348,6 +358,105 @@ function blocked(guard: string, reason: string) {
   return { publish: false as const, guard, reason }
 }
 
+// ── Cycle metrics ────────────────────────────────────────────────────────────
+
+/**
+ * Closed code sets for the two bounded label values. A code added to
+ * `trigger.ts` or to the orientation checks must be added here deliberately, so
+ * an unexpected string can never mint a new time series.
+ */
+const KNOWN_TRIGGERS: ReadonlySet<string> = new Set<PublicationTrigger>([
+  'first_report',
+  'deviation',
+  'max_interval',
+])
+
+const KNOWN_GUARDS: ReadonlySet<string> = new Set<
+  PublicationGuard | 'asset_identity' | 'base_not_in_pair' | 'venue_provenance'
+>([
+  'no_venue',
+  'invalid_price',
+  'no_observation',
+  'stale_aggregate',
+  'aggregate_too_old',
+  'below_deviation',
+  'min_write_interval',
+  'tick_not_advanced',
+  'asset_identity',
+  'base_not_in_pair',
+  'venue_provenance',
+])
+
+function boundedLabel(code: string, known: ReadonlySet<string>): string {
+  return known.has(code) ? code : 'other'
+}
+
+/**
+ * Record one cycle's `CycleReport`. Kept out of `runPublicationCycle` so the
+ * decision logic stays pure; the loop's wrapper is the only caller.
+ *
+ * `published` and `failed` are authoritative, not the per-pair decisions: a
+ * decision can say "publish" and then fail at `report()`, and a pair that was
+ * blocked earlier in the cycle must not be counted as a write.
+ */
+export function recordPublicationCycleMetrics(cycle: CycleReport, nowMs = Date.now()): void {
+  const { network } = cycle
+  const published = new Set(cycle.published)
+  const failed = new Set(cycle.failed)
+
+  for (const outcome of cycle.outcomes) {
+    if (failed.has(outcome.pairKey)) continue
+
+    if (published.has(outcome.pairKey)) {
+      const trigger = outcome.decision.publish
+        ? boundedLabel(outcome.decision.trigger, KNOWN_TRIGGERS)
+        : 'other'
+      publisher_reports_written_total.inc({ network, trigger })
+      continue
+    }
+
+    if (!outcome.decision.publish) {
+      publisher_pairs_blocked_total.inc({
+        network,
+        guard: boundedLabel(outcome.decision.guard, KNOWN_GUARDS),
+      })
+    }
+  }
+
+  if (cycle.failed.length > 0) {
+    publisher_writes_failed_total.inc({ network }, cycle.failed.length)
+  }
+
+  // A gauge set on every cycle would go stale on the first blocked tick. Only
+  // a write that actually landed moves it.
+  if (published.size > 0) {
+    publisher_last_success_timestamp.set({ network }, Math.floor(nowMs / 1000))
+  }
+}
+
+/**
+ * One metered cycle, used by the publisher loop in place of a bare
+ * `runPublicationCycle`. The error is rethrown unchanged so the loop's backoff
+ * behaves exactly as before; the histogram still sees the failed attempt.
+ */
+export async function runPublicationCycleWithMetrics(
+  network: NetworkName,
+  deps: PublicationDeps,
+  nowMs = Date.now()
+): Promise<CycleReport> {
+  const startedAt = Date.now()
+  try {
+    const cycle = await runPublicationCycle(network, deps, nowMs)
+    recordPublicationCycleMetrics(cycle, nowMs)
+    return cycle
+  } catch (err) {
+    publisher_cycles_failed_total.inc({ network })
+    throw err
+  } finally {
+    publisher_cycle_duration_seconds.observe({ network }, (Date.now() - startedAt) / 1000)
+  }
+}
+
 // ── Production wiring ────────────────────────────────────────────────────────
 
 /**
@@ -439,7 +548,7 @@ export async function startSep40Publisher(network: NetworkName = activeNetwork):
   let consecutiveErrors = 0
   while (true) {
     try {
-      const cycle = await runPublicationCycle(network, productionDeps(network, feed))
+      const cycle = await runPublicationCycleWithMetrics(network, productionDeps(network, feed))
       consecutiveErrors = 0
       if (cycle.published.length > 0) {
         log.info({ network, published: cycle.published }, 'publication cycle wrote')

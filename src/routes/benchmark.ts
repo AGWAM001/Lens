@@ -6,11 +6,11 @@ import '../middleware/network' // declares req.network on the FastifyRequest typ
 import { benchmarkResponseSchema } from '../api/schemas'
 import { sendInternalError, apiError } from '../errors'
 
-function findPair(assetCode: string, targetCode: string) {
+function findPair(assetCode: string, targetCode: string, network: NetworkName) {
   const normalize = (c: string) => c.toLowerCase() === 'native' ? 'XLM' : c.split(':')[0].toUpperCase()
   const normAsset = normalize(assetCode)
   const normTarget = normalize(targetCode)
-  return getActivePairs().find(p => {
+  return getActivePairs(network).find(p => {
     const pA = p.assetA.code.toUpperCase()
     const pB = p.assetB.code.toUpperCase()
     return (normAsset === pA && normTarget === pB) || (normAsset === pB && normTarget === pA)
@@ -27,12 +27,13 @@ export async function registerBenchmarkRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const { asset } = req.params
       const target = req.query.target ?? 'USD'
+      const network: NetworkName = req.network ?? activeNetwork
 
       const normalize = (c: string) => c.toLowerCase() === 'native' ? 'XLM' : c.split(':')[0].toUpperCase()
       const normAsset = normalize(asset)
       const normTarget = normalize(target)
 
-      const pair = findPair(asset, target)
+      const pair = findPair(asset, target, network)
       if (!pair) {
         return reply.status(404).send(apiError('unwatched_pair', `Pair ${asset}/${target} not watched`))
       }
@@ -46,7 +47,6 @@ export async function registerBenchmarkRoutes(app: FastifyInstance) {
       // leading column of (network, pair_key, timestamp), and the same pair key
       // exists on both chains — an unfiltered read blends two separate markets
       // into a deviation figure nobody traded at.
-      const network: NetworkName = req.network ?? activeNetwork
       const query = `
         SELECT
           (SELECT ${priceExpr} FROM price_points WHERE pair_key = $1 AND network = $2 ORDER BY COALESCE(observed_at, timestamp) DESC LIMIT 1) AS latest_price,

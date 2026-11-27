@@ -217,4 +217,55 @@ describe('GET /tvl (Issue #284)', () => {
 
     vi.restoreAllMocks()
   })
+
+  describe('history window vs pool snapshot retention (#689)', () => {
+    /** Mocks the history queries and returns the hours the snapshot query was asked for. */
+    function captureHistoryWindow(): { hours: () => string | undefined } {
+      let hours: string | undefined
+      vi.spyOn(pgPool, 'query').mockImplementation(async (sql: any, params?: any) => {
+        const sqlStr = typeof sql === 'string' ? sql : sql.text
+        if (sqlStr.includes('date_trunc(\'hour\', ps.timestamp) AS bucket')) {
+          hours = params?.[1]
+        }
+        return { rows: [] } as any
+      })
+      return { hours: () => hours }
+    }
+
+    it('caps the window at the retention period when retention is on, and reports the window used', async () => {
+      process.env.POOL_SNAPSHOT_RETENTION_ENABLED = 'true'
+      process.env.POOL_SNAPSHOT_RETENTION_DAYS = '7'
+      const captured = captureHistoryWindow()
+
+      const res = await app.inject({ method: 'GET', url: '/tvl?network=testnet&history=true&window=1000' })
+
+      expect(res.statusCode).toBe(200)
+      expect(res.json().window).toBe('168h')
+      expect(captured.hours()).toBe('168')
+      vi.restoreAllMocks()
+    })
+
+    it('leaves a window inside the retention period alone', async () => {
+      process.env.POOL_SNAPSHOT_RETENTION_ENABLED = 'true'
+      process.env.POOL_SNAPSHOT_RETENTION_DAYS = '7'
+      const captured = captureHistoryWindow()
+
+      const res = await app.inject({ method: 'GET', url: '/tvl?network=testnet&history=true&window=48' })
+
+      expect(res.json().window).toBe('48h')
+      expect(captured.hours()).toBe('48')
+      vi.restoreAllMocks()
+    })
+
+    it('does not cap the window while retention is off, since nothing is pruned', async () => {
+      delete process.env.POOL_SNAPSHOT_RETENTION_ENABLED
+      const captured = captureHistoryWindow()
+
+      const res = await app.inject({ method: 'GET', url: '/tvl?network=testnet&history=true&window=1000' })
+
+      expect(res.json().window).toBe('1000h')
+      expect(captured.hours()).toBe('1000')
+      vi.restoreAllMocks()
+    })
+  })
 })

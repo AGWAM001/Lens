@@ -153,7 +153,7 @@ export async function startVenueAdapter(
         venue: adapter.name,
         network,
         cycle: async (signal) => {
-          const pairs = getActivePairs()
+          const pairs = getActivePairs(network)
           for (const pair of pairs) {
             // Abandonment checkpoint (#351): the deadline has fired — do not
             // start another pair. Pairs already in flight keep their own

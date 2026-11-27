@@ -129,7 +129,7 @@ export async function registerRateRoutes(app: FastifyInstance) {
     if (requested !== undefined && requested !== 'testnet' && requested !== 'mainnet') {
       return reply.status(400).send(apiError('bad_network', 'network must be one of: testnet, mainnet'))
     }
-    const network: NetworkName = (requested as NetworkName) ?? activeNetwork
+    const network: NetworkName = req.network ?? (requested as NetworkName) ?? activeNetwork
 
     try {
       // Latest observation per (venue, pool), newest first. Reduction to one

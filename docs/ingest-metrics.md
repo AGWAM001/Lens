@@ -167,7 +167,7 @@ no BullMQ to report to, and the run is already counted as a failure by then.
 
 | Label | Values | Notes |
 | --- | --- | --- |
-| `job` | `aggregate-refresh`, `snapshot-retention`, `venue-reconciliation`, `rate-retention`, `oracle-retention`, `price-points-retention`, `price-points-partition` | The BullMQ queue name (minus the network prefix) of the job that ran. A closed set, hard-coded as `JobName` in `src/jobs/jobMetrics.ts`. |
+| `job` | `aggregate-refresh`, `snapshot-retention`, `venue-reconciliation`, `rate-retention`, `oracle-retention`, `price-points-retention`, `price-points-partition`, `pool-snapshot-retention` | The BullMQ queue name (minus the network prefix) of the job that ran. A closed set, hard-coded as `JobName` in `src/jobs/jobMetrics.ts`. |
 | `network` | `testnet`, `mainnet` | The network the run worked on. For the retention jobs this is the network of the prune loop, not the process-wide `STELLAR_NETWORK`. |
 | `outcome` | `success`, `failure` | Only on `job_runs_total`. Failure rate = `failure / (success + failure)`. |
 

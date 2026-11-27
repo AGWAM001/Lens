@@ -11,6 +11,7 @@
 import { runCycleWithDeadline } from '../cycleDeadline'
 import {
   Address,
+  Asset,
   xdr,
   scValToNative,
   Contract,
@@ -38,17 +39,29 @@ const FEE_PAYER_KEYPAIR = Keypair.random()
 // ── In-memory caches ─────────────────────────────────────────────────────────
 const assetSymbolCache = new Map<string, string>()
 
-// Common known Stellar tokens on Mainnet and Testnet
-const KNOWN_ASSET_SYMBOLS: Record<string, string> = {
-  // Mainnet
-  CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EZH3MS2UY7: 'XLM',
-  CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC: 'XLM',
-  CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75: 'USDC',
-  CD252NPIMBFLRLNYWVDZEPISECT7NWGCVME5BC2Z5AOZ2MQ27AC7T5NX: 'BLND',
-  CA4NZURNP4MWX5CW74WPUEX44WJ4PB7BR4A362XW3J24TF3J77Y7H6K7: 'wETH',
-  // Testnet
-  CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWUIE3USOPWWYPYYOB7: 'USDC',
-}
+// Tokens the adapter names without asking the network.
+//
+// Every id here is DERIVED from the asset's code and issuer, never typed in. A
+// Stellar asset's token contract id is a pure function of the asset and the
+// network, so it cannot be mistyped this way. The hand-written list this
+// replaces had four invalid ids out of six (including mainnet XLM), which made
+// each lookup fall through to a network call and name the reserve by whatever
+// the token contract says about itself.
+//
+// Mainnet XLM, USDC and EURC are the three reserves of Blend Fixed V2
+// (CAJJZSGMMM3PD7N33TAPHGBUGTB43OC73HVIK2L2G6BNGGGYOSSYBXBD), read from the pool
+// on chain. Add a token only with its issuer, so it is derived like the rest.
+const USDC_MAINNET_ISSUER = 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN'
+const EURC_MAINNET_ISSUER = 'GDHU6WRG4IEQXM5NZ4BMPKOXHW76MZM4Y2IEMFDVXBSDP6SJY4ITNPP2'
+const USDC_TESTNET_ISSUER = 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5'
+
+export const KNOWN_ASSET_SYMBOLS: Readonly<Record<string, string>> = Object.freeze({
+  [Asset.native().contractId(Networks.PUBLIC)]: 'XLM',
+  [new Asset('USDC', USDC_MAINNET_ISSUER).contractId(Networks.PUBLIC)]: 'USDC',
+  [new Asset('EURC', EURC_MAINNET_ISSUER).contractId(Networks.PUBLIC)]: 'EURC',
+  [Asset.native().contractId(Networks.TESTNET)]: 'XLM',
+  [new Asset('USDC', USDC_TESTNET_ISSUER).contractId(Networks.TESTNET)]: 'USDC',
+})
 
 // ── Test helper hooks matching reference adapter structure ───────────────────
 export function _resetLastPrice(): void {
@@ -57,6 +70,111 @@ export function _resetLastPrice(): void {
 
 export function _getLastPrice(network: NetworkName, pairKey: string): number | undefined {
   return getLastPrice('Blend', network, pairKey)
+}
+
+// ── Blend pool versions and their number scales (#641) ───────────────────────
+//
+// Blend v1 and v2 pools store their token rates and rate modifier at different
+// fixed-point scales. Every scale below is read from the pool contract source
+// at the release tag whose wasm the configured pools run (see
+// BLEND_POOL_WASM_VERSIONS):
+//
+//   v1: blend-capital/blend-contracts    @ v1.0.0  1c1dabab2a6a71f6354d6d59f4307b99760ef3eb
+//   v2: blend-capital/blend-contracts-v2 @ v2.0.0  c19abee5b9be4f49e0cda9057e87d343e5dcc095
+//
+//   field                         v1                  v2
+//   b_rate  (ResData)             9 dp  (SCALAR_9)    12 dp (SCALAR_12)
+//   d_rate  (ResData)             9 dp  (SCALAR_9)    12 dp (SCALAR_12)
+//   ir_mod  (ResData)             9 dp  (SCALAR_9)     7 dp (SCALAR_7)
+//   bstop_rate (Config, take)     7 dp  (SCALAR_7)     7 dp (SCALAR_7)
+//   util, r_base..r_three (ResConfig)  7 dp            7 dp
+//
+// v1 sources:
+//   SCALAR_9 = 1e9, SCALAR_7 = 1e7
+//     https://github.com/blend-capital/blend-contracts/blob/1c1dabab2a6a71f6354d6d59f4307b99760ef3eb/pool/src/constants.rs#L3-L7
+//   d_rate, b_rate, ir_mod documented as 9 decimals
+//     https://github.com/blend-capital/blend-contracts/blob/1c1dabab2a6a71f6354d6d59f4307b99760ef3eb/pool/src/pool/reserve.rs#L23-L25
+//   d_rate accrues with SCALAR_9; bstop_rate applied with SCALAR_7; b_rate set with SCALAR_9
+//     https://github.com/blend-capital/blend-contracts/blob/1c1dabab2a6a71f6354d6d59f4307b99760ef3eb/pool/src/pool/reserve.rs#L91-L108
+//   b/d tokens convert to underlying with SCALAR_9
+//     https://github.com/blend-capital/blend-contracts/blob/1c1dabab2a6a71f6354d6d59f4307b99760ef3eb/pool/src/pool/reserve.rs#L159-L172
+//   borrow rate = base_rate * ir_mod / SCALAR_9; ir_mod bounded to [SCALAR_9 / 10, 10 * SCALAR_9]
+//     https://github.com/blend-capital/blend-contracts/blob/1c1dabab2a6a71f6354d6d59f4307b99760ef3eb/pool/src/pool/interest.rs#L40-L42
+//     https://github.com/blend-capital/blend-contracts/blob/1c1dabab2a6a71f6354d6d59f4307b99760ef3eb/pool/src/pool/interest.rs#L84
+//     https://github.com/blend-capital/blend-contracts/blob/1c1dabab2a6a71f6354d6d59f4307b99760ef3eb/pool/src/pool/interest.rs#L99
+//   bstop_rate and util/r_* are 7 decimals
+//     https://github.com/blend-capital/blend-contracts/blob/1c1dabab2a6a71f6354d6d59f4307b99760ef3eb/pool/src/storage.rs#L28
+//     https://github.com/blend-capital/blend-contracts/blob/1c1dabab2a6a71f6354d6d59f4307b99760ef3eb/pool/src/storage.rs#L49-L54
+//
+// v2 sources:
+//   SCALAR_12 = 1e12, SCALAR_7 = 1e7
+//     https://github.com/blend-capital/blend-contracts-v2/blob/c19abee5b9be4f49e0cda9057e87d343e5dcc095/pool/src/constants.rs#L3-L7
+//   d_rate, b_rate 12 decimals; ir_mod 7 decimals
+//     https://github.com/blend-capital/blend-contracts-v2/blob/c19abee5b9be4f49e0cda9057e87d343e5dcc095/pool/src/storage.rs#L72-L74
+//   d_rate accrues with SCALAR_12; bstop_rate applied with SCALAR_7; b_rate set with SCALAR_12
+//     https://github.com/blend-capital/blend-contracts-v2/blob/c19abee5b9be4f49e0cda9057e87d343e5dcc095/pool/src/pool/reserve.rs#L72
+//     https://github.com/blend-capital/blend-contracts-v2/blob/c19abee5b9be4f49e0cda9057e87d343e5dcc095/pool/src/pool/reserve.rs#L98-L106
+//   b/d tokens convert to underlying with SCALAR_12
+//     https://github.com/blend-capital/blend-contracts-v2/blob/c19abee5b9be4f49e0cda9057e87d343e5dcc095/pool/src/pool/reserve.rs#L174-L184
+//   borrow rate = base_rate * ir_mod / SCALAR_7; ir_mod bounded to [SCALAR_7 / 10, 10 * SCALAR_7]
+//   (the doc comment at interest.rs#L17 still says "9 decimals"; the code uses SCALAR_7)
+//     https://github.com/blend-capital/blend-contracts-v2/blob/c19abee5b9be4f49e0cda9057e87d343e5dcc095/pool/src/pool/interest.rs#L37
+//     https://github.com/blend-capital/blend-contracts-v2/blob/c19abee5b9be4f49e0cda9057e87d343e5dcc095/pool/src/pool/interest.rs#L72
+//     https://github.com/blend-capital/blend-contracts-v2/blob/c19abee5b9be4f49e0cda9057e87d343e5dcc095/pool/src/pool/interest.rs#L83
+//   bstop_rate and util/r_* are 7 decimals
+//     https://github.com/blend-capital/blend-contracts-v2/blob/c19abee5b9be4f49e0cda9057e87d343e5dcc095/pool/src/storage.rs#L29
+//     https://github.com/blend-capital/blend-contracts-v2/blob/c19abee5b9be4f49e0cda9057e87d343e5dcc095/pool/src/storage.rs#L50-L55
+
+export type BlendPoolVersion = 1 | 2
+
+export interface BlendScales {
+  /** Decimals of `b_rate` and `d_rate` (bToken/dToken to underlying). */
+  rateDecimals: number
+  /** Decimals of `ir_mod`, the interest rate curve modifier. */
+  irModDecimals: number
+  /** Decimals of the pool's `bstop_rate` (backstop take rate). */
+  backstopRateDecimals: number
+  /** Decimals of the ResConfig curve fields: `util`, `r_base`, `r_one`, `r_two`, `r_three`. */
+  configDecimals: number
+}
+
+export const BLEND_SCALES: Readonly<Record<BlendPoolVersion, Readonly<BlendScales>>> = {
+  1: { rateDecimals: 9, irModDecimals: 9, backstopRateDecimals: 7, configDecimals: 7 },
+  2: { rateDecimals: 12, irModDecimals: 7, backstopRateDecimals: 7, configDecimals: 7 },
+}
+
+/**
+ * A pool's version is the Blend release whose pool wasm it runs. The hash is
+ * the contract instance's executable, which `fetchBlendPool` already reads
+ * with the instance entry. Blend pool contracts have no upgrade entrypoint, so
+ * a pool's wasm hash never changes. Each hash is the sha256 of the pool wasm
+ * attached to that release, and is the hash the configured pools run on chain:
+ *
+ *   v1: pool_v1.0.0.wasm from
+ *       https://github.com/blend-capital/blend-contracts/releases/tag/v1.0.0_pool_v1.0.0.wasm
+ *       (tag commit 1c1dabab2a6a71f6354d6d59f4307b99760ef3eb)
+ *   v2: pool_v2.0.0.wasm from
+ *       https://github.com/blend-capital/blend-contracts-v2/releases/tag/v2.0.0_pool_cli22.0.1
+ *       (tag commit c19abee5b9be4f49e0cda9057e87d343e5dcc095)
+ *
+ * A pool running any other wasm has an unknown version and is skipped: reading
+ * it with either table entry could be off by a power of ten.
+ */
+export const BLEND_POOL_WASM_VERSIONS: Readonly<Record<string, BlendPoolVersion>> = {
+  baf978f10efdbcd85747868bef8832845ea6809f7643b67a4ac0cd669327fc2c: 1,
+  a41fc53d6753b6c04eb15b021c55052366a4c8e0e21bc72700f461264ec1350e: 2,
+}
+
+/**
+ * Maps a pool contract's wasm hash (hex) to its Blend version, or null when
+ * the hash is not a known Blend pool release. Never looks at reserve numbers.
+ */
+export function blendPoolVersionFromWasmHash(wasmHashHex: string | null | undefined): BlendPoolVersion | null {
+  if (!wasmHashHex) return null
+  const key = wasmHashHex.toLowerCase()
+  return Object.prototype.hasOwnProperty.call(BLEND_POOL_WASM_VERSIONS, key)
+    ? BLEND_POOL_WASM_VERSIONS[key]
+    : null
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -99,12 +217,14 @@ export interface BlendReserveEntry {
   assetSymbol: string
   config: BlendReserveConfig
   data: BlendReserveData
-  rateDecimals: number
+  /** Version of the pool this reserve belongs to; selects the scales in BLEND_SCALES. */
+  version: BlendPoolVersion
 }
 
 export interface BlendPoolData {
   poolId: string
   network: NetworkName
+  version: BlendPoolVersion
   backstopRate: bigint
   reserves: BlendReserveEntry[]
 }
@@ -147,33 +267,48 @@ export function calcUtilization(
 }
 
 /**
- * Calculates liabilities and supply from raw b/d tokens and derives utilisation.
- * In Blend:
+ * Converts raw b/d token supplies to underlying amounts, exactly as the pool
+ * contract does (see the source links above the scale table):
  *   totalLiabilities = ceil(dSupply * dRate / 10^rateDecimals)
- *   totalSupply = floor(bSupply * bRate / 10^rateDecimals)
+ *   totalSupply      = floor(bSupply * bRate / 10^rateDecimals)
+ * where rateDecimals comes from the pool's version.
+ */
+function toUnderlyingTotals(
+  dSupply: bigint,
+  dRate: bigint,
+  bSupply: bigint,
+  bRate: bigint,
+  version: BlendPoolVersion
+): { totalLiabilities: bigint; totalSupply: bigint } {
+  const scalar = 10n ** BigInt(BLEND_SCALES[version].rateDecimals)
+  // mulDivCeil(dSupply, dRate, scalar)
+  const dProd = dSupply * dRate
+  const totalLiabilities = dProd / scalar + (dProd % scalar > 0n ? 1n : 0n)
+  // mulDivFloor(bSupply, bRate, scalar)
+  const totalSupply = (bSupply * bRate) / scalar
+  return { totalLiabilities, totalSupply }
+}
+
+/**
+ * Calculates liabilities and supply from raw b/d tokens and derives utilisation,
+ * using the b_rate/d_rate scale of the given pool version.
  */
 export function deriveUtilization(
   dSupply: bigint,
   dRate: bigint,
   bSupply: bigint,
   bRate: bigint,
-  rateDecimals: number = 12
+  version: BlendPoolVersion
 ): number {
-  const scalar = 10n ** BigInt(rateDecimals)
-  // mulDivCeil(dSupply, dRate, scalar)
-  const dProd = dSupply * dRate
-  const liabilities = dProd / scalar + (dProd % scalar > 0n ? 1n : 0n)
-
-  // mulDivFloor(bSupply, bRate, scalar)
-  const supply = (bSupply * bRate) / scalar
-
-  return calcUtilization(liabilities, supply)
+  const { totalLiabilities, totalSupply } = toUnderlyingTotals(dSupply, dRate, bSupply, bRate, version)
+  return calcUtilization(totalLiabilities, totalSupply)
 }
 
 /**
  * Calculates APR and APY for borrowers and suppliers from Blend's 3-tier interest rate curve.
  *
- * Curve specs (scaled by 1e7):
+ * Curve specs (config fields and the backstop take rate are 7 decimals in v1 and v2;
+ * ir_mod is 9 decimals in v1 and 7 in v2, see BLEND_SCALES):
  * - Target utilisation: config.util (usually ~75%)
  * - 95% kink: fixed 95%
  * - Rates: r_base + piecewise slopes (r_one, r_two, r_three) modulated by interestRateModifier
@@ -183,20 +318,24 @@ export function calcInterestRates(
   config: BlendReserveConfig,
   data: BlendReserveData,
   utilization: number,
-  backstopRate: bigint | number = 1_000_000n // default 10% (1e6 / 1e7)
+  backstopRate: bigint | number,
+  version: BlendPoolVersion
 ): { borrowApr: number; supplyApr: number; borrowApy: number; supplyApy: number } {
-  const SCALAR_7 = 10_000_000
+  const scales = BLEND_SCALES[version]
+  const configScalar = 10 ** scales.configDecimals
 
-  const targetUtil = Number(config.util) / SCALAR_7
-  const rBase = Number(config.r_base) / SCALAR_7
-  const rOne = Number(config.r_one) / SCALAR_7
-  const rTwo = Number(config.r_two) / SCALAR_7
-  const rThree = Number(config.r_three) / SCALAR_7
+  const targetUtil = Number(config.util) / configScalar
+  const rBase = Number(config.r_base) / configScalar
+  const rOne = Number(config.r_one) / configScalar
+  const rTwo = Number(config.r_two) / configScalar
+  const rThree = Number(config.r_three) / configScalar
 
-  const rawIrMod = data.ir_mod ?? data.interestRateModifier ?? 10_000_000n
-  const irMod = Number(rawIrMod) / SCALAR_7
+  // A missing modifier is read as 1.0 in this version's scale.
+  const rawIrMod = data.ir_mod ?? data.interestRateModifier ?? 10n ** BigInt(scales.irModDecimals)
+  const irMod = Number(rawIrMod) / 10 ** scales.irModDecimals
 
-  const bstopTake = (typeof backstopRate === 'bigint' ? Number(backstopRate) : backstopRate) / SCALAR_7
+  const bstopTake =
+    (typeof backstopRate === 'bigint' ? Number(backstopRate) : backstopRate) / 10 ** scales.backstopRateDecimals
 
   let borrowApr: number
   if (utilization <= targetUtil) {
@@ -239,18 +378,17 @@ export function deriveReserveRates(
   reserve: BlendReserveEntry,
   backstopRate: bigint
 ): DerivedRates {
+  // A missing rate is read as 1.0 in this pool version's scale.
+  const unitRate = 10n ** BigInt(BLEND_SCALES[reserve.version].rateDecimals)
   const dSupply = reserve.data.d_supply ?? reserve.data.dSupply ?? 0n
-  const dRate = reserve.data.d_rate ?? reserve.data.dRate ?? 10n ** BigInt(reserve.rateDecimals)
+  const dRate = reserve.data.d_rate ?? reserve.data.dRate ?? unitRate
   const bSupply = reserve.data.b_supply ?? reserve.data.bSupply ?? 0n
-  const bRate = reserve.data.b_rate ?? reserve.data.bRate ?? 10n ** BigInt(reserve.rateDecimals)
+  const bRate = reserve.data.b_rate ?? reserve.data.bRate ?? unitRate
 
-  const scalar = 10n ** BigInt(reserve.rateDecimals)
-  const dProd = dSupply * dRate
-  const totalLiabilities = dProd / scalar + (dProd % scalar > 0n ? 1n : 0n)
-  const totalSupply = (bSupply * bRate) / scalar
+  const { totalLiabilities, totalSupply } = toUnderlyingTotals(dSupply, dRate, bSupply, bRate, reserve.version)
 
   const utilization = calcUtilization(totalLiabilities, totalSupply)
-  const rates = calcInterestRates(reserve.config, reserve.data, utilization, backstopRate)
+  const rates = calcInterestRates(reserve.config, reserve.data, utilization, backstopRate, reserve.version)
 
   const assetDecimals = reserve.config.decimals ?? 7
   const assetDivisor = 10 ** assetDecimals
@@ -323,8 +461,21 @@ export async function resolveAssetSymbol(
 // ── Pool State Ingestion ─────────────────────────────────────────────────────
 
 /**
+ * Reads the wasm hash (hex) of a contract instance's executable, or null when
+ * the instance is not a wasm contract (e.g. a Stellar Asset Contract).
+ */
+function instanceWasmHash(instance: xdr.ScContractInstance): string | null {
+  const executable = instance.executable()
+  if (executable.switch() !== xdr.ContractExecutableType.contractExecutableWasm()) return null
+  return Buffer.from(executable.wasmHash()).toString('hex')
+}
+
+/**
  * Fetches raw Blend pool data from Soroban RPC.
- * Returns null if the pool cannot be loaded.
+ * Returns null if the pool cannot be loaded, or if its version cannot be
+ * determined from its wasm hash (see BLEND_POOL_WASM_VERSIONS). A pool of
+ * unknown version is never read with a default scale; the caller counts the
+ * null as a skipped pool.
  */
 export async function fetchBlendPool(
   poolId: string,
@@ -355,6 +506,7 @@ export async function fetchBlendPool(
 
   let reserveList: string[] = []
   let backstopRate = 1_000_000n // default 10%
+  let wasmHash: string | null = null
 
   for (const entry of initialEntries.entries) {
     const cd = entry.val.contractData()
@@ -369,6 +521,7 @@ export async function fetchBlendPool(
       }
     } else if (keyScVal.switch() === xdr.ScValType.scvLedgerKeyContractInstance()) {
       const instance = cd.val().instance()
+      wasmHash = instanceWasmHash(instance)
       const storage = instance.storage()
       if (storage) {
         for (const storageEntry of storage) {
@@ -383,6 +536,15 @@ export async function fetchBlendPool(
         }
       }
     }
+  }
+
+  const version = blendPoolVersionFromWasmHash(wasmHash)
+  if (version === null) {
+    log.warn(
+      { pool: poolId, network, wasmHash },
+      'skipping Blend pool: version could not be determined from its wasm hash'
+    )
+    return null
   }
 
   if (reserveList.length === 0) {
@@ -452,13 +614,14 @@ export async function fetchBlendPool(
       assetSymbol,
       config,
       data,
-      rateDecimals: 12, // Blend v2 uses 12 decimals
+      version,
     })
   }
 
   return {
     poolId,
     network,
+    version,
     backstopRate,
     reserves,
   }
@@ -564,6 +727,7 @@ export const blendAdapter: VenueAdapter<BlendPoolData[], BlendReserveEntry[]> = 
   type: 'Lending Pool',
   description: 'Blend lending pools on Soroban, supply and borrow rates',
   source: 'blend',
+  onChain: true,
   sourceTimeCapability: { status: 'unavailable' },
   // Informational here rather than load-bearing: `derive` returns no price
   // points, so Blend contributes nothing to `/volumes` and never reaches the

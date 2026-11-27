@@ -1,10 +1,19 @@
 import { pgPool } from '../db'
 import { config, type NetworkName } from '../config'
 import type { DecimalFormat } from '../utils/decimals'
+import { getOnChainSources } from '../ingest/venues'
+import { getFailedSources } from '../ingest/sourceFailures'
 
 export const STALENESS_THRESHOLD_SECONDS = 300
 export const HIGH_CONFIDENCE_MAX_AGE_SECONDS = 30
 export const MEDIUM_CONFIDENCE_MAX_AGE_SECONDS = 300
+
+export interface VwapDetailedResult {
+  num: number
+  raw: string
+  stale?: boolean
+  status?: 'ok' | 'stale' | 'unknown'
+}
 
 /**
  * Every query in this module filters on `network`.
@@ -18,16 +27,79 @@ export const MEDIUM_CONFIDENCE_MAX_AGE_SECONDS = 300
  * That is why `network` is a required argument rather than an optional
  * refinement: there is no default that is correct by accident, and a caller
  * that doesn't know which chain it is quoting should refuse rather than guess.
+ *
+ * Sources filtering and health semantics (#652):
+ * - VWAP strictly reads on-chain execution venues via `getOnChainSources()`.
+ *   Centralized exchange (CEX) rows are excluded and cannot move on-chain price.
+ * - Venues currently recorded as failed for this (network, pairKey) via
+ *   `getFailedSources()` are excluded from the volume-weighted aggregate.
+ * - When every on-chain venue has failed or is excluded, the price does not
+ *   silently fall to zero: it returns the last known good on-chain price marked
+ *   stale (`stale: true, status: 'stale'`). If no price point exists, returns 0
+ *   with `status: 'unknown'`.
  */
 export async function calculateVWAPDetailed(
   pairKey: string,
   windowMinutes: number,
   network: NetworkName,
-  source?: 'SDEX' | 'AMM'
-): Promise<{ num: number; raw: string }> {
-  const sourceFilter = source ? `AND source = $4` : ''
-  const params: (string | number)[] = [pairKey, network, windowMinutes]
-  if (source) params.push(source)
+  source?: 'SDEX' | 'AMM' | string
+): Promise<VwapDetailedResult> {
+  const onChainSources = getOnChainSources()
+  const failedSources = getFailedSources(network, pairKey)
+  const failedSet = new Set(failedSources)
+
+  let allowedSources: string[]
+  let sourceClause: string
+  const params: (string | number | string[])[] = [pairKey, network, windowMinutes]
+
+  if (source) {
+    if (!onChainSources.includes(source) || failedSet.has(source)) {
+      allowedSources = []
+    } else {
+      allowedSources = [source]
+      sourceClause = 'AND source = $4'
+      params.push(source)
+    }
+  } else {
+    allowedSources = onChainSources.filter(s => !failedSet.has(s))
+    sourceClause = 'AND source = ANY($4)'
+    params.push(allowedSources)
+  }
+
+  // When every on-chain venue has failed, do not silently become zero (#652).
+  // Return the last good value marked stale within bounded window, or unknown if no recent history exists.
+  if (allowedSources.length === 0) {
+    const candidateSources = source && onChainSources.includes(source) ? [source] : onChainSources
+    const fallbackWindowMinutes = Math.max(windowMinutes, 1440)
+    const lastResult = await pgPool.query(
+      `SELECT price::numeric AS last_price
+       FROM price_points
+       WHERE pair_key = $1
+         AND network = $2
+         AND source = ANY($3)
+         AND COALESCE(observed_at, timestamp) > NOW() - ($4 || ' minutes')::interval
+       ORDER BY COALESCE(observed_at, timestamp) DESC
+       LIMIT 1`,
+      [pairKey, network, candidateSources, fallbackWindowMinutes]
+    )
+
+    if (lastResult.rows.length > 0 && lastResult.rows[0]?.last_price != null) {
+      const raw = String(lastResult.rows[0].last_price)
+      return {
+        num: parseFloat(raw),
+        raw,
+        stale: true,
+        status: 'stale',
+      }
+    }
+
+    return {
+      num: 0,
+      raw: '0',
+      stale: true,
+      status: 'unknown',
+    }
+  }
 
   const result = await pgPool.query(
     `SELECT
@@ -39,20 +111,27 @@ export async function calculateVWAPDetailed(
      WHERE pair_key = $1
        AND network = $2
        AND COALESCE(observed_at, timestamp) > NOW() - ($3 || ' minutes')::interval
-       ${sourceFilter}`,
+       ${sourceClause!}`,
     params
   )
   const raw = String(result.rows[0]?.vwap ?? '0')
-  return { num: parseFloat(raw), raw }
+  const num = parseFloat(raw)
+  return {
+    num,
+    raw,
+    stale: false,
+    status: num > 0 ? 'ok' : 'unknown',
+  }
 }
 
 export async function calculateVWAP(
   pairKey: string,
   windowMinutes: number,
   network: NetworkName,
-  source?: 'SDEX' | 'AMM'
+  source?: 'SDEX' | 'AMM' | string
 ): Promise<number> {
   const detailed = await calculateVWAPDetailed(pairKey, windowMinutes, network, source)
+  if (detailed.stale) return 0
   return detailed.num
 }
 
@@ -64,25 +143,43 @@ export async function calculateOHLCV(
   open: number; high: number; low: number; close: number
   volume: number; tradeCount: number
 }> {
+  const onChainSources = getOnChainSources()
+  const failedSources = new Set(getFailedSources(network, pairKey))
+  const allowedSources = onChainSources.filter(s => !failedSources.has(s))
+
+  if (allowedSources.length === 0) {
+    return {
+      open: 0,
+      high: 0,
+      low: 0,
+      close: 0,
+      volume: 0,
+      tradeCount: 0,
+    }
+  }
+
   const result = await pgPool.query(
     `SELECT
        (SELECT price::numeric FROM price_points
         WHERE pair_key = $1 AND network = $2
           AND COALESCE(observed_at, timestamp) > NOW() - ($3 || ' minutes')::interval
+          AND source = ANY($4)
         ORDER BY COALESCE(observed_at, timestamp) ASC LIMIT 1) AS open,
        MAX(price::numeric) AS high,
        MIN(price::numeric) AS low,
        (SELECT price::numeric FROM price_points
         WHERE pair_key = $1 AND network = $2
           AND COALESCE(observed_at, timestamp) > NOW() - ($3 || ' minutes')::interval
+          AND source = ANY($4)
         ORDER BY COALESCE(observed_at, timestamp) DESC LIMIT 1) AS close,
        SUM(base_volume::numeric) AS volume,
        COUNT(*) AS trade_count
      FROM price_points
      WHERE pair_key = $1
        AND network = $2
-       AND COALESCE(observed_at, timestamp) > NOW() - ($3 || ' minutes')::interval`,
-    [pairKey, network, windowMinutes]
+       AND COALESCE(observed_at, timestamp) > NOW() - ($3 || ' minutes')::interval
+       AND source = ANY($4)`,
+    [pairKey, network, windowMinutes, allowedSources]
   )
   const row = result.rows[0]
   return {
@@ -257,6 +354,11 @@ export async function getAggregatedPrice(
   network: NetworkName,
   options?: { decimalFormat?: DecimalFormat; staleThresholdSeconds?: number }
 ): Promise<AggregatedPriceNumeric | AggregatedPriceString> {
+  const onChainSources = getOnChainSources()
+  const failedSources = getFailedSources(network, pairKey)
+  const failedSet = new Set(failedSources)
+  const healthyOnChainSources = onChainSources.filter(s => !failedSet.has(s))
+
   const [vwap1m, vwap5m, vwap1h, vwap24h, sdexVwap24h, priceChange24h, ammSpotResult, lastTradeResult] = await Promise.all([
     calculateVWAPDetailed(pairKey, 1, network),
     calculateVWAPDetailed(pairKey, 5, network),
@@ -269,44 +371,51 @@ export async function getAggregatedPrice(
     // scan of pool_snapshots, and the price_points subquery that decides which
     // pool ids count as this pair. Filtering only the outer scan would still let
     // a same-named pool on the other chain contribute its price.
-    pgPool.query(
-      `SELECT AVG(spot_price::numeric) AS amm_price
-       FROM (
-         SELECT DISTINCT ON (ps.pool_id) ps.spot_price
-         FROM pool_snapshots ps
-         WHERE ps.network = $2
-           AND ps.pool_id IN (
-             SELECT DISTINCT pool_id FROM price_points
-             WHERE pair_key = $1 AND network = $2 AND source = 'AMM' AND pool_id IS NOT NULL
-           )
-         ORDER BY ps.pool_id, ps.timestamp DESC
-       ) latest`,
-      [pairKey, network]
-    ),
-    // Last trade timestamp and input count
-    pgPool.query(
-      `SELECT MAX(timestamp) as last_trade, COUNT(*) as input_count FROM price_points
-       WHERE pair_key = $1 AND network = $2`,
-      [pairKey, network]
-    ),
+    failedSet.has('AMM')
+      ? Promise.resolve({ rows: [] })
+      : pgPool.query(
+          `SELECT AVG(spot_price::numeric) AS amm_price
+           FROM (
+             SELECT DISTINCT ON (ps.pool_id) ps.spot_price
+             FROM pool_snapshots ps
+             WHERE ps.network = $2
+               AND ps.pool_id IN (
+                 SELECT DISTINCT pool_id FROM price_points
+                 WHERE pair_key = $1 AND network = $2 AND source = 'AMM' AND pool_id IS NOT NULL
+               )
+             ORDER BY ps.pool_id, ps.timestamp DESC
+           ) latest`,
+          [pairKey, network]
+        ),
+    // Last trade timestamp and input count from healthy on-chain execution venues
+    healthyOnChainSources.length === 0
+      ? Promise.resolve({ rows: [{ last_trade: null, input_count: '0' }] })
+      : pgPool.query(
+          `SELECT MAX(timestamp) as last_trade, COUNT(*) as input_count FROM price_points
+           WHERE pair_key = $1 AND network = $2 AND source = ANY($3)`,
+          [pairKey, network, healthyOnChainSources]
+        ),
   ])
 
-  const volResult = await pgPool.query(
-    `WITH per_source AS (
-       SELECT
-         source,
-         SUM(base_volume::numeric) AS vol
-       FROM price_points
-       WHERE pair_key = $1
-         AND network = $2
-         AND COALESCE(observed_at, timestamp) > NOW() - INTERVAL '24 hours'
-       GROUP BY source
-     )
-     SELECT source, vol FROM per_source
-     UNION ALL
-     SELECT 'TOTAL' AS source, COALESCE(SUM(vol)::numeric, 0) AS vol FROM per_source`,
-    [pairKey, network]
-  )
+  const volResult = healthyOnChainSources.length === 0
+    ? { rows: [] }
+    : await pgPool.query(
+        `WITH per_source AS (
+           SELECT
+             source,
+             SUM(base_volume::numeric) AS vol
+           FROM price_points
+           WHERE pair_key = $1
+             AND network = $2
+             AND source = ANY($3)
+             AND COALESCE(observed_at, timestamp) > NOW() - INTERVAL '24 hours'
+           GROUP BY source
+         )
+         SELECT source, vol FROM per_source
+         UNION ALL
+         SELECT 'TOTAL' AS source, COALESCE(SUM(vol)::numeric, 0) AS vol FROM per_source`,
+        [pairKey, network, healthyOnChainSources]
+      )
 
   let sdexVolume24hRaw = '0'
   let ammVolume24hRaw = '0'
@@ -330,14 +439,17 @@ export async function getAggregatedPrice(
   }
   const volume24h = parseFloat(totalVolume24hRaw)
 
-  const sourcesResult = await pgPool.query(
-    `SELECT COUNT(DISTINCT COALESCE(pool_id, 'sdex')) AS sources
-     FROM price_points
-     WHERE pair_key = $1
-       AND network = $2
-       AND COALESCE(observed_at, timestamp) > NOW() - INTERVAL '1 hour'`,
-    [pairKey, network]
-  )
+  const sourcesResult = healthyOnChainSources.length === 0
+    ? { rows: [{ sources: '0' }] }
+    : await pgPool.query(
+        `SELECT COUNT(DISTINCT COALESCE(pool_id, 'sdex')) AS sources
+         FROM price_points
+         WHERE pair_key = $1
+           AND network = $2
+           AND source = ANY($3)
+           AND COALESCE(observed_at, timestamp) > NOW() - INTERVAL '1 hour'`,
+        [pairKey, network, healthyOnChainSources]
+      )
 
   const ammPriceRaw = String(ammSpotResult.rows[0]?.amm_price ?? '0')
   const ammPrice = parseFloat(ammPriceRaw)
@@ -355,6 +467,20 @@ export async function getAggregatedPrice(
     ?? (config as any).pricing?.staleThresholdSeconds
     ?? parseInt(process.env.PRICE_STALE_THRESHOLD_SECONDS ?? process.env.STALENESS_BOUND_SECONDS ?? '300', 10)
 
+  const isString = options?.decimalFormat === 'string'
+  const guardStr = (r: VwapDetailedResult) => (r.num > 0 && !r.stale ? r.raw : '0')
+  const guardNum = (r: VwapDetailedResult) => (r.num > 0 && !r.stale ? r.num : 0)
+
+  const stringPrice = (vwap1h.num > 0 && !vwap1h.stale ? vwap1h.raw : null)
+    ?? (vwap24h.num > 0 && !vwap24h.stale ? vwap24h.raw : null)
+    ?? (ammPrice > 0 ? ammPriceRaw : null)
+    ?? '0'
+
+  const numericPrice = (vwap1h.num > 0 && !vwap1h.stale ? vwap1h.num : 0)
+    || (vwap24h.num > 0 && !vwap24h.stale ? vwap24h.num : 0)
+    || ammPrice
+    || 0
+
   let confidence: 'high' | 'medium' | 'low' | 'unknown' = 'unknown'
   if (lastTradeAgeSeconds === null) {
     confidence = 'unknown'
@@ -366,27 +492,21 @@ export async function getAggregatedPrice(
     confidence = 'low'
   }
 
-  const stale = lastTradeAgeSeconds !== null && lastTradeAgeSeconds >= staleThreshold
-
-  const isString = options?.decimalFormat === 'string'
+  const isStaleByTime = lastTradeAgeSeconds !== null && lastTradeAgeSeconds >= staleThreshold
+  const stale = isStaleByTime || vwap1h.stale === true
 
   if (isString) {
-    const stringPrice = (vwap1h.num > 0 ? vwap1h.raw : null)
-      ?? (vwap24h.num > 0 ? vwap24h.raw : null)
-      ?? (ammPrice > 0 ? ammPriceRaw : null)
-      ?? '0'
-
     return {
       price: stringPrice,
-      sdexPrice: sdexVwap24h.raw,
+      sdexPrice: guardStr(sdexVwap24h),
       ammPrice: ammPriceRaw,
       volume24h: totalVolume24hRaw,
       sdexVolume24h: sdexVolume24hRaw,
       ammVolume24h: ammVolume24hRaw,
-      vwap1m: vwap1m.raw,
-      vwap5m: vwap5m.raw,
-      vwap1h: vwap1h.raw,
-      vwap24h: vwap24h.raw,
+      vwap1m: guardStr(vwap1m),
+      vwap5m: guardStr(vwap5m),
+      vwap1h: guardStr(vwap1h),
+      vwap24h: guardStr(vwap24h),
       priceChange24h: priceChange24h.raw,
       sources,
       confidence,
@@ -399,16 +519,16 @@ export async function getAggregatedPrice(
   }
 
   return {
-    price: vwap1h.num || vwap24h.num || ammPrice || 0,
-    sdexPrice: sdexVwap24h.num,
+    price: numericPrice,
+    sdexPrice: guardNum(sdexVwap24h),
     ammPrice,
     volume24h,
     sdexVolume24h,
     ammVolume24h,
-    vwap1m: vwap1m.num,
-    vwap5m: vwap5m.num,
-    vwap1h: vwap1h.num,
-    vwap24h: vwap24h.num,
+    vwap1m: guardNum(vwap1m),
+    vwap5m: guardNum(vwap5m),
+    vwap1h: guardNum(vwap1h),
+    vwap24h: guardNum(vwap24h),
     priceChange24h: priceChange24h.num,
     sources,
     confidence,

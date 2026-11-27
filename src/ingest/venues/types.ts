@@ -45,6 +45,8 @@ export interface VenueAdapter<TTarget = any, TRaw = any> {
   readonly classification: VenueClassification
   /** Kind is descriptive metadata used by API projections, not the runner. */
   readonly kind?: VenueKind
+  /** Whether this venue adapter represents an on-chain venue rather than a centralized off-chain exchange. */
+  readonly onChain?: boolean
 
   /**
    * How this venue is described in the README's generated venue table (#229):
