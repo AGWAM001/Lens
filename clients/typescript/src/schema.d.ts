@@ -523,7 +523,7 @@ export interface paths {
         };
         /**
          * Get venue price dispersion and outlier attribution for a pair
-         * @description Returns cross-venue price dispersion history and outlier attribution for a pair over time, including median, max absolute percentage deviation, spread in basis points, and outlying venue.
+         * @description Returns cross-venue price dispersion history and outlier attribution for a pair over time, including median, max absolute percentage deviation, spread in basis points, and outlying venue. The two assets are resolved against the pairs watched on the requested network (`native` means XLM, codes are case-insensitive, an issuer is honoured when given), and `pairKey` in the response is the watched pair's stored key, e.g. `USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN/XLM`. A pair that is not watched is a 404.
          */
         get: operations["getPairDispersion"];
         put?: never;
@@ -3536,7 +3536,7 @@ export interface operations {
                 from?: string;
                 /** @description End timestamp (ISO-8601) */
                 to?: string;
-                /** @description Max number of history records to return */
+                /** @description Max number of history records to return. Values above 500 are rejected with 400. */
                 limit?: number;
             };
             header?: never;
@@ -3571,8 +3571,15 @@ export interface operations {
                     };
                 };
             };
-            /** @description Invalid request parameters */
+            /** @description Invalid request parameters (including `from` later than `to`, or `limit` above 500) */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Pair is not watched on the requested network (`unwatched_pair`) */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3591,12 +3598,13 @@ export interface operations {
     listDispersion: {
         parameters: {
             query?: {
-                /** @description Optional pair key filter (e.g. XLM/USDC) */
+                /** @description Optional pair filter as `assetA/assetB` (e.g. XLM/USDC; each side a code, `native` or CODE:ISSUER), resolved to the watched pair's key. A pair that is not watched is a 404. */
                 pair?: string;
                 /** @description Stellar network to answer for — `testnet` or `mainnet`. Defaults to this instance's configured `STELLAR_NETWORK`. An unrecognised value is rejected with 400. DB-backed reads are currently served from whichever network this instance indexes, even when another is requested. */
                 network?: components["parameters"]["NetworkQuery"];
                 from?: string;
                 to?: string;
+                /** @description Max number of records to return. Values above 500 are rejected with 400. */
                 limit?: number;
             };
             header?: never;
@@ -3619,8 +3627,15 @@ export interface operations {
                     };
                 };
             };
-            /** @description Invalid request parameters */
+            /** @description Invalid request parameters (including `from` later than `to`, or `limit` above 500) */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Pair is not watched on the requested network (`unwatched_pair`) */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
