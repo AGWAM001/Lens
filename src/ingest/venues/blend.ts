@@ -11,6 +11,7 @@
 import { runCycleWithDeadline } from '../cycleDeadline'
 import {
   Address,
+  Asset,
   xdr,
   scValToNative,
   Contract,
@@ -38,17 +39,29 @@ const FEE_PAYER_KEYPAIR = Keypair.random()
 // ── In-memory caches ─────────────────────────────────────────────────────────
 const assetSymbolCache = new Map<string, string>()
 
-// Common known Stellar tokens on Mainnet and Testnet
-const KNOWN_ASSET_SYMBOLS: Record<string, string> = {
-  // Mainnet
-  CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EZH3MS2UY7: 'XLM',
-  CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC: 'XLM',
-  CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75: 'USDC',
-  CD252NPIMBFLRLNYWVDZEPISECT7NWGCVME5BC2Z5AOZ2MQ27AC7T5NX: 'BLND',
-  CA4NZURNP4MWX5CW74WPUEX44WJ4PB7BR4A362XW3J24TF3J77Y7H6K7: 'wETH',
-  // Testnet
-  CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWUIE3USOPWWYPYYOB7: 'USDC',
-}
+// Tokens the adapter names without asking the network.
+//
+// Every id here is DERIVED from the asset's code and issuer, never typed in. A
+// Stellar asset's token contract id is a pure function of the asset and the
+// network, so it cannot be mistyped this way. The hand-written list this
+// replaces had four invalid ids out of six (including mainnet XLM), which made
+// each lookup fall through to a network call and name the reserve by whatever
+// the token contract says about itself.
+//
+// Mainnet XLM, USDC and EURC are the three reserves of Blend Fixed V2
+// (CAJJZSGMMM3PD7N33TAPHGBUGTB43OC73HVIK2L2G6BNGGGYOSSYBXBD), read from the pool
+// on chain. Add a token only with its issuer, so it is derived like the rest.
+const USDC_MAINNET_ISSUER = 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN'
+const EURC_MAINNET_ISSUER = 'GDHU6WRG4IEQXM5NZ4BMPKOXHW76MZM4Y2IEMFDVXBSDP6SJY4ITNPP2'
+const USDC_TESTNET_ISSUER = 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5'
+
+export const KNOWN_ASSET_SYMBOLS: Readonly<Record<string, string>> = Object.freeze({
+  [Asset.native().contractId(Networks.PUBLIC)]: 'XLM',
+  [new Asset('USDC', USDC_MAINNET_ISSUER).contractId(Networks.PUBLIC)]: 'USDC',
+  [new Asset('EURC', EURC_MAINNET_ISSUER).contractId(Networks.PUBLIC)]: 'EURC',
+  [Asset.native().contractId(Networks.TESTNET)]: 'XLM',
+  [new Asset('USDC', USDC_TESTNET_ISSUER).contractId(Networks.TESTNET)]: 'USDC',
+})
 
 // ── Test helper hooks matching reference adapter structure ───────────────────
 export function _resetLastPrice(): void {
