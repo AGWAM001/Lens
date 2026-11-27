@@ -3,6 +3,8 @@ import { pgPool } from '../db'
 import { activeNetwork, type NetworkName } from '../config'
 import { getEnabledNetworks } from '../network/enabledNetworks'
 import { createLogger } from '../logger'
+import { runJob, recordJobRowsDeleted } from './jobMetrics'
+import { scheduleRetentionJob } from './scheduleRetentionJob'
 
 const log = createLogger('job:oracle-retention')
 
@@ -66,6 +68,7 @@ export async function pruneOldOracleComparisons(
 
     totalPruned += pruned
     batchNumber += 1
+    recordJobRowsDeleted('oracle-retention', network, pruned)
     log.info(
       { network, batch: batchNumber, rows: pruned, total: totalPruned },
       'pruned oracle comparisons retention batch'
@@ -88,7 +91,12 @@ export async function pruneAllNetworksOracleComparisons(
   const errors: Error[] = []
   for (const network of getEnabledNetworks()) {
     try {
-      counts[network] = await pruneOldOracleComparisons(retentionDays, network)
+      // Recorded per network, here, so both the queue worker below and any
+      // in-process caller report the same run — wrapping in a caller would
+      // double-count it.
+      counts[network] = await runJob('oracle-retention', network, () =>
+        pruneOldOracleComparisons(retentionDays, network)
+      )
     } catch (err) {
       errors.push(new Error(`${network}: ${(err as Error).message}`))
     }
@@ -100,25 +108,31 @@ export async function pruneAllNetworksOracleComparisons(
 }
 
 export function createOracleRetentionQueue() {
-  return new Queue(QUEUE_NAME, { connection: redisConnection() })
+  // One attempt, pinned: BullMQ's default is already 1, but a failed hourly
+  // run must be stored as failed, not retried forever — the next repeat
+  // fires on schedule. See src/jobs/jobMetrics.ts.
+  return new Queue(QUEUE_NAME, {
+    connection: redisConnection(),
+    defaultJobOptions: { attempts: 1 },
+  })
 }
 
 export function startOracleRetentionWorker() {
   const worker = new Worker(
     QUEUE_NAME,
     async () => {
-      try {
-        const counts = await pruneAllNetworksOracleComparisons()
-        for (const [network, pruned] of Object.entries(counts)) {
-          if (pruned && pruned > 0) {
-            log.info(
-              { network, pruned, retentionDays: ORACLE_COMPARISON_RETENTION_DAYS },
-              'pruned oracle comparisons older than retention window'
-            )
-          }
+      // No try/catch: runJob() inside pruneAllNetworksOracleComparisons()
+      // already records the failure per network, and this handler must
+      // reject so BullMQ stores the job as failed (worker.on('failed')
+      // below can then fire).
+      const counts = await pruneAllNetworksOracleComparisons()
+      for (const [network, pruned] of Object.entries(counts)) {
+        if (pruned && pruned > 0) {
+          log.info(
+            { network, pruned, retentionDays: ORACLE_COMPARISON_RETENTION_DAYS },
+            'pruned oracle comparisons older than retention window'
+          )
         }
-      } catch (err) {
-        log.error({ err }, 'oracle comparisons prune failed')
       }
     },
     { connection: redisConnection(), concurrency: 1 }
@@ -131,11 +145,7 @@ export function startOracleRetentionWorker() {
   return worker
 }
 
+/** Schedules the oracle comparisons prune to run hourly (and once on startup). */
 export async function scheduleOracleRetention(queue: Queue) {
-  await queue.add(
-    'prune',
-    {},
-    { repeat: { every: 60 * 60 * 1000 }, jobId: 'oracle-retention:prune' }
-  )
-  await queue.add('prune', {})
+  await scheduleRetentionJob(queue, { jobName: 'prune', jobId: 'oracle-retention:prune' })
 }

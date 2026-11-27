@@ -10,6 +10,8 @@ import {
   type PartitionRetentionResult,
 } from '../partitioning/pricePoints'
 import { createLogger } from '../logger'
+import { runJob } from './jobMetrics'
+import { scheduleRetentionJob } from './scheduleRetentionJob'
 
 const log = createLogger('job:price-points-partition')
 
@@ -32,7 +34,13 @@ function redisConnection() {
 }
 
 export function createPricePointsPartitionQueue() {
-  return new Queue(QUEUE_NAME, { connection: redisConnection() })
+  // One attempt, pinned: BullMQ's default is already 1, but a failed hourly
+  // run must be stored as failed, not retried forever — the next repeat
+  // fires on schedule. See src/jobs/jobMetrics.ts.
+  return new Queue(QUEUE_NAME, {
+    connection: redisConnection(),
+    defaultJobOptions: { attempts: 1 },
+  })
 }
 
 export interface PartitionMaintenanceResult {
@@ -53,44 +61,51 @@ export async function runPricePointsMaintenance(
   precreateDays: number = PRICE_POINTS_PRECREATE_DAYS,
   dropExpired: boolean = PRICE_POINTS_DROP_EXPIRED
 ): Promise<PartitionMaintenanceResult> {
-  const creationRes: PartitionCreationResult = await ensurePricePointsPartitions(pgPool, {
-    precreateDays,
-    daysBack: 1, // ensure today and yesterday are guaranteed
+  // Recorded here, so both the queue worker below and the in-process
+  // fallback timer in src/index.ts (safeMaintainPartitions) report the
+  // same run — wrapping in either caller would double-count it. Partition
+  // maintenance is one global run, not one per network (partitions are cut
+  // by timestamp across all networks), so it is labelled with the active
+  // network its queue is pinned to, matching QUEUE_NAME above.
+  return runJob('price-points-partition', activeNetwork, async () => {
+    const creationRes: PartitionCreationResult = await ensurePricePointsPartitions(pgPool, {
+      precreateDays,
+      daysBack: 1, // ensure today and yesterday are guaranteed
+    })
+
+    let retentionRes: PartitionRetentionResult = { dropped: [], retained: [] }
+    if (dropExpired) {
+      retentionRes = await dropExpiredPricePointsPartitions(
+        pgPool,
+        retentionDays
+      )
+    }
+
+    return {
+      created: creationRes.created,
+      existing: creationRes.existing,
+      dropped: retentionRes.dropped,
+      retained: retentionRes.retained,
+    }
   })
-
-  let retentionRes: PartitionRetentionResult = { dropped: [], retained: [] }
-  if (dropExpired) {
-    retentionRes = await dropExpiredPricePointsPartitions(
-      pgPool,
-      retentionDays
-    )
-  }
-
-  return {
-    created: creationRes.created,
-    existing: creationRes.existing,
-    dropped: retentionRes.dropped,
-    retained: retentionRes.retained,
-  }
 }
 
 export function startPricePointsPartitionWorker() {
   const worker = new Worker(
     QUEUE_NAME,
     async () => {
-      try {
-        const result = await runPricePointsMaintenance()
-        if (result.created.length > 0) {
-          log.info({ count: result.created.length, partitions: result.created }, 'pre-created price_points partitions')
-        }
-        if (result.dropped.length > 0) {
-          log.info(
-            { count: result.dropped.length, partitions: result.dropped, retentionDays: PRICE_POINTS_RETENTION_DAYS },
-            'dropped expired price_points partitions',
-          )
-        }
-      } catch (err) {
-        log.error({ err }, 'price_points partition maintenance failed')
+      // No try/catch: runJob() inside runPricePointsMaintenance() already
+      // records the failure, and this handler must reject so BullMQ stores
+      // the job as failed (worker.on('failed') below can then fire).
+      const result = await runPricePointsMaintenance()
+      if (result.created.length > 0) {
+        log.info({ count: result.created.length, partitions: result.created }, 'pre-created price_points partitions')
+      }
+      if (result.dropped.length > 0) {
+        log.info(
+          { count: result.dropped.length, partitions: result.dropped, retentionDays: PRICE_POINTS_RETENTION_DAYS },
+          'dropped expired price_points partitions',
+        )
       }
     },
     { connection: redisConnection(), concurrency: 1 }
@@ -105,10 +120,5 @@ export function startPricePointsPartitionWorker() {
 
 /** Schedules partition maintenance to run every hour and once immediately on startup */
 export async function schedulePricePointsPartitionMaintenance(queue: Queue) {
-  await queue.add(
-    'maintain',
-    {},
-    { repeat: { every: 60 * 60 * 1000 }, jobId: 'price-points-partition:maintain' }
-  )
-  await queue.add('maintain', {})
+  await scheduleRetentionJob(queue, { jobName: 'maintain', jobId: 'price-points-partition:maintain' })
 }

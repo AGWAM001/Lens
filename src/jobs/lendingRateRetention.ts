@@ -3,6 +3,8 @@ import { pgPool } from '../db'
 import { activeNetwork, type NetworkName } from '../config'
 import { getEnabledNetworks } from '../network/enabledNetworks'
 import { createLogger } from '../logger'
+import { runJob, recordJobRowsDeleted } from './jobMetrics'
+import { scheduleRetentionJob } from './scheduleRetentionJob'
 
 const log = createLogger('job:rate-retention')
 
@@ -27,7 +29,13 @@ function redisConnection() {
 }
 
 export function createRateRetentionQueue() {
-  return new Queue(QUEUE_NAME, { connection: redisConnection() })
+  // One attempt, pinned: BullMQ's default is already 1, but a failed hourly
+  // run must be stored as failed, not retried forever — the next repeat
+  // fires on schedule. See src/jobs/jobMetrics.ts.
+  return new Queue(QUEUE_NAME, {
+    connection: redisConnection(),
+    defaultJobOptions: { attempts: 1 },
+  })
 }
 
 /**
@@ -68,6 +76,7 @@ export async function pruneOldRates(
 
     totalPruned += pruned
     batchNumber += 1
+    recordJobRowsDeleted('rate-retention', network, pruned)
     log.info({ network, batch: batchNumber, batchRows: pruned, totalPruned }, 'pruned lending rate batch')
     onProgress?.({ network, batch: batchNumber, batchRows: pruned, totalPruned })
 
@@ -89,7 +98,12 @@ export async function pruneAllRateNetworks(
   const errors: Error[] = []
   for (const network of getEnabledNetworks()) {
     try {
-      counts[network] = await pruneOldRates(retentionDays, network)
+      // Recorded per network, here, so both the queue worker below and the
+      // in-process fallback timer in src/index.ts (safeRatePrune) report the
+      // same run — wrapping in either caller would double-count it.
+      counts[network] = await runJob('rate-retention', network, () =>
+        pruneOldRates(retentionDays, network)
+      )
     } catch (err) {
       errors.push(new Error(`${network}: ${(err as Error).message}`))
     }
@@ -104,13 +118,12 @@ export function startRateRetentionWorker() {
   const worker = new Worker(
     QUEUE_NAME,
     async () => {
-      try {
-        const counts = await pruneAllRateNetworks()
-        for (const [network, pruned] of Object.entries(counts)) {
-          if (pruned > 0) log.info({ network, pruned, retentionDays: RATE_RETENTION_DAYS }, 'pruned old lending rates')
-        }
-      } catch (err) {
-        log.error({ err }, 'lending rate prune failed')
+      // No try/catch: runJob() inside pruneAllRateNetworks() already records
+      // the failure per network, and this handler must reject so BullMQ
+      // stores the job as failed (worker.on('failed') below can then fire).
+      const counts = await pruneAllRateNetworks()
+      for (const [network, pruned] of Object.entries(counts)) {
+        if (pruned > 0) log.info({ network, pruned, retentionDays: RATE_RETENTION_DAYS }, 'pruned old lending rates')
       }
     },
     { connection: redisConnection(), concurrency: 1 }
@@ -125,10 +138,5 @@ export function startRateRetentionWorker() {
 
 /** Schedules the rate retention prune to run hourly (and once on startup). */
 export async function scheduleRateRetention(queue: Queue) {
-  await queue.add(
-    'prune',
-    {},
-    { repeat: { every: 60 * 60 * 1000 }, jobId: 'rate-retention:prune' }
-  )
-  await queue.add('prune', {})
+  await scheduleRetentionJob(queue, { jobName: 'prune', jobId: 'rate-retention:prune' })
 }

@@ -9,7 +9,7 @@ import { config, getNetworkConfig, type NetworkName } from './config'
 import { getEnabledNetworks } from './network/enabledNetworks'
 import { createLogger } from './logger'
 import { redis } from './redis'
-import { pgPool } from './db'
+import { checkDatabaseReachable, pgPool } from './db'
 import { assertSchemaValid } from './db/schemaVerify'
 import { applyMigrations } from './db/migrate'
 import { buildApp } from './app'
@@ -75,7 +75,12 @@ async function main() {
     log.warn({ err }, 'redis unavailable, continuing without cache')
   }
 
-  await pgPool.connect()
+  try {
+    await checkDatabaseReachable()
+  } catch (err) {
+    log.error({ err }, 'postgresql unreachable')
+    throw err
+  }
   log.info('postgresql connected')
 
   // Verify database schema matches expected tables and columns (#352)
@@ -142,6 +147,11 @@ async function main() {
   // schedule. If Redis is away, fall back to a plain timer that does the same
   // work in-process.
   const safePrune = async () => {
+    // This fallback run is metered the same way as the queue worker:
+    // pruneAllNetworks() records each network's run through runJob()
+    // (src/jobs/jobMetrics.ts), so no second wrapper here — it would
+    // double-count. The catch stays because a timer has no BullMQ to
+    // report the failure to; the run is already counted as a failure.
     try {
       const counts = await pruneAllNetworks()
       for (const [network, pruned] of Object.entries(counts)) {
@@ -220,6 +230,10 @@ async function main() {
 
   // ── Lending rate retention ────────────────────────────────────────────────
   const safeRatePrune = async () => {
+    // Metered per network inside pruneAllRateNetworks() (src/jobs/jobMetrics.ts),
+    // exactly as for the queue worker — no second wrapper here, it would
+    // double-count. The catch stays because a timer has no BullMQ to
+    // report the failure to; the run is already counted as a failure.
     try {
       const counts = await pruneAllRateNetworks()
       for (const [network, pruned] of Object.entries(counts)) {
@@ -252,9 +266,13 @@ async function main() {
   // ── Audit table retention ───────────────────────────────────────────────
   // venue_dispersions, quarantined_price_points and oracle_publications are
   // append-only audit records with writers but, until now, no clean-up. Like
-  // the other retention jobs: prune once here, unconditionally, then try the
+  // the other retention jobs the prune runs once at boot and then on the
   // BullMQ schedule — losing Redis must not mean losing retention, so fall
   // back to a plain hourly in-process timer when the queue is unavailable.
+  // Unlike the other jobs the boot prune is NOT awaited: a cold prune works
+  // through three audit tables pair by pair with pauses between batches and
+  // can take a long time on a large backlog, and boot must not wait on it.
+  // safeAuditPrune catches its own errors, so the floating promise is safe.
   const safeAuditPrune = async () => {
     try {
       const counts = await pruneAllAuditTables()
@@ -270,7 +288,7 @@ async function main() {
     }
   }
 
-  await safeAuditPrune()
+  void safeAuditPrune()
 
   {
     let auditRetentionQueue: ReturnType<typeof createAuditRetentionQueue> | undefined
@@ -293,6 +311,10 @@ async function main() {
   // expired partitions is opt-in via PRICE_POINTS_DROP_EXPIRED=true (default: off)
   // to safeguard raw historical records until rollups are complete (#231).
   const safeMaintainPartitions = async () => {
+    // Metered inside runPricePointsMaintenance() (src/jobs/jobMetrics.ts),
+    // exactly as for the queue worker — no second wrapper here, it would
+    // double-count. The catch stays because a timer has no BullMQ to
+    // report the failure to; the run is already counted as a failure.
     try {
       const result = await runPricePointsMaintenance()
       if (result.created.length > 0) {
