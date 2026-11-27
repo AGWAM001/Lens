@@ -149,6 +149,10 @@ describe('Multi-Currency Fiat Pricing (#290, #674)', () => {
       'mainnet',
       expect.arrayContaining(['USDC', 'USD']),
     ])
+    expect(pgPool.query).toHaveBeenCalledWith(
+      expect.stringContaining('network = $2'),
+      [expect.any(String), 'mainnet', expect.any(Number)]
+    )
   })
 
   it('converts XLM to Nigerian Naira (NGN) via base USD cross-rate', async () => {

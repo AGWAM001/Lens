@@ -21,6 +21,8 @@ import { createAggregateQueue, startAggregateWorker, scheduleAggregateRefresh } 
 import { createSnapshotRetentionQueue, startSnapshotRetentionWorker, scheduleSnapshotRetention, pruneAllNetworks, SNAPSHOT_RETENTION_DAYS } from './jobs/snapshotRetention'
 import { createVenueReconciliationQueue, startVenueReconciliationWorker, scheduleVenueReconciliation, startInProcessVenueReconciliation } from './jobs/venueReconciliation'
 import { createRateRetentionQueue, startRateRetentionWorker, scheduleRateRetention, pruneAllRateNetworks, RATE_RETENTION_DAYS } from './jobs/lendingRateRetention'
+import { POOL_SNAPSHOT_RETENTION_ENABLED, poolSnapshotRetentionJob } from './jobs/poolSnapshotRetention'
+import { startScheduledJob } from './jobs/scheduledJob'
 import {
   createPricePointsPartitionQueue,
   startPricePointsPartitionWorker,
@@ -262,6 +264,22 @@ async function main() {
     }
   }
 
+  // ── Pool snapshot retention (opt-in) ──────────────────────────────────────
+  // Off unless POOL_SNAPSHOT_RETENTION_ENABLED=true: the prune deletes rows,
+  // cannot be undone, and pool_snapshots has never been pruned before (#689).
+  //
+  // Not awaited: startup must not wait on a prune or on Redis. The first run
+  // is delayed, and each run drains in paused, capped batches, so a large
+  // backlog is worked off over several hourly runs in the background while
+  // the ingesters start and /ready goes healthy as usual.
+  if (POOL_SNAPSHOT_RETENTION_ENABLED) {
+    void startScheduledJob(poolSnapshotRetentionJob).catch(err => {
+      log.error({ err }, 'pool snapshot retention could not be scheduled')
+    })
+  } else {
+    log.info('pool snapshot retention disabled; set POOL_SNAPSHOT_RETENTION_ENABLED=true to prune pool_snapshots')
+  }
+
   // ── Price points partition maintenance & retention ────────────────────────
   // price_points is range-partitioned by timestamp. We pre-create future partitions
   // ahead of need so ingesters never fail on unmapped timestamp ranges. Dropping
@@ -374,10 +392,13 @@ async function main() {
     }
   }
 
-  log.info(
-    { count: getActivePairs().length, pairs: getActivePairs().map(p => p.pairKey) },
-    'watching pairs'
-  )
+  for (const network of enabledNetworks) {
+    const pairs = getActivePairs(network)
+    log.info(
+      { network, count: pairs.length, pairs: pairs.map(p => p.pairKey) },
+      'watching pairs'
+    )
+  }
 
   // ── Ready ──────────────────────────────────────────────────────────────────
   // Last, and only once every ingester above is running. `app.listen()` happens

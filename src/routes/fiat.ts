@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify'
 import { activeNetwork } from '../config'
-import { pgPool } from '../db'
+import { parseAssetRef, usdPriceOf } from '../pricing/usdPrice'
 import { apiError } from '../errors'
 import { createLogger } from '../logger'
 import { normalizeAssetCode } from './tvl'
@@ -163,6 +163,8 @@ export async function registerFiatRoutes(app: FastifyInstance) {
     const network = req.network ?? activeNetwork
 
     // Fetch the asset's dollar price from a named dollar-stablecoin pair.
+    // Fetch base USD price for asset through a configured USD-pegged pair.
+    const ref = parseAssetRef(asset) ?? { code: asset }
     let baseUsdPrice: number | null = null
     let usdPair: string | null = null
     let usdSource: string | null = null
@@ -226,6 +228,11 @@ export async function registerFiatRoutes(app: FastifyInstance) {
         return reply
           .status(404)
           .send(apiError('unknown_pair', `No dollar price available for ${asset}: no watched pair against ${DOLLAR_STABLECOIN_CODES.join(' or ')}`))
+    try {
+      const usd = await usdPriceOf(ref, network, 24 * 60)
+      if (usd.price !== null) {
+        const parsed = parseFloat(usd.price)
+        if (!isNaN(parsed) && parsed > 0) baseUsdPrice = parsed
       }
 
       // `price` in price_points is the price of asset_a in terms of asset_b.
@@ -241,6 +248,8 @@ export async function registerFiatRoutes(app: FastifyInstance) {
       // Lens price points — which is where this number did come from.
       usdSource = row.source ?? 'lens_vwap'
       priceTimestamp = row.price_timestamp != null ? new Date(row.price_timestamp).toISOString() : null
+    if (baseUsdPrice === null || isNaN(baseUsdPrice) || baseUsdPrice <= 0) {
+      baseUsdPrice = FALLBACK_USD_PRICES[ref.code.toUpperCase()] ?? 0.125
     }
 
     const fiatPerUsd = rateTable.rates[currencyStr]

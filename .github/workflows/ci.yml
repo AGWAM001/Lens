@@ -112,3 +112,11 @@ jobs:
 
       - name: Prove generate / apply / rollback on a clean database
         run: bash scripts/db-migration-cycle.sh
+
+      - name: Run the real-Postgres test suites against the migrated database
+        # *.pg.test.ts suites are skipped by `npm test` and only run with
+        # LENS_DB_TESTS=1 against a throwaway database. This job has one, freshly
+        # reset to the committed migrations by the step above.
+        env:
+          LENS_DB_TESTS: '1'
+        run: npx vitest run .pg.test.ts

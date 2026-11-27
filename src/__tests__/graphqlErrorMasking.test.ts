@@ -6,7 +6,10 @@ vi.mock('../redis', () => ({ getCachedPrice: vi.fn() }))
 vi.mock('../db', () => ({ pgPool: { query: vi.fn() } }))
 vi.mock('../aggregator/vwap', () => ({ getAggregatedPrice: vi.fn() }))
 vi.mock('../aggregator/bestRoute', () => ({ getBestRoute: vi.fn() }))
-vi.mock('../config', () => ({ config: { pairs: [] }, activeNetwork: 'testnet' }))
+vi.mock('../config', () => {
+  const pairs = [{ pairKey: 'XLM/USDC', assetA: { code: 'XLM', issuer: null }, assetB: { code: 'USDC', issuer: null } }]
+  return { config: { pairs }, activeNetwork: 'testnet', getNetworkConfig: () => ({ pairs }) }
+})
 
 import { registerGraphQL } from '../api/graphql'
 import { pgPool } from '../db'

@@ -184,7 +184,11 @@ paths:
         - name: window
           in: query
           required: false
-          description: Historical lookback window in hours (default 24)
+          description: >-
+            Historical lookback window in hours (default 24). When the server
+            prunes old pool snapshots, the window is capped at that retention
+            period; the response's `window` field reports the window actually
+            used.
           schema:
             type: string
             default: 24
@@ -567,8 +571,13 @@ paths:
         - name: amount
           in: query
           required: false
+          description: >-
+            Positive finite decimal trade size (e.g. `1000` or `250.5`). Trailing
+            junk (`100abc`), non-finite values (`Infinity`, `1e999`), zero, and
+            negatives are rejected with `400 invalid_parameter`.
           schema:
             type: number
+            exclusiveMinimum: 0
             default: 1000
         - $ref: '#/components/parameters/NetworkQuery'
         - $ref: '#/components/parameters/DecimalFormatHeader'
@@ -582,8 +591,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RouteInfo'
+        '400':
+          description: Invalid amount parameter
         '402':
           $ref: '#/components/responses/PaymentRequired'
+        '404':
+          description: Pair not watched
         '429':
           $ref: '#/components/responses/TooManyRequests'
 
@@ -1324,8 +1337,13 @@ paths:
         - name: amount
           in: query
           required: false
+          description: >-
+            Positive finite decimal trade size (e.g. `1000` or `250.5`). Trailing
+            junk (`100abc`), non-finite values (`Infinity`, `1e999`), zero, and
+            negatives are rejected with `400 invalid_parameter`.
           schema:
             type: number
+            exclusiveMinimum: 0
             default: 1000
         - $ref: '#/components/parameters/NetworkQuery'
         - $ref: '#/components/parameters/DecimalFormatHeader'
@@ -1850,7 +1868,7 @@ paths:
   /v1/dispersion/{assetA}/{assetB}:
     get:
       x-question: "The venues disagree on this pair — which one is the outlier?"
-      x-example: "GET /dispersion/XLM/USDC?network=testnet"
+      x-example: "GET /dispersion/XLM/USDC?network=mainnet"
       x-order: 28
       x-category: "Comparative Analytics & Market Quality"
       operationId: getPairDispersion
@@ -1858,7 +1876,12 @@ paths:
       description: >-
         Returns cross-venue price dispersion history and outlier attribution
         for a pair over time, including median, max absolute percentage deviation,
-        spread in basis points, and outlying venue.
+        spread in basis points, and outlying venue. The two assets are resolved
+        against the pairs watched on the requested network (`native` means XLM,
+        codes are case-insensitive, an issuer is honoured when given), and
+        `pairKey` in the response is the watched pair's stored key, e.g.
+        `USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN/XLM`.
+        A pair that is not watched is a 404.
       security: []
       parameters:
         - name: assetA
@@ -1898,7 +1921,7 @@ paths:
             default: 50
             minimum: 1
             maximum: 500
-          description: Max number of history records to return
+          description: Max number of history records to return. Values above 500 are rejected with 400.
       responses:
         '200':
           description: Dispersion history and latest outlier attribution
@@ -1921,7 +1944,9 @@ paths:
                     items:
                       type: object
         '400':
-          description: Invalid request parameters
+          description: Invalid request parameters (including `from` later than `to`, or `limit` above 500)
+        '404':
+          description: Pair is not watched on the requested network (`unwatched_pair`)
         '429':
           $ref: '#/components/responses/TooManyRequests'
         '500':
@@ -1945,7 +1970,10 @@ paths:
           required: false
           schema:
             type: string
-          description: Optional pair key filter (e.g. XLM/USDC)
+          description: >-
+            Optional pair filter as `assetA/assetB` (e.g. XLM/USDC; each side a
+            code, `native` or CODE:ISSUER), resolved to the watched pair's key.
+            A pair that is not watched is a 404.
         - $ref: '#/components/parameters/NetworkQuery'
         - name: from
           in: query
@@ -1965,6 +1993,9 @@ paths:
           schema:
             type: integer
             default: 50
+            minimum: 1
+            maximum: 500
+          description: Max number of records to return. Values above 500 are rejected with 400.
       responses:
         '200':
           description: List of dispersion reconciliation records
@@ -1985,7 +2016,9 @@ paths:
                     items:
                       type: object
         '400':
-          description: Invalid request parameters
+          description: Invalid request parameters (including `from` later than `to`, or `limit` above 500)
+        '404':
+          description: Pair is not watched on the requested network (`unwatched_pair`)
         '429':
           $ref: '#/components/responses/TooManyRequests'
         '500':

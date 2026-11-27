@@ -116,6 +116,7 @@ vi.mock('../config', () => ({
   config: {
     pairs: mocks.pairs,
   },
+  getNetworkConfig: () => ({ pairs: mocks.pairs }),
 }))
 vi.mock('../api/auth', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/auth')>()
@@ -317,7 +318,7 @@ describe('GraphQL per-route scope enforcement (#618)', () => {
     })
 
     it('getPriceHistory requires read:history and rejects read:prices', async () => {
-      const query = `{ getPriceHistory(assetA: "XLM", assetB: "USDC:${USDC_ISSUER}", window: "1d") { bucket } }`
+      const query = `{ getPriceHistory(assetA: "XLM", assetB: "USDC:${USDC_ISSUER}", window: "1h") { bucket } }`
 
       const refused = await queryGraphQL(app, query, 'prices')
       expect(refused.statusCode).toBe(403)
@@ -411,7 +412,7 @@ describe('GraphQL per-route scope enforcement (#618)', () => {
   describe('Multi-field documents require the union of fields\' scopes', () => {
     const multiQuery = `{
       getPrice(assetA: "XLM", assetB: "USDC:${USDC_ISSUER}") { price }
-      getPriceHistory(assetA: "XLM", assetB: "USDC:${USDC_ISSUER}", window: "1d") { bucket }
+      getPriceHistory(assetA: "XLM", assetB: "USDC:${USDC_ISSUER}", window: "1h") { bucket }
     }`
 
     it('refuses a key that only has read:prices when read:history is also selected', async () => {
@@ -457,7 +458,7 @@ describe('GraphQL per-route scope enforcement (#618)', () => {
         query {
           ...PriceFrag
           ... on Query {
-            getPriceHistory(assetA: "XLM", assetB: "USDC:${USDC_ISSUER}", window: "1d") { bucket }
+            getPriceHistory(assetA: "XLM", assetB: "USDC:${USDC_ISSUER}", window: "1h") { bucket }
           }
         }
         fragment PriceFrag on Query {

@@ -8,7 +8,12 @@ vi.mock('../db', () => ({
   pgPool: { query: mockQuery },
 }))
 
-import { computeTWAP, computeVWAP } from '../pricing/twap'
+import {
+  computeTWAP,
+  computeVWAP,
+  rejectOutliersWithIndices,
+  IQR_MIN_BAND_RATIO,
+} from '../pricing/twap'
 
 describe('TWAP Computation', () => {
   beforeEach(() => {
@@ -340,5 +345,40 @@ describe('VWAP Computation', () => {
     expect(vwapResult.outlierRejected).toBeGreaterThanOrEqual(1)
     expect(vwapResult.vwap).toBeGreaterThan(90)
     expect(vwapResult.vwap).toBeLessThan(120)
+  })
+})
+
+describe('IQR zero/near-zero guard (#651)', () => {
+  it('exports IQR_MIN_BAND_RATIO > 0', () => {
+    expect(IQR_MIN_BAND_RATIO).toBeGreaterThan(0)
+  })
+
+  it('rejects nothing when all prices are identical', () => {
+    const prices = Array.from({ length: 20 }, () => 1.0)
+    const { rejectedIndices } = rejectOutliersWithIndices(prices)
+    expect(rejectedIndices.size).toBe(0)
+  })
+
+  it('keeps small real differences when >=75% of prices are identical (20 at 1.0 + 3 at 1.0000001)', () => {
+    const prices = [
+      ...Array.from({ length: 20 }, () => 1.0),
+      1.0000001,
+      1.0000001,
+      1.0000001,
+    ]
+    const { rejectedIndices } = rejectOutliersWithIndices(prices)
+    expect(rejectedIndices.size).toBe(0)
+  })
+
+  it('still rejects a wild outlier (10x median) among mostly identical prices while keeping the small real moves', () => {
+    const prices = [
+      ...Array.from({ length: 20 }, () => 1.0),
+      1.0000001,
+      1.0000001,
+      1.0000001,
+      10,
+    ]
+    const { rejectedIndices } = rejectOutliersWithIndices(prices)
+    expect([...rejectedIndices]).toEqual([23])
   })
 })

@@ -52,11 +52,12 @@ High confidence requires price observations from at least [`2`](../src/aggregato
 
 ### Statistical Outlier Rejection Thresholds
 TWAP and VWAP computations apply statistical filtering to reject manipulation spikes:
-- **Minimum Sample Count**: Outlier filtering requires at least [`4`](../src/pricing/twap.ts#L288) sample points.
-- **Interquartile Range (IQR)**: Rejects samples beyond Q1 - [`1.5`](../src/pricing/twap.ts#L289) * IQR or Q3 + [`1.5`](../src/pricing/twap.ts#L289) * IQR.
-- **Modified Z-Score**: Rejects samples with absolute score exceeding [`3.5`](../src/pricing/twap.ts#L290), using a consistency factor of [`0.6745`](../src/pricing/twap.ts#L291).
-- **Enforcing Code**: [`src/pricing/twap.ts`](../src/pricing/twap.ts#L288)
-- **Violation Behavior**: If fewer than [`4`](../src/pricing/twap.ts#L288) samples exist, filtering is bypassed (`outlierRejected` is zero). If [`0`](../src/pricing/twap.ts#L78) samples exist in the window, endpoints return zero TWAP and sample count.
+- **Minimum Sample Count**: Outlier filtering requires at least [`4`](../src/pricing/twap.ts#L375) sample points.
+- **Interquartile Range (IQR)**: Rejects samples below Q1 - `margin` or above Q3 + `margin`, where `margin` is the larger of [`1.5`](../src/pricing/twap.ts#L376) × IQR and [`0.05`](../src/pricing/twap.ts#L378) × |median| (`IQR_MIN_BAND_RATIO`).
+- **Zero-IQR Rule**: When three quarters or more of the samples share one price, Q1 equals Q3 and the IQR is zero, so a pure IQR fence would collapse onto that price and reject every other sample. The minimum band keeps the fence at least [`5%`](../src/pricing/twap.ts#L378) of the median wide on each side instead: small real moves are kept, a value far from the median (for example ten times it) is still rejected, and a series of identical prices rejects nothing.
+- **Modified Z-Score**: Rejects samples with absolute score exceeding [`3.5`](../src/pricing/twap.ts#L379), using a consistency factor of [`0.6745`](../src/pricing/twap.ts#L380).
+- **Enforcing Code**: [`src/pricing/twap.ts`](../src/pricing/twap.ts#L375)
+- **Violation Behavior**: If fewer than [`4`](../src/pricing/twap.ts#L375) samples exist, filtering is bypassed (`outlierRejected` is zero). If [`0`](../src/pricing/twap.ts#L78) samples exist in the window, endpoints return zero TWAP and sample count.
 
 ### Request Window & Parameter Bounds
 - **TWAP Windows**: Window ranges from [`1`](../src/routes/price.ts#L8) to [`1440`](../src/routes/price.ts#L9) minutes (default [`60`](../src/routes/price.ts#L10) minutes). Sample intervals range from [`1`](../src/routes/price.ts#L11) to [`3600`](../src/routes/price.ts#L12) seconds (default [`60`](../src/routes/price.ts#L13) seconds).
@@ -129,10 +130,11 @@ When a data quality guarantee is breached, Lens behaves deterministically:
 | `snapshot_retention_days` | [`30`](../src/jobs/snapshotRetention.ts#L12) | days | [`src/jobs/snapshotRetention.ts:12`](../src/jobs/snapshotRetention.ts#L12) | Retention window for historical pool snapshots |
 | `snapshot_retention_batch_size` | [`1000`](../src/jobs/snapshotRetention.ts#L14) | rows | [`src/jobs/snapshotRetention.ts:14`](../src/jobs/snapshotRetention.ts#L14) | Row limit for batch snapshot pruning statements |
 | `price_points_retention_days` | [`30`](../src/partitioning/pricePoints.ts#L5) | days | [`src/partitioning/pricePoints.ts:5`](../src/partitioning/pricePoints.ts#L5) | Retention window before daily partition drops |
-| `min_outlier_samples` | [`4`](../src/pricing/twap.ts#L288) | samples | [`src/pricing/twap.ts:288`](../src/pricing/twap.ts#L288) | Minimum samples required for statistical outlier rejection |
-| `iqr_multiplier` | [`1.5`](../src/pricing/twap.ts#L289) | factor | [`src/pricing/twap.ts:289`](../src/pricing/twap.ts#L289) | Interquartile range multiplier for outlier fence |
-| `modified_z_score_threshold` | [`3.5`](../src/pricing/twap.ts#L290) | factor | [`src/pricing/twap.ts:290`](../src/pricing/twap.ts#L290) | Modified Z-Score deviation threshold |
-| `modified_z_score_factor` | [`0.6745`](../src/pricing/twap.ts#L291) | factor | [`src/pricing/twap.ts:291`](../src/pricing/twap.ts#L291) | Consistency adjustment factor for MAD normal distribution |
+| `min_outlier_samples` | [`4`](../src/pricing/twap.ts#L375) | samples | [`src/pricing/twap.ts:375`](../src/pricing/twap.ts#L375) | Minimum samples required for statistical outlier rejection |
+| `iqr_multiplier` | [`1.5`](../src/pricing/twap.ts#L376) | factor | [`src/pricing/twap.ts:376`](../src/pricing/twap.ts#L376) | Interquartile range multiplier for outlier fence |
+| `iqr_min_band_ratio` | [`0.05`](../src/pricing/twap.ts#L378) | fraction of median | [`src/pricing/twap.ts:378`](../src/pricing/twap.ts#L378) | Minimum half-width of the IQR fence, so a zero IQR does not reject every differing price |
+| `modified_z_score_threshold` | [`3.5`](../src/pricing/twap.ts#L379) | factor | [`src/pricing/twap.ts:379`](../src/pricing/twap.ts#L379) | Modified Z-Score deviation threshold |
+| `modified_z_score_factor` | [`0.6745`](../src/pricing/twap.ts#L380) | factor | [`src/pricing/twap.ts:380`](../src/pricing/twap.ts#L380) | Consistency adjustment factor for MAD normal distribution |
 | `twap_window_min` | [`1`](../src/routes/price.ts#L8) | minutes | [`src/routes/price.ts:8`](../src/routes/price.ts#L8) | Minimum allowed TWAP calculation window |
 | `twap_window_max` | [`1440`](../src/routes/price.ts#L9) | minutes | [`src/routes/price.ts:9`](../src/routes/price.ts#L9) | Maximum allowed TWAP calculation window (24h) |
 | `twap_window_default` | [`60`](../src/routes/price.ts#L10) | minutes | [`src/routes/price.ts:10`](../src/routes/price.ts#L10) | Default TWAP window |
