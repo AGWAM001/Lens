@@ -178,7 +178,7 @@ describe('Blend Utilisation Arithmetic (#pinning)', () => {
   describe('deriveReserveRates', () => {
     it('correctly scales token decimals to float amounts', () => {
       const entry: BlendReserveEntry = {
-        assetId: 'CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EZH3MS2UY7',
+        assetId: 'CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA',
         assetSymbol: 'XLM',
         version: 2,
         config: {
@@ -239,7 +239,7 @@ describe('Blend v1 and v2 scales (#641)', () => {
 
   function v1Entry(dSupply: bigint): BlendReserveEntry {
     return {
-      assetId: 'CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EZH3MS2UY7',
+      assetId: 'CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA',
       assetSymbol: 'XLM',
       version: 1,
       // v1 ResConfig has no supply_cap or enabled
@@ -256,7 +256,7 @@ describe('Blend v1 and v2 scales (#641)', () => {
 
   function v2Entry(dSupply: bigint): BlendReserveEntry {
     return {
-      assetId: 'CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EZH3MS2UY7',
+      assetId: 'CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA',
       assetSymbol: 'XLM',
       version: 2,
       config: { ...curve, supply_cap: 10n ** 18n, enabled: true },
