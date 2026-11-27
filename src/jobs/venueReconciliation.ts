@@ -137,7 +137,7 @@ export async function reconcileAllPairs(
   network: NetworkName,
   options: ReconcileOptions = {}
 ): Promise<Array<{ pairKey: string; result: DispersionResult; alerted: boolean }>> {
-  const pairs = getActivePairs()
+  const pairs = getActivePairs(network)
   const results: Array<{ pairKey: string; result: DispersionResult; alerted: boolean }> = []
 
   for (const pair of pairs) {

@@ -36,6 +36,8 @@ vi.mock('../config', () => ({
   config: {
     pairs: mocks.pairs,
   },
+  // The pairs registry seeds each network's list from getNetworkConfig (#646).
+  getNetworkConfig: () => ({ pairs: mocks.pairs }),
 }))
 
 import { registerGraphQL } from '../api/graphql'

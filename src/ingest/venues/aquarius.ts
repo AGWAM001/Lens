@@ -158,9 +158,8 @@ export async function ingestAquariusPair(
 export const aquariusAdapter: VenueAdapter<AquariusPool[], AquariusPool[]> = {
   name: 'Aquarius',
   kind: 'amm',
-  // AQUARIUS_SOURCE is the same literal; the constant keeps the adapter and
-  // the failure-tracking calls below from drifting apart.
   source: AQUARIUS_SOURCE,
+  onChain: true,
   sourceTimeCapability: { status: 'unavailable' },
   classification: 'aggregator',
   type: 'Liquidity Pool',

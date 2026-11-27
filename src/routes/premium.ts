@@ -1,30 +1,11 @@
 import type { FastifyInstance } from 'fastify'
 import { prisma } from '../db'
 import { config, activeNetwork, type NetworkName } from '../config'
-import { venueAdapters } from '../ingest/venues'
+import { getOnChainSources } from '../ingest/venues'
 import '../middleware/network'
 import { findWatchedPair } from '../utils/watchedPair'
 
-export const ON_CHAIN_SOURCES: readonly string[] = [
-  'SDEX',
-  'AMM',
-  'soroswap_amm',
-  'aquarius_amm',
-]
-
-function getOnChainSources(): string[] {
-  const sources = new Set<string>(ON_CHAIN_SOURCES)
-  try {
-    for (const adapter of venueAdapters) {
-      if (adapter.source) {
-        sources.add(adapter.source)
-      }
-    }
-  } catch {
-    // fallback to default ON_CHAIN_SOURCES
-  }
-  return Array.from(sources)
-}
+export const ON_CHAIN_SOURCES: readonly string[] = getOnChainSources()
 
 function tryFindWatchedPair(assetA: string, assetB: string, network: NetworkName) {
   try {
