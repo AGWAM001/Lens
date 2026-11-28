@@ -207,7 +207,7 @@ export interface paths {
         };
         /**
          * Convert asset price to fiat currency with NGN support (#290)
-         * @description Converts the asset USD price to a supported fiat currency using a dated static reference rate table (overridable via FIAT_RATES_JSON). Exposes rateTimestamp, rateAgeSeconds, stale, supportedCurrencies, and fiatRatesAsOf so callers can inspect rate freshness.
+         * @description Converts the asset USD price to a supported fiat currency using a dated static reference rate table (overridable via FIAT_RATES_JSON). Exposes rateTimestamp, rateAgeSeconds, stale, supportedCurrencies, and fiatRatesAsOf so callers can inspect rate freshness. The USD leg is priced from a watched pair against a dollar stablecoin (USDC or USD), named in `pair`; an asset with no such pair returns 404 (`unknown_pair`) and a price-database failure returns 503 (`upstream_unavailable`) — no price is ever fabricated. A dollar stablecoin itself sits at the peg (source `stablecoin_peg`) with no observed price timestamp, so `priceAgeSeconds` is null for it.
          */
         get: operations["getFiatPrice"];
         put?: never;
@@ -2694,13 +2694,24 @@ export interface operations {
                         asset: string;
                         currency: string;
                         priceInFiat: number;
+                        /** @description Price of one unit of the asset in USD, taken from the named dollar pair (`pair`) in the correct direction, or 1.0 for a dollar stablecoin at its peg. Never a hard-coded fallback. */
                         baseUsdPrice: number;
                         fiatPerUsd: number;
+                        /** @description The dollar-stablecoin pair the USD leg was priced from (e.g. XLM/USDC), or null when the asset is itself a dollar stablecoin. */
+                        pair: string | null;
+                        /**
+                         * Format: date-time
+                         * @description Timestamp of the newest price point used for the USD leg, or null for a dollar stablecoin at its peg (the peg is a convention, not an observation).
+                         */
+                        priceTimestamp: string | null;
+                        /** @description Age in seconds of the price used for the USD leg. */
+                        priceAgeSeconds: number | null;
                         crossLegs: {
                             from?: string;
                             to?: string;
                             rate?: number;
                             source?: string;
+                            pair?: string | null;
                             /** Format: date-time */
                             asOf?: string;
                         }[];
@@ -2723,7 +2734,21 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description No dollar price exists for the asset (code `unknown_pair`): Lens has no watched pair for it against a dollar stablecoin. No price is returned. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             429: components["responses"]["TooManyRequests"];
+            /** @description The price database failed (code `upstream_unavailable`). No price is returned. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     getPriceHistory: {

@@ -612,6 +612,11 @@ paths:
         Converts the asset USD price to a supported fiat currency using a dated static reference
         rate table (overridable via FIAT_RATES_JSON). Exposes rateTimestamp, rateAgeSeconds,
         stale, supportedCurrencies, and fiatRatesAsOf so callers can inspect rate freshness.
+        The USD leg is priced from a watched pair against a dollar stablecoin (USDC or USD),
+        named in `pair`; an asset with no such pair returns 404 (`unknown_pair`) and a
+        price-database failure returns 503 (`upstream_unavailable`) — no price is ever
+        fabricated. A dollar stablecoin itself sits at the peg (source `stablecoin_peg`)
+        with no observed price timestamp, so `priceAgeSeconds` is null for it.
       security: []
       parameters:
         - name: asset
@@ -640,6 +645,9 @@ paths:
                   - priceInFiat
                   - baseUsdPrice
                   - fiatPerUsd
+                  - pair
+                  - priceTimestamp
+                  - priceAgeSeconds
                   - crossLegs
                   - supportedCurrencies
                   - fiatRatesAsOf
@@ -656,8 +664,30 @@ paths:
                     type: number
                   baseUsdPrice:
                     type: number
+                    description: >-
+                      Price of one unit of the asset in USD, taken from the named dollar
+                      pair (`pair`) in the correct direction, or 1.0 for a dollar
+                      stablecoin at its peg. Never a hard-coded fallback.
                   fiatPerUsd:
                     type: number
+                  pair:
+                    type: string
+                    nullable: true
+                    description: >-
+                      The dollar-stablecoin pair the USD leg was priced from (e.g.
+                      XLM/USDC), or null when the asset is itself a dollar stablecoin.
+                  priceTimestamp:
+                    type: string
+                    format: date-time
+                    nullable: true
+                    description: >-
+                      Timestamp of the newest price point used for the USD leg, or null
+                      for a dollar stablecoin at its peg (the peg is a convention, not
+                      an observation).
+                  priceAgeSeconds:
+                    type: integer
+                    nullable: true
+                    description: Age in seconds of the price used for the USD leg.
                   crossLegs:
                     type: array
                     items:
@@ -671,6 +701,9 @@ paths:
                           type: number
                         source:
                           type: string
+                        pair:
+                          type: string
+                          nullable: true
                         asOf:
                           type: string
                           format: date-time
@@ -693,8 +726,16 @@ paths:
                     type: boolean
         '400':
           description: Invalid parameters
+        '404':
+          description: >-
+            No dollar price exists for the asset (code `unknown_pair`): Lens has no
+            watched pair for it against a dollar stablecoin. No price is returned.
         '429':
           $ref: '#/components/responses/TooManyRequests'
+        '503':
+          description: >-
+            The price database failed (code `upstream_unavailable`). No price is
+            returned.
 
   /v1/price/{assetA}/{assetB}/history:
     get:
