@@ -4,6 +4,7 @@ import { activeNetwork, type NetworkName } from '../config'
 import { getEnabledNetworks } from '../network/enabledNetworks'
 import { createLogger } from '../logger'
 import { runJob, recordJobRowsDeleted } from './jobMetrics'
+import { scheduleRetentionJob } from './scheduleRetentionJob'
 
 const log = createLogger('job:oracle-retention')
 
@@ -144,11 +145,7 @@ export function startOracleRetentionWorker() {
   return worker
 }
 
+/** Schedules the oracle comparisons prune to run hourly (and once on startup). */
 export async function scheduleOracleRetention(queue: Queue) {
-  await queue.add(
-    'prune',
-    {},
-    { repeat: { every: 60 * 60 * 1000 }, jobId: 'oracle-retention:prune' }
-  )
-  await queue.add('prune', {})
+  await scheduleRetentionJob(queue, { jobName: 'prune', jobId: 'oracle-retention:prune' })
 }

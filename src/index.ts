@@ -21,6 +21,7 @@ import { createAggregateQueue, startAggregateWorker, scheduleAggregateRefresh } 
 import { createSnapshotRetentionQueue, startSnapshotRetentionWorker, scheduleSnapshotRetention, pruneAllNetworks, SNAPSHOT_RETENTION_DAYS } from './jobs/snapshotRetention'
 import { createVenueReconciliationQueue, startVenueReconciliationWorker, scheduleVenueReconciliation, startInProcessVenueReconciliation } from './jobs/venueReconciliation'
 import { createRateRetentionQueue, startRateRetentionWorker, scheduleRateRetention, pruneAllRateNetworks, RATE_RETENTION_DAYS } from './jobs/lendingRateRetention'
+import { createAuditRetentionQueue, startAuditRetentionWorker, scheduleAuditRetention, pruneAllAuditTables, AUDIT_TABLES } from './jobs/auditRetention'
 import { POOL_SNAPSHOT_RETENTION_ENABLED, poolSnapshotRetentionJob } from './jobs/poolSnapshotRetention'
 import { startScheduledJob } from './jobs/scheduledJob'
 import {
@@ -261,6 +262,48 @@ async function main() {
       log.warn({ err }, 'lending rate retention worker unavailable; falling back to hourly in-process prune')
       await Promise.allSettled([rateRetentionQueue?.close(), rateRetentionWorker?.close()])
       setInterval(() => { void safeRatePrune() }, 60 * 60 * 1000).unref()
+    }
+  }
+
+  // ── Audit table retention ───────────────────────────────────────────────
+  // venue_dispersions, quarantined_price_points and oracle_publications are
+  // append-only audit records with writers but, until now, no clean-up. Like
+  // the other retention jobs the prune runs once at boot and then on the
+  // BullMQ schedule — losing Redis must not mean losing retention, so fall
+  // back to a plain hourly in-process timer when the queue is unavailable.
+  // Unlike the other jobs the boot prune is NOT awaited: a cold prune works
+  // through three audit tables pair by pair with pauses between batches and
+  // can take a long time on a large backlog, and boot must not wait on it.
+  // safeAuditPrune catches its own errors, so the floating promise is safe.
+  const safeAuditPrune = async () => {
+    try {
+      const counts = await pruneAllAuditTables()
+      for (const config of AUDIT_TABLES) {
+        for (const [network, pruned] of Object.entries(counts[config.table])) {
+          if (pruned > 0) {
+            log.info({ table: config.table, network, pruned, retentionDays: config.retentionDays }, 'pruned audit rows older than retention window')
+          }
+        }
+      }
+    } catch (err) {
+      log.error({ err }, 'audit prune failed')
+    }
+  }
+
+  void safeAuditPrune()
+
+  {
+    let auditRetentionQueue: ReturnType<typeof createAuditRetentionQueue> | undefined
+    let auditRetentionWorker: ReturnType<typeof startAuditRetentionWorker> | undefined
+    try {
+      auditRetentionQueue = createAuditRetentionQueue()
+      auditRetentionWorker = startAuditRetentionWorker()
+      await scheduleAuditRetention(auditRetentionQueue)
+      log.info('audit retention worker started')
+    } catch (err) {
+      log.warn({ err }, 'audit retention worker unavailable; falling back to hourly in-process prune')
+      await Promise.allSettled([auditRetentionQueue?.close(), auditRetentionWorker?.close()])
+      setInterval(() => { void safeAuditPrune() }, 60 * 60 * 1000).unref()
     }
   }
 
