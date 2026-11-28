@@ -10,7 +10,17 @@ vi.mock('../redis', () => ({ getCachedPrice: vi.fn() }))
 vi.mock('../db', () => ({ pgPool: { query: vi.fn() } }))
 vi.mock('../aggregator/vwap', () => ({ getAggregatedPrice: vi.fn() }))
 vi.mock('../aggregator/bestRoute', () => ({ getBestRoute: vi.fn() }))
-vi.mock('../config', () => ({ config: { pairs: [] }, activeNetwork: 'testnet' }))
+vi.mock('../config', () => {
+  const pairs = [
+    { assetA: { code: 'XLM', issuer: null }, assetB: { code: 'USDC', issuer: null }, pairKey: 'XLM/USDC' },
+    { assetA: { code: 'BTC', issuer: null }, assetB: { code: 'USDC', issuer: null }, pairKey: 'BTC/USDC' },
+  ]
+  return {
+    config: { pairs },
+    activeNetwork: 'testnet',
+    getNetworkConfig: () => ({ pairs }),
+  }
+})
 
 import { registerGraphQL } from '../api/graphql'
 import { publishPriceUpdate, priceEmitter } from '../events'
@@ -154,6 +164,44 @@ describe('active subscriptions metric (#373)', () => {
     expect(
       await waitUntil(() => seen.has('testnet') && seen.has('mainnet'))
     ).toBe(true)
+
+    ws.close(1000)
+    expect(await waitUntil(async () => await gaugeFor('XLM/USDC') === 0)).toBe(true)
+  })
+
+  it('creates no gauge series for made-up pairs', async () => {
+    const ws = await connect(url)
+    const errors: any[] = []
+    ws.on('message', raw => {
+      const msg = JSON.parse(raw.toString())
+      if (msg.type === 'error') errors.push(msg)
+    })
+
+    for (const fake of ['FOO/BAR', 'NOPE/USDC', 'XLM/FAKE']) {
+      ws.send(JSON.stringify({ ...SUBSCRIBE(fake, 'mainnet'), id: fake }))
+    }
+    expect(await waitUntil(() => errors.length === 3)).toBe(true)
+    for (const err of errors) {
+      const list = Array.isArray(err.payload) ? err.payload : [err.payload]
+      expect(list[0].extensions.code).toBe('PAIR_NOT_FOUND')
+    }
+
+    const { values } = await active_subscriptions.get()
+    const labels = (values ?? []).map(v => v.labels.pair)
+    for (const fake of ['FOO/BAR', 'NOPE/USDC', 'XLM/FAKE']) {
+      expect(labels).not.toContain(fake)
+    }
+    expect(await gaugeFor('FOO/BAR')).toBe(0)
+
+    ws.close(1000)
+  })
+
+  it('labels the gauge with the stored pair key for a reversed subscription', async () => {
+    const ws = await connect(url)
+    ws.send(JSON.stringify(SUBSCRIBE('USDC/XLM', 'mainnet')))
+
+    expect(await waitUntil(async () => await gaugeFor('XLM/USDC') === 1)).toBe(true)
+    expect(await gaugeFor('USDC/XLM')).toBe(0)
 
     ws.close(1000)
     expect(await waitUntil(async () => await gaugeFor('XLM/USDC') === 0)).toBe(true)
