@@ -106,44 +106,102 @@ describe('audit retention defaults', () => {
 })
 
 describe('resolveRetentionDays', () => {
+  beforeEach(() => {
+    auditLogger.error.mockClear()
+  })
+
   it('treats an unset or empty value as the default', () => {
     expect(resolveRetentionDays(undefined, 30, 1, 'X_DAYS')).toBe(30)
     expect(resolveRetentionDays('', 30, 1, 'X_DAYS')).toBe(30)
     expect(resolveRetentionDays('   ', 90, 30, 'X_DAYS')).toBe(90)
+    expect(auditLogger.error).not.toHaveBeenCalled()
   })
 
   it('accepts a value at or above the floor', () => {
     expect(resolveRetentionDays('45', 30, 1, 'X_DAYS')).toBe(45)
     expect(resolveRetentionDays('1', 30, 1, 'X_DAYS')).toBe(1)
     expect(resolveRetentionDays('30', 90, 30, 'X_DAYS')).toBe(30)
+    expect(auditLogger.error).not.toHaveBeenCalled()
   })
 
-  it('rejects 0 — the empty-variable delete-everything case', () => {
-    expect(() => resolveRetentionDays('0', 30, 1, 'X_DAYS')).toThrow(/at least 1/)
-    expect(() => resolveRetentionDays('0', 90, 30, 'X_DAYS')).toThrow(/at least 30/)
+  // A bad value must never throw: this resolver runs at module load, and
+  // the module is imported by src/index.ts, so a throw would stop the
+  // whole service booting. Each bad case logs an error and falls back to
+  // the default (which is always at or above the floor).
+
+  it('falls back to the default for 0 — the empty-variable delete-everything case', () => {
+    expect(resolveRetentionDays('0', 30, 1, 'X_DAYS')).toBe(30)
+    expect(resolveRetentionDays('0', 90, 30, 'X_DAYS')).toBe(90)
+    expect(auditLogger.error).toHaveBeenCalledTimes(2)
   })
 
-  it('rejects values below the per-table floor', () => {
-    expect(() => resolveRetentionDays('0.5', 30, 1, 'X_DAYS')).toThrow(/at least 1/)
-    expect(() => resolveRetentionDays('7', 90, 30, 'X_DAYS')).toThrow(/at least 30/)
-    expect(() => resolveRetentionDays('-5', 30, 1, 'X_DAYS')).toThrow(/at least 1/)
+  it('falls back to the default for a negative value', () => {
+    expect(resolveRetentionDays('-5', 30, 1, 'X_DAYS')).toBe(30)
+    expect(auditLogger.error).toHaveBeenCalledTimes(1)
   })
 
-  it('rejects a non-numeric value', () => {
-    expect(() => resolveRetentionDays('abc', 30, 1, 'X_DAYS')).toThrow(/must be a number of days/)
+  it('falls back to the default for a non-numeric value', () => {
+    expect(resolveRetentionDays('abc', 30, 1, 'X_DAYS')).toBe(30)
+    expect(auditLogger.error).toHaveBeenCalledTimes(1)
+  })
+
+  it('falls back to the default for a value with a unit suffix', () => {
+    expect(resolveRetentionDays('30d', 30, 1, 'X_DAYS')).toBe(30)
+    expect(auditLogger.error).toHaveBeenCalledTimes(1)
+  })
+
+  it('falls back to the default for a value below the per-table floor', () => {
+    expect(resolveRetentionDays('0.5', 30, 1, 'X_DAYS')).toBe(30)
+    expect(auditLogger.error).toHaveBeenCalledTimes(1)
+  })
+
+  it('falls back to the 90-day default for ORACLE_PUBLICATION_RETENTION_DAYS=7, below the 30-day floor', () => {
+    expect(resolveRetentionDays('7', 90, 30, 'ORACLE_PUBLICATION_RETENTION_DAYS')).toBe(90)
+    expect(auditLogger.error).toHaveBeenCalledTimes(1)
+    expect(auditLogger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ env: 'ORACLE_PUBLICATION_RETENTION_DAYS', value: '7' }),
+      expect.stringContaining('below the minimum')
+    )
   })
 })
 
 describe('resolveIntEnv', () => {
+  beforeEach(() => {
+    auditLogger.error.mockClear()
+  })
+
   it('treats an unset or empty value as the default', () => {
     expect(resolveIntEnv(undefined, 1_000, 1, 'X')).toBe(1_000)
     expect(resolveIntEnv('', 250, 0, 'X')).toBe(250)
+    expect(auditLogger.error).not.toHaveBeenCalled()
   })
 
-  it('rejects non-integers and values below the minimum', () => {
-    expect(() => resolveIntEnv('0', 1_000, 1, 'X')).toThrow(/at least 1/)
-    expect(() => resolveIntEnv('2.5', 1_000, 1, 'X')).toThrow(/integer/)
-    expect(() => resolveIntEnv('abc', 1_000, 1, 'X')).toThrow(/integer/)
+  it('accepts a valid integer at or above the minimum', () => {
+    expect(resolveIntEnv('500', 1_000, 1, 'X')).toBe(500)
+    expect(resolveIntEnv('0', 250, 0, 'X')).toBe(0)
+    expect(auditLogger.error).not.toHaveBeenCalled()
+  })
+
+  it('falls back to the default for a bad batch size', () => {
+    expect(resolveIntEnv('0', 1_000, 1, 'AUDIT_PRUNE_BATCH_SIZE')).toBe(1_000)
+    expect(resolveIntEnv('-10', 1_000, 1, 'AUDIT_PRUNE_BATCH_SIZE')).toBe(1_000)
+    expect(resolveIntEnv('2.5', 1_000, 1, 'AUDIT_PRUNE_BATCH_SIZE')).toBe(1_000)
+    expect(resolveIntEnv('abc', 1_000, 1, 'AUDIT_PRUNE_BATCH_SIZE')).toBe(1_000)
+    expect(auditLogger.error).toHaveBeenCalledTimes(4)
+  })
+
+  it('falls back to the default for a bad max-batches value', () => {
+    expect(resolveIntEnv('0', 100, 1, 'AUDIT_PRUNE_MAX_BATCHES')).toBe(100)
+    expect(resolveIntEnv('-1', 100, 1, 'AUDIT_PRUNE_MAX_BATCHES')).toBe(100)
+    expect(resolveIntEnv('abc', 100, 1, 'AUDIT_PRUNE_MAX_BATCHES')).toBe(100)
+    expect(auditLogger.error).toHaveBeenCalledTimes(3)
+  })
+
+  it('falls back to the default for a bad batch-pause value', () => {
+    expect(resolveIntEnv('-1', 250, 0, 'AUDIT_PRUNE_BATCH_PAUSE_MS')).toBe(250)
+    expect(resolveIntEnv('abc', 250, 0, 'AUDIT_PRUNE_BATCH_PAUSE_MS')).toBe(250)
+    expect(resolveIntEnv('30d', 250, 0, 'AUDIT_PRUNE_BATCH_PAUSE_MS')).toBe(250)
+    expect(auditLogger.error).toHaveBeenCalledTimes(3)
   })
 })
 

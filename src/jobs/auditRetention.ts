@@ -12,11 +12,12 @@ const QUEUE_NAME = `${activeNetwork}:audit-retention`
 export type AuditTable = 'venue_dispersions' | 'quarantined_price_points' | 'oracle_publications'
 
 /**
- * Minimum retention window per table, in days. A window below the floor is
- * rejected — never silently honoured — because pruning is irreversible and
- * the previous guard (`retentionDays < 0`) let an empty environment variable
- * through: `Number('')` is 0, and a 0-day window deletes every row in the
- * table. The floors are:
+ * Minimum retention window per table, in days. A configured window below
+ * the floor is never honoured — the resolver logs an error and falls back
+ * to the default, which is always at or above the floor — because pruning
+ * is irreversible and the previous guard (`retentionDays < 0`) let an
+ * empty environment variable through: `Number('')` is 0, and a 0-day
+ * window deletes every row in the table. The floors are:
  *
  * - `venue_dispersions` / `quarantined_price_points` — 1 day. Operational
  *   records; a day still leaves room for a deliberately short window while
@@ -38,9 +39,13 @@ export const MIN_RETENTION_DAYS: Record<AuditTable, number> = {
  *
  * An unset or empty value means the default — an operator blanking a
  * variable in a dashboard must get the documented window, not a 0-day
- * delete-everything window. A non-numeric value, or one below the table's
- * floor, throws: a retention misconfiguration has to fail loudly at
- * startup rather than prune with a window nobody chose.
+ * delete-everything window. An invalid value — non-numeric, or below the
+ * table's floor — never throws: this runs at module load, and the module
+ * is imported by src/index.ts, so a throw here would stop the whole
+ * service booting over one mistyped variable. Instead the bad value is
+ * logged as an error and the default is used; the default is always at or
+ * above the floor, so a misconfiguration can widen a window back to the
+ * documented one but can never prune below the floor.
  */
 export function resolveRetentionDays(
   rawValue: string | undefined,
@@ -51,12 +56,18 @@ export function resolveRetentionDays(
   if (rawValue === undefined || rawValue.trim() === '') return defaultDays
   const days = Number(rawValue)
   if (!Number.isFinite(days)) {
-    throw new RangeError(`${envName} must be a number of days, got ${JSON.stringify(rawValue)}`)
+    log.error(
+      { env: envName, value: rawValue, defaultDays },
+      'invalid retention window: not a number of days; falling back to the default'
+    )
+    return defaultDays
   }
   if (days < minDays) {
-    throw new RangeError(
-      `${envName} must be at least ${minDays} day(s) for this table, got ${days}; refusing a retention window below the floor`
+    log.error(
+      { env: envName, value: rawValue, days, minDays, defaultDays },
+      'invalid retention window: below the minimum for this table; falling back to the default'
     )
+    return defaultDays
   }
   return days
 }
@@ -64,7 +75,8 @@ export function resolveRetentionDays(
 /**
  * Resolves an integer tuning knob (batch size, batch cap, batch pause) from
  * its raw environment value, with the same rules as the retention windows:
- * unset or empty means the default, anything invalid throws at startup.
+ * unset or empty means the default, and an invalid value logs an error and
+ * falls back to the default rather than throwing at module load.
  */
 export function resolveIntEnv(
   rawValue: string | undefined,
@@ -75,7 +87,11 @@ export function resolveIntEnv(
   if (rawValue === undefined || rawValue.trim() === '') return defaultValue
   const value = Number(rawValue)
   if (!Number.isSafeInteger(value) || value < minValue) {
-    throw new RangeError(`${envName} must be an integer of at least ${minValue}, got ${JSON.stringify(rawValue)}`)
+    log.error(
+      { env: envName, value: rawValue, minValue, defaultValue },
+      'invalid integer setting: must be an integer of at least the minimum; falling back to the default'
+    )
+    return defaultValue
   }
   return value
 }
